@@ -7,8 +7,8 @@
 - 源码版本已升至 **1.1.20**：Android `versionCode=20`、`versionName=1.1.20`，Windows Web 控制中心和 Android 空闲页均显示 `1.1.20`。
 - 本次修复简易模式“扩展屏幕”错误复用完整模式目标显示器的问题，并处理已失效 `DISPLAYn` 的启动路径。
 - Windows Release 已在 `build/windows-release-1.1.20/` 构建完成，并于 2026-09-11 通过 **13/13 CTest**。
-- 尚未生成 1.1.20 发布 ZIP/APK：上次 Android 构建被 Android Studio 占用的 Gradle Wrapper 锁阻塞，现有 `android/app/build/outputs/apk/debug/app-debug.apk` 仍是旧的 1.1.19 产物，不能作为 1.1.20 发布。
-- 本项目已于 2026-10-21 初始化本地 Git 的 `main` 分支。用户已确认 GitHub 账号为 `liujiaxing060903`，目标为公开仓库 `liujiaxing060903/WireView`；上传取决于本机 GitHub CLI 登录授权完成。
+- 尚未生成 1.1.20 发布 ZIP/APK：上次 Android 构建读取 Gradle Wrapper 缓存锁文件时被拒绝访问，尚未证明是进程占用；应先检查沙箱对用户 Gradle 缓存的写入权限。现有 `android/app/build/outputs/apk/debug/app-debug.apk` 仍是旧的 1.1.19 产物，不能作为 1.1.20 发布。
+- 已于 2026-10-21 创建并上传公开 GitHub 仓库：<https://github.com/liujiaxing060903/WireView>。默认分支 `main`，本地 `main` 已跟踪 `origin/main`；首次源码提交为 `7b58a93`。
 
 ## 1.1.20：简易模式扩展副屏修复
 
@@ -36,7 +36,7 @@
 
 ## 发布待办
 
-1. 完全退出 Android Studio 及 Gradle 任务；此前它持有 `C:\Users\liuji\.gradle\wrapper\dists\gradle-9.4.1-bin\...\gradle-9.4.1-bin.zip.lck`。
+1. 确认构建过程可写入 `C:\Users\liuji\.gradle`。此前 `.zip.lck` 的拒绝访问可能来自沙箱限制，不能仅凭此错误推断 Android Studio 占用；必要时通过正常的权限申请机制重试构建。
 2. 构建 Android：
 
    ```powershell
@@ -54,11 +54,12 @@
 
 5. 用 `Get-FileHash -Algorithm SHA256` 对 `release/WireView-1.1.20-Windows-x64.zip` 与 `release/WireView-1.1.20-debug.apk` 生成并记录校验值。
 
-## GitHub 上传待办
+## GitHub 仓库与后续同步
 
 - 本地 Git 已初始化到 `main`，提交署名为 `liujiaxing060903`，邮箱为 GitHub 隐私邮箱 `242791441+liujiaxing060903@users.noreply.github.com`。
 - 不提交：`build/`、`release/`、Android/Gradle 缓存、IDE 目录、运行日志和 WebView2 配置文件；这些已在 `.gitignore` 中排除。
-- 用户已授权创建并上传公开仓库 `liujiaxing060903/WireView`，无需再次询问可见性。官方 GitHub CLI 位于 `build/github-tools/cli/bin/gh.exe`，下载已按官方 SHA-256 校验；目前需用户在浏览器完成设备登录授权。
+- 用户已完成 GitHub CLI 授权，并明确要求创建、上传公开仓库 `liujiaxing060903/WireView`。仓库已创建，首次源码推送已成功；官方 GitHub CLI 位于 `build/github-tools/cli/bin/gh.exe`，下载已按官方 SHA-256 校验。
+- 本机系统代理为 `127.0.0.1:7897`。Git 直连 `github.com:443` 超时，本次使用命令级 `-c http.proxy=http://127.0.0.1:7897` 后上传成功；没有修改全局网络设置。后续同步若遇到同样错误，应先核对当前系统代理，而非假定账号授权失效。
 - 本轮重新运行 Windows Release 目录的 CTest，结果为 13/13 通过。首次提交约 285 个文件、70 MB；已排除额外的 Android 构建报告、`.gradle-user` 和 `.idea`，保留 WebView2 SDK 构建依赖及其许可。
 - 公共源码快照不代表 1.1.20 发布包已完成，也不代表本次扩展副屏修复已完成真机回归。
 - 由于发布 ZIP/APK 一般体积较大且不属于源码，建议通过 GitHub Releases 上传，而不是加入 Git 历史；需用户明确授权后再创建 Release。
