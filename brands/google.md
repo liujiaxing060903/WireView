@@ -1,0 +1,354 @@
+# Google Mobile Phone Models
+
+- Range: Google Pixel phones, tablets & watch
+- Codename: ✅
+
+## Phones
+
+**Pixel (`sailfish`):**
+
+`G-2PW4100`: Pixel (North America)
+
+`G-2PW4200`: Pixel (Rest of the world)
+
+**Pixel XL (`marlin`):**
+
+`G-2PW2100`: Pixel XL (North America)
+
+`G-2PW2200`: Pixel XL (Rest of the world)
+
+**Pixel 2 (`walleye`):**
+
+`G011A`: Pixel 2
+
+**Pixel 2 XL (`taimen`):**
+
+`G011C`: Pixel 2 XL
+
+**Pixel 3 (`blueline`):**
+
+`G013A`: Pixel 3
+
+`G013B`: Pixel 3 (Japan)
+
+**Pixel 3 XL (`crosshatch`):**
+
+`G013C`: Pixel 3 XL
+
+`G013D`: Pixel 3 XL (Japan)
+
+**Pixel 3a (`sargo`):**
+
+`G020E`: Pixel 3a (Verizon)
+
+`G020F`: Pixel 3a (UK, Europe, and APAC)
+
+`G020G`: Pixel 3a (North America)
+
+`G020H`: Pixel 3a (Japan)
+
+**Pixel 3a XL (`bonito`):**
+
+`G020A`: Pixel 3a XL (Verizon)
+
+`G020B`: Pixel 3a XL (UK, Europe, and APAC)
+
+`G020C`: Pixel 3a XL (North America)
+
+`G020D`: Pixel 3a XL (Japan)
+
+**Pixel 4 (`flame`):**
+
+`G020I`: Pixel 4 (North America, TW)
+
+`G020M`: Pixel 4 (Rest of the world)
+
+`G020N`: Pixel 4 (Japan)
+
+**Pixel 4 XL (`coral`):**
+
+`G020J`: Pixel 4 XL (North America, TW)
+
+`G020P`: Pixel 4 XL (Rest of the world)
+
+`G020Q`: Pixel 4 XL (Japan)
+
+**Pixel 4a (`sunfish`):**
+
+`G025J`: Pixel 4a (North America, TW)
+
+`G025N`: Pixel 4a (Rest of the world)
+
+`G025M`: Pixel 4a (Japan)
+
+**Pixel 4a 5G (`bramble`):**
+
+`G025E`: Pixel 4a 5G (North America, TW)
+
+`G6QU3`: Pixel 4a 5G (Verizon)
+
+`G025I`: Pixel 4a 5G (Rest of the world)
+
+`G025H`: Pixel 4a 5G (Japan)
+
+**Pixel 5 (`redfin`):**
+
+`GD1YQ`: Pixel 5 (US)
+
+`GTT9Q`: Pixel 5 (Rest of the world)
+
+`G5NZ6`: Pixel 5 (Japan)
+
+**Pixel 5a 5G (`barbet`):**
+
+`G1F8F`: Pixel 5a 5G (US)
+
+`G4S1M`: Pixel 5a 5G (Japan)
+
+**Pixel 6 (`oriole`):**
+
+`G9S9B`: Pixel 6 (US, mmWave)
+
+`GB7N6`: Pixel 6 (Rest of the world)
+
+`GR1YH`: Pixel 6 (Japan)
+
+**Pixel 6 Pro (`raven`):**
+
+`G8VOU`: Pixel 6 Pro (US, AU) (mmWave)
+
+`GLUOG`: Pixel 6 Pro (Rest of the world)
+
+`GF5KQ`: Pixel 6 Pro (Japan)
+
+**Pixel 6a (`bluejay`):**
+
+`GB62Z`: Pixel 6a (US, mmWave)
+
+`GX7AS`: Pixel 6a (North America, TW)
+
+`G1AZG`: Pixel 6a (Rest of the world)
+
+`GB17L`: Pixel 6a (Japan)
+
+**Pixel 7 (`panther`):**
+
+`GQML3`: Pixel 7 (US, mmWave)
+
+`GVU6C`: Pixel 7 (Rest of the world)
+
+`G03Z5`: Pixel 7 (Japan)
+
+**Pixel 7 Pro (`cheetah`):**
+
+`GE2AE`: Pixel 7 Pro (US, AU) (mmWave)
+
+`GP4BC`: Pixel 7 Pro (Rest of the world)
+
+`GFE4J`: Pixel 7 Pro (Japan)
+
+**Pixel 7a (`lynx`):**
+
+`G0DZQ`: Pixel 7a (mmWave)
+
+`GWKK3`: Pixel 7a (North America, EU)
+
+`GHL1X`: Pixel 7a (Global)
+
+`G82U8`: Pixel 7a (Japan)
+
+**Pixel 8 (`shiba`):**
+
+`GKWS6`: Pixel 8 (mmWave)
+
+`G9BQD`: Pixel 8 (US, Sub 6GHz)
+
+`GPJ41`: Pixel 8 (Global)
+
+`GZPFO`: Pixel 8 (Japan)
+
+**Pixel 8 Pro (`husky`):**
+
+`G1MNW`: Pixel 8 Pro (mmWave)
+
+`GC3VE`: Pixel 8 Pro (Global)
+
+`GE9DP`: Pixel 8 Pro (Japan)
+
+**Pixel 8a (`akita`):**
+
+`G8HNN`: Pixel 8a (mmWave)
+
+`GKV4X`: Pixel 8a (North America, Sub 6GHz)
+
+`G6GPR`: Pixel 8a (Global)
+
+`G576D`: Pixel 8a (Japan)
+
+**Pixel Fold (`felix`):**
+
+`G9FPL`: Pixel Fold (US, EU)
+
+`G0B96`: Pixel Fold (Japan)
+
+**Pixel 9 (`tokay`):**
+
+`G2YBB`: Pixel 9 (US, mmWave)
+
+`GUR25`: Pixel 9 (Global)
+
+`G1B60`: Pixel 9 (Japan)
+
+**Pixel 9 Pro (`caiman`):**
+
+`GR83Y`: Pixel 9 Pro (US, mmWave)
+
+`GEC77`: Pixel 9 Pro (Global)
+
+`GWVK6`: Pixel 9 Pro (Japan)
+
+**Pixel 9 Pro XL (`komodo`):**
+
+`GGX8B`: Pixel 9 Pro XL (US, mmWave)
+
+`GZC4K`: Pixel 9 Pro XL (Global)
+
+`GQ57S`: Pixel 9 Pro XL (Japan)
+
+**Pixel 9 Pro Fold (`comet`):**
+
+`GGH2X`: Pixel 9 Pro Fold (Global)
+
+`GC15S`: Pixel 9 Pro Fold (Japan)
+
+**Pixel 9a (`tegu`):**
+
+`GXQ96`: Pixel 9a (US)
+
+`GTF7P`: Pixel 9a (Global)
+
+`G3Y12`: Pixel 9a (Japan)
+
+**Pixel 10 (`frankel`):**
+
+`GLBW0`: Pixel 10 (US, mmWave)
+
+`GK2MP`: Pixel 10 (Global)
+
+`GL066`: Pixel 10 (Japan)
+
+**Pixel 10 Pro (`blazer`):**
+
+`G4QUR`: Pixel 10 Pro (US, mmWave)
+
+`GEHN3`: Pixel 10 Pro (Global)
+
+`GN4F5`: Pixel 10 Pro (Japan)
+
+**Pixel 10 Pro XL (`mustang`):**
+
+`GUL82`: Pixel 10 Pro XL (US, mmWave)
+
+`G45RY`: Pixel 10 Pro XL (Global)
+
+`GYPW4`: Pixel 10 Pro XL (Japan)
+
+**Pixel 10 Pro Fold (`rango`):**
+
+`GU0NP`: Pixel 10 Pro Fold (Global)
+
+`GM66V`: Pixel 10 Pro Fold (Japan)
+
+**Pixel 10a (`stallion`):**
+
+`GE1GQ`: Pixel 10a (US)
+
+`G4H7L`: Pixel 10a (Global)
+
+`GV0BP`: Pixel 10a (Japan)
+
+**Pixel 11 (`cubs`):**
+
+`GPQQ7`: Pixel 11 (US, mmWave)
+
+`GUJ0N`: Pixel 11 (Global)
+
+**Pixel 11 Pro (`grizzly`):**
+
+`G7SWN`: Pixel 11 Pro (US, mmWave)
+
+`GM45K`: Pixel 11 Pro (Global)
+
+**Pixel 11 Pro XL (`kodiak`):**
+
+`GBC0H`: Pixel 11 Pro XL (US, mmWave)
+
+`G4HCD`: Pixel 11 Pro XL (Global)
+
+**Pixel 11 Pro Fold (`yogi`):**
+
+`GZDQ6`: Pixel 11 Pro Fold
+
+## Tablets
+
+**Pixel C (`dragon`):**
+
+`C1502W`: Pixel C
+
+**Pixel Tablet (`tangorpro`):**
+
+`GTU8P`: Pixel Tablet
+
+## Watch
+
+**Pixel Watch (`r11btwifi`):**
+
+`GQF4C`: Pixel Watch Bluetooth & Wi-Fi
+
+**Pixel Watch (`r11`):**
+
+`GWT9R`: Pixel Watch LTE (US)
+
+`GBZ4S`: Pixel Watch LTE (Global)
+
+**Pixel Watch 2 (`aurora`):**
+
+`G4TSL`: Pixel Watch 2 Bluetooth & Wi-Fi
+
+**Pixel Watch 2 (`eos`):**
+
+`GD2WG`: Pixel Watch 2 LTE (US)
+
+`GC3G8`: Pixel Watch 2 LTE (Global)
+
+**Pixel Watch 3 (`helios`):**
+
+`GG3HH`: Pixel Watch 3 Bluetooth & Wi-Fi (41mm)
+
+**Pixel Watch 3 (`selene`):**
+
+`GBDU9`: Pixel Watch 3 LTE (41mm)
+
+**Pixel Watch 3 (`sol`):**
+
+`GGE4J`: Pixel Watch 3 Bluetooth & Wi-Fi (45mm)
+
+**Pixel Watch 3 (`luna`):**
+
+`GRY0E`: Pixel Watch 3 LTE (45mm)
+
+**Pixel Watch 4 (`meridian_btwifi`):**
+
+`GHH4K`: Pixel Watch 4 Bluetooth & Wi-Fi (41mm)
+
+**Pixel Watch 4 (`meridian_lte`):**
+
+`GWSQ2`: Pixel Watch 4 LTE (41mm)
+
+**Pixel Watch 4 (`kenari_btwifi`):**
+
+`G8AK3`: Pixel Watch 4 Bluetooth & Wi-Fi (45mm)
+
+**Pixel Watch 4 (`kenari_lte`):**
+
+`G1KAW`: Pixel Watch 4 LTE (45mm)

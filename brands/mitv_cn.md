@@ -1,0 +1,759 @@
+# 小米电视型号汇总
+
+- 汇总范围: 全部国行小米/REDMI 电视、智能显示器、机顶盒
+- codename: ❌
+- 是否包含海外机型: [单独汇总 (英文)](/brands/mitv_global_en.md)
+
+## 小米电视
+
+**小米电视:**
+
+`L47M1-AA`: 小米电视 47 英寸
+
+**小米电视 2:**
+
+`L40M2-AA`: 小米电视 2 40 英寸
+
+`L49M2-AA`: 小米电视 2 49 英寸
+
+`L55M2-AA`: 小米电视 2 55 英寸
+
+**小米电视 2S:**
+
+`L48M3-AA` `L48M3-AR`: 小米电视 2S 48 英寸
+
+**小米电视 3:**
+
+`L55M4-AA` `L55M4-AR`: 小米电视 3 55 英寸
+
+`L60M4-AA` `L60M4-AR`: 小米电视 3 60 英寸
+
+`L70M4-AA`: 小米电视 3 70 英寸
+
+**小米电视 3s:**
+
+`L43M3-AA` `L43M3-AR`: 小米电视 3s 43 英寸
+
+`L48M3-AF`: 小米电视 3s 48 英寸
+
+`L55M5-AA`: 小米电视 3s 55 英寸
+
+`L60M5-AA`: 小米电视 3s 60 英寸
+
+`L65M5-AA`: 小米电视 3s 65 英寸
+
+`L65M4-AQ`: 小米电视 3s 65 英寸 曲面
+
+**小米电视 4A:**
+
+`L32M5-AZ`: 小米电视 4A 32 英寸
+
+`L32M5-AZ`: 小米电视 4A 32 英寸 SE
+
+`L40M5-AD`: 小米电视 4A 40 英寸
+
+`L43M5-AZ`: 小米电视 4A 43 英寸
+
+`L43M5-AD`: 小米电视 4A 43 英寸 青春版 (2018)
+
+`L43M5-5A`: 小米电视 4A 43 英寸 青春版 (2019)
+
+`L43M5-AD`: 小米电视 4A 43 英寸 SE
+
+`L49M5-AZ`: 小米电视 4A 49 英寸
+
+`L50M5-AD`: 小米电视 4A 50 英寸 (2018)
+
+`L50M5-5A`: 小米电视 4A 50 英寸 (2019)
+
+`L50M5-5A`: 小米电视 4A 50 英寸 SE
+
+`L55M5-AZ`: 小米电视 4A 55 英寸 (2017)
+
+`L55M5-AD`: 小米电视 4A 55 英寸 (2018)
+
+`L55M5-5A`: 小米电视 4A 55 英寸 (2019)
+
+`L58M5-4A`: 小米电视 4A 58 英寸
+
+`L60M5-4A`: 小米电视 4A 60 英寸
+
+`L65M5-AZ`: 小米电视 4A 65 英寸 (2017)
+
+`L65M5-AD`: 小米电视 4A 65 英寸 (2018)
+
+`L65M5-5A`: 小米电视 4A 65 英寸 (2019)
+
+`L70M5-4A`: 小米电视 4A 70 英寸
+
+**小米电视 4:**
+
+`L49M5-AB`: 小米电视 4 49 英寸
+
+`L55M5-AB`: 小米电视 4 55 英寸
+
+`L65M5-AB`: 小米电视 4 65 英寸
+
+`L65M5-4`: 小米电视 4 65 英寸 全面屏旗舰版
+
+`L75M5-AB`: 小米电视 4 75 英寸
+
+**小米电视 4C:**
+
+`L32M5-AD`: 小米电视 4C 32 英寸
+
+`L40M5-4C`: 小米电视 4C 40 英寸
+
+`L40M5-4C`: 小米电视 4C 40 英寸 SE
+
+`L43M5-AX`: 小米电视 4C 43 英寸
+
+`L50M5-AD`: 小米电视 4C 50 英寸
+
+`L55M5-AZ`: 小米电视 4C 55 英寸
+
+`L65M5-4C`: 小米电视 4C 65 英寸
+
+**小米电视 4S:**
+
+`L32M5-AD`: 小米电视 4S 32 英寸
+
+`L43M5-AU`: 小米电视 4S 43 英寸 (2018)
+
+`L43M5-5S`: 小米电视 4S 43 英寸 (2019)
+
+`L50M5-AD`: 小米电视 4S 50 英寸 (2018)
+
+`L50M5-5S`: 小米电视 4S 50 英寸 (2019)
+
+`L55M5-AD`: 小米电视 4S 55 英寸 (2018)
+
+`L55M5-5S`: 小米电视 4S 55 英寸 (2019)
+
+`L55M5-AQ`: 小米电视 4S 55 英寸 曲面
+
+`L58M5-4C`: 小米电视 4S 58 英寸
+
+`L65M5-AD`: 小米电视 4S 65 英寸 (2018)
+
+`L65M5-5S`: 小米电视 4S 65 英寸 (2019)
+
+`L65M5-AD`: 小米电视 4S 65 英寸 PRO
+
+`L70M5-4S`: 小米电视 4S 70 英寸
+
+`L75M5-4S`: 小米电视 4S 75 英寸
+
+**小米电视 4X:**
+
+`L43M5-4X`: 小米电视 4X 43 英寸
+
+`L55M5-AD`: 小米电视 4X 55 英寸
+
+`L65M5-4X`: 小米电视 4X 65 英寸
+
+**小米电视 5:**
+
+`L55M6-5`: 小米电视 5 55 英寸
+
+`L65M6-5`: 小米电视 5 65 英寸
+
+`L75M6-5`: 小米电视 5 75 英寸
+
+**小米电视 5 Pro:**
+
+`L55M6-5P`: 小米电视 5 Pro 55 英寸
+
+`L65M6-5P`: 小米电视 5 Pro 65 英寸
+
+`L75M6-5P`: 小米电视 5 Pro 75 英寸
+
+**小米电视 6 OLED:**
+
+`L55M7-Z2`: 小米电视 6 OLED 55 英寸
+
+`L65M7-Z2`: 小米电视 6 OLED 65 英寸
+
+**小米电视 6 至尊版:**
+
+`L55M7-Z1`: 小米电视 6 至尊版 55 英寸
+
+`L65M7-Z1`: 小米电视 6 至尊版 65 英寸
+
+`L75M7-Z1`: 小米电视 6 至尊版 75 英寸
+
+**小米全面屏电视:**
+
+`L32M5-AD`: 小米全面屏电视 E32A
+
+`L32M5-EC`: 小米全面屏电视 E32C
+
+`L40M5-FA`: 小米全面屏电视 E40A
+
+`L43M5-FA`: 小米全面屏电视 E43A
+
+`L43M5-EC`: 小米全面屏电视 E43C
+
+`L43M5-EK`: 小米全面屏电视 E43K
+
+`L43M5-EX`: 小米全面屏电视 E43X
+
+`L55M5-AZ`: 小米全面屏电视 E55A
+
+`L55M5-EC`: 小米全面屏电视 E55C
+
+`L55M5-EX`: 小米全面屏电视 E55X
+
+`L65M5-EA`: 小米全面屏电视 E65A
+
+`L65M5-EC`: 小米全面屏电视 E65C
+
+`L65M5-EA`: 小米全面屏电视 E65X
+
+**小米全面屏电视 Pro:**
+
+`L32M6-ES`: 小米全面屏电视 Pro E32S
+
+`L43M5-ES`: 小米全面屏电视 Pro E43S
+
+`L55M5-ES`: 小米全面屏电视 Pro E55S
+
+`L65M5-ES`: 小米全面屏电视 Pro E65S
+
+`L75M5-ES`: 小米全面屏电视 Pro E75S
+
+`L55M5-AB`: 小米电视 55 英寸 全面屏 PRO
+
+`L65M5-4`: 小米电视 65 英寸 全面屏 PRO
+
+**小米电视 EA:**
+
+`L32M7-EA`: 小米电视 EA32 2022
+
+`L40M7-EA`: 小米电视 EA40 2022
+
+`L43M7-EA`: 小米电视 EA43 2022
+
+`L50M7-EA`: 小米电视 EA50 2022
+
+`L55M7-EA`: 小米电视 EA55 2022
+
+`L58M7-EA`: 小米电视 EA58 2022
+
+`L60M7-EA`: 小米电视 EA60 2022
+
+`L65M7-EA`: 小米电视 EA65 2022
+
+`L70M7-EA`: 小米电视 EA70 2022
+
+`L75M7-EA`: 小米电视 EA75 2022
+
+`L32MA-E`: 小米电视 EA32 (2023)
+
+`L43MA-E`: 小米电视 EA43 (2023)
+
+`L50MA-EA`: 小米电视 EA50 (2023)
+
+`L55MA-EA`: 小米电视 EA55 (2023)
+
+`L65MA-EA`: 小米电视 EA65 (2023)
+
+`L70MA-EA`: 小米电视 EA70 (2023)
+
+`L75MA-EA`: 小米电视 EA75 (2023)
+
+**小米电视 EA Pro:**
+
+`L55M9-EP`: 小米电视 EA Pro 55
+
+`L55MA-EP`: 小米电视 EA Pro 55 高刷版
+
+`L65M9-EP`: 小米电视 EA Pro 65
+
+`L65MA-EP`: 小米电视 EA Pro 65 高刷版
+
+`L75M9-EP`: 小米电视 EA Pro 75
+
+`L75MA-EP`: 小米电视 EA Pro 75 高刷版
+
+`L86M9-EP`: 小米电视 EA Pro 86
+
+**小米电视 ES:**
+
+`L43M7-ES`: 小米电视 ES43 2022
+
+`L50M7-ES`: 小米电视 ES50 2022
+
+`L55M7-ES`: 小米电视 ES55 2022
+
+`L65M7-ES`: 小米电视 ES65 2022
+
+`L70M7-ES`: 小米电视 ES70 2022
+
+`L75M7-ES`: 小米电视 ES75 2022
+
+**小米电视 ES Pro:**
+
+`L55M9-SP`: 小米电视 ES Pro 55
+
+`L65M9-SP`: 小米电视 ES Pro 65
+
+`L75M9-SP`: 小米电视 ES Pro 75
+
+`L86M8-ES`: 小米电视 ES Pro 86
+
+`L90M9-EP`: 小米电视 ES Pro 90
+
+**小米电视 A:**
+
+`L32MA-A`: 小米电视 A32
+
+`L43MA-A`: 小米电视 A43
+
+`L50MA-A`: 小米电视 A50
+
+`L55MA-A`: 小米电视 A55
+
+`L55MA-AC`: 小米电视 A55 竞技版
+
+`L65MA-A`: 小米电视 A65
+
+`L65MA-AC`: 小米电视 A65 竞技版
+
+`L70MA-A`: 小米电视 A70
+
+`L75MA-A`: 小米电视 A75
+
+`L75MA-AC`: 小米电视 A75 竞技版
+
+**小米电视 A Pro:**
+
+`L43MA-AP`: 小米电视 A Pro 43
+
+`L55MA-AP`: 小米电视 A Pro 55
+
+`L65MA-AP`: 小米电视 A Pro 65
+
+`L75MA-AP`: 小米电视 A Pro 75
+
+`L85RA-EP`: 小米电视 A Pro 85
+
+**小米电视 S:**
+
+`L55M9-S`: 小米电视 S55
+
+`L65M9-S`: 小米电视 S65
+
+`L75M9-S`: 小米电视 S75
+
+`L85MA-S`: 小米电视 S85
+
+**[`N32`] 小米电视 S Mini LED:**
+
+`L55MA-SPL`: 小米电视 S55 Mini LED
+
+`L65MA-SPL`: 小米电视 S65 Mini LED
+
+`L75MA-SPL`: 小米电视 S75 Mini LED
+
+`L85MA-SPL`: 小米电视 S85 Mini LED
+
+**[`O32`] 小米电视 S Mini LED 2025:**
+
+`L55MB-S`: 小米电视 S55 Mini LED 2025
+
+`L65MB-S`: 小米电视 S65 Mini LED 2025
+
+`L75MB-S`: 小米电视 S75 Mini LED 2025
+
+`L85MB-S`: 小米电视 S85 Mini LED 2025
+
+`L98MB-S`: 小米电视 S98 Mini LED 2025
+
+**小米电视 S Mini LED 2026:**
+
+`L55MC-S`: 小米电视 S55 Mini LED 2026
+
+`L55MC-SD`: 小米电视 S55 Mini LED 2026 至尊版
+
+`L65MC-S`: 小米电视 S65 Mini LED 2026
+
+`L65MC-SD`: 小米电视 S65 Mini LED 2026 至尊版
+
+`L75MC-S`: 小米电视 S75 Mini LED 2026
+
+`L75MC-SD`: 小米电视 S75 Mini LED 2026 至尊版
+
+`L85MC-S`: 小米电视 S85 Mini LED 2026
+
+`L85MC-SD`: 小米电视 S85 Mini LED 2026 至尊版
+
+`L100MC-S`: 小米电视 S100 Mini LED 2026
+
+`L100MC-SD`: 小米电视 S100 Mini LED 2026 至尊版
+
+**小米电视 S Pro:**
+
+`L65MA-SM`: 小米电视 S Pro 65 Mini LED
+
+`L75MA-SM`: 小米电视 S Pro 75 Mini LED
+
+`L85MA-SM`: 小米电视 S Pro 85 Mini LED
+
+`L100MA-SP`: 小米电视 S Pro 100
+
+**小米电视 S Pro Mini LED 2025:**
+
+`L65MB-SP`: 小米电视 S Pro 65 Mini LED 2025
+
+`L75MB-SP`: 小米电视 S Pro 75 Mini LED 2025
+
+`L85MB-SP`: 小米电视 S Pro 85 Mini LED 2025
+
+`L100MB-SP`: 小米电视 S Pro 100 Mini LED 2025
+
+**小米电视 S Pro Mini LED 2026:**
+
+`L65MC-SP`: 小米电视 S Pro 65 Mini LED 2026
+
+`L75MC-SP`: 小米电视 S Pro 75 Mini LED 2026
+
+`L85MC-SP`: 小米电视 S Pro 85 Mini LED 2026
+
+`L98MC-SP`: 小米电视 S Pro 98 Mini LED 2026
+
+**小米壁画电视:**
+
+`L65M5-BH`: 小米壁画电视 65 英寸
+
+`L75M5-BH`: 小米壁画电视 75 英寸
+
+**小米透明电视:**
+
+`L55M6-TM`: 小米透明电视 55 英寸
+
+**小米电视 大师系列:**
+
+`L65M5-OD`: 小米电视 大师 65 英寸 OLED
+
+`O77M8-MAS`: 小米电视 大师 77 英寸 OLED
+
+`L82M6-4K`: 小米电视 大师 82 英寸
+
+`L82M6-8KP`: 小米电视 大师 82 英寸 至尊纪念版
+
+`L86M9-MAS`: 小米电视 大师 86 英寸 Mini LED
+
+**小米电子水牌:**
+
+`L55M8-SP`: 小米电子水牌 55 英寸
+
+## REDMI 电视
+
+**Redmi 智能电视 A:**
+
+`L40M5-RA`: Redmi 红米电视 40 英寸 R40A
+
+`L42R7-RA`: Redmi 智能电视 42 英寸
+
+`L70M5-RA`: Redmi 红米电视 70 英寸 R70A
+
+`L32R6-A`: Redmi 智能电视 A32 (2020)
+
+`L43R6-A`: Redmi 智能电视 A43 (2020)
+
+`L50R6-A`: Redmi 智能电视 A50 (2020)
+
+`L55R6-A`: Redmi 智能电视 A55 (2020)
+
+`L65R6-A`: Redmi 智能电视 A65 (2020)
+
+**Redmi 智能电视 A 2022:**
+
+`L32R8-A`: Redmi 智能电视 A32 2022
+
+`L43R8-A`: Redmi 智能电视 A43 2022
+
+`L50R8-A`: Redmi 智能电视 A50 2022
+
+`L55R8-A`: Redmi 智能电视 A55 2022
+
+`L58R8-A`: Redmi 智能电视 A58 2022
+
+`L65R8-A`: Redmi 智能电视 A65 2022
+
+`L70R8-A`: Redmi 智能电视 A70 2022
+
+`L75R8-A`: Redmi 智能电视 A75 2022
+
+**[`N39`] Redmi 智能电视 A 2024:**
+
+`L32RA-RA`: Redmi 智能电视 A32 2024
+
+`L43RA-RA`: Redmi 智能电视 A43 2024
+
+`L50RA-RA`: Redmi 智能电视 A50 2024
+
+`L55RA-RA`: Redmi 智能电视 A55 2024
+
+`L65RA-RA`: Redmi 智能电视 A65 2024
+
+`L70RA-RA`: Redmi 智能电视 A70 2024
+
+`L75MA-RA`: Redmi 智能电视 A75 2024
+
+**[`O39`] Redmi 智能电视 A 2025:**
+
+`L32RA-RA`: Redmi 智能电视 A32 2025
+
+`L43RA-RA`: Redmi 智能电视 A43 2025
+
+`L50RB-RA`: Redmi 智能电视 A50 2025
+
+`L55RB-RA`: Redmi 智能电视 A55 2025
+
+`L65RB-RA`: Redmi 智能电视 A65 2025
+
+`L70RB-RA`: Redmi 智能电视 A70 2025
+
+`L75MA-RA`: Redmi 智能电视 A75 2025
+
+**[`O39`] REDMI 电视 A 2025:**
+
+`L32RA-RAE`: REDMI 电视 A32 2025 节能版 (一级能效)
+
+`L43RA-RAE`: REDMI 电视 A43 2025 节能版 (一级能效)
+
+`L50RB-RAE`: REDMI 电视 A50 2025 节能版 (二级能效)
+
+`L50RB-RAD`: REDMI 电视 A50 一级能效版
+
+`L55RB-RAE`: REDMI 电视 A55 2025 节能版 (一级能效)
+
+`L65RB-RAE`: REDMI 电视 A65 2025 节能版 (一级能效)
+
+`L70RB-RAE`: REDMI 电视 A70 2025 节能版 (一级能效)
+
+`L75MA-RAE`: REDMI 电视 A75 2025 节能版 (一级能效)
+
+**Redmi 智能电视 A Pro:**
+
+`L43RB-AP`: Redmi 智能电视 A Pro 43
+
+`L50RB-AP`: Redmi 智能电视 A Pro 50 节能版 (二级能效)
+
+`L55RB-AP`: Redmi 智能电视 A Pro 55 节能版 (二级能效)
+
+`L65RB-AP`: Redmi 智能电视 A Pro 65 节能版 (二级能效)
+
+`L70RB-AP`: Redmi 智能电视 A Pro 70 节能版 (二级能效)
+
+`L75RB-AP`: Redmi 智能电视 A Pro 75 节能版 (一级能效)
+
+**REDMI 智能电视 A Pro 2025:**
+
+`L43RB-APE`: REDMI 智能电视 A Pro 43 2025 节能版 (二级能效)
+
+`L50RB-APE`: REDMI 智能电视 A Pro 50 2025 节能版 (二级能效)
+
+`L55RB-APE`: REDMI 智能电视 A Pro 55 2025 节能版 (二级能效)
+
+`L65RB-APE`: REDMI 智能电视 A Pro 65 2025 节能版 (二级能效)
+
+`L75RB-APE`: REDMI 智能电视 A Pro 75 2025 节能版 (一级能效)
+
+**REDMI 电视 A Pro 2025:**
+
+`L43RC-AP`: REDMI 电视 A Pro 43 2026
+
+`L50RC-AP`: REDMI 电视 A Pro 50 2026
+
+`L55RC-AP`: REDMI 电视 A Pro 55 2026
+
+`L65RC-AP`: REDMI 电视 A Pro 65 2026
+
+`L70RB-APD`: REDMI 电视 A Pro 70 2026
+
+`L75RC-AP`: REDMI 电视 A Pro 75 2026
+
+**Redmi 智能电视 X:**
+
+`L50M5-RK`: Redmi 智能电视 X50 (2020)
+
+`L55M5-RK`: Redmi 智能电视 X55 (2020)
+
+`L65M5-RK`: Redmi 智能电视 X65 (2020)
+
+**Redmi 智能电视 X 2022:**
+
+`L50R8-X`: Redmi 智能电视 X50 2022
+
+`L55R8-X`: Redmi 智能电视 X55 2022
+
+`L65R8-X`: Redmi 智能电视 X65 2022
+
+`L75R8-X`: Redmi 智能电视 X75 2022
+
+`L85RA-RX`: Redmi 智能电视 X85
+
+`L86R9-X`: Redmi 智能电视 X86
+
+**Redmi 智能电视 XT:**
+
+`L55RA-XT`: Redmi 智能电视 X55T
+
+`L65RA-XT`: Redmi 智能电视 X65T
+
+`L75RA-XT`: Redmi 智能电视 X75T
+
+**Redmi AI 智能电视 X:**
+
+`L55R9-XT`: Redmi AI 智能电视 X55
+
+`L65R9-XT`: Redmi AI 智能电视 X65
+
+`L75R9-XT`: Redmi AI 智能电视 X75
+
+**Redmi AI 智能电视 X 2024:**
+
+`L55MA-XT`: Redmi AI 智能电视 X55 2024
+
+`L65MA-XT`: Redmi AI 智能电视 X65 2024
+
+`L75MA-XT`: Redmi AI 智能电视 X75 2024
+
+**Redmi AI 智能电视 X 2025:**
+
+`L55RB-XT`: Redmi AI 智能电视 X55 2025
+
+`L65RB-XT`: Redmi AI 智能电视 X65 2025
+
+`L75RB-XT`: Redmi AI 智能电视 X75 2025
+
+**Redmi 智能电视 X 2025:**
+
+`L55RB-RX`: Redmi 智能电视 X55 2025
+
+`L65RB-RX`: Redmi 智能电视 X65 2025
+
+`L75RB-RX`: Redmi 智能电视 X75 2025
+
+`L85RB-RX`: Redmi 智能电视 X85 2025
+
+**Redmi 电视 X 2025:**
+
+`L55RB-RXE`: REDMI 电视 X55 2025 节能版 (二级能效)
+
+`L65RB-RXE`: REDMI 电视 X65 2025 节能版 (二级能效)
+
+`L75RB-RXE`: REDMI 电视 X75 2025 节能版 (一级能效)
+
+`L85RB-RXE`: REDMI 电视 X85 2025 节能版 (一级能效)
+
+**REDMI 电视 X 2026:**
+
+`L55RC-RX`: REDMI 电视 X55 2026
+
+`L65RC-RX`: REDMI 电视 X65 2026
+
+`L75RC-RX`: REDMI 电视 X75 2026
+
+`L85RC-RX`: REDMI 电视 X85 2026
+
+`L98RC-RX`: REDMI 电视 X98 2026
+
+**Redmi 智能电视 X Pro:**
+
+`L65R9-XP`: Redmi 智能电视 X Pro 65
+
+`L75R9-XP`: Redmi 智能电视 X Pro 75
+
+**Redmi 智能电视 MAX:**
+
+`L85RA-RX`: Redmi 智能电视 MAX 85 英寸
+
+`L86R6-MAX`: Redmi 智能电视 MAX 86 英寸
+
+`L90R9-MAX`: Redmi 智能电视 MAX 90 英寸
+
+`L98M6-RK`: Redmi 智能电视 MAX 98 英寸
+
+`L100R8-MAX`: Redmi 智能电视 MAX 100 英寸
+
+**[`N36`] Redmi 智能电视 MAX 2025:**
+
+`L85RB-MAX`: Redmi 智能电视 MAX 85 2025
+
+`L85RB-MAXE`: REDMI 电视 MAX 85 2025 节能版 (一级能效)
+
+`L100RA-MAX`: Redmi 智能电视 MAX 100 2025
+
+`L100RA-MAXE`: REDMI 电视 MAX 100 2025 节能版 (一级能效)
+
+**REDMI 电视 MAX 2026:**
+
+`L85RC-MAXE`: REDMI 电视 MAX 85 一级能效版
+
+`L85RC-AP`: REDMI 电视 MAX 85 2026
+
+`L100RC-MAXE`: REDMI 电视 MAX 100 一级能效版
+
+`L100RC-AP`: REDMI 电视 MAX 100 2026
+
+## REDMI 智能显示器
+
+**REDMI 显示器 G Pro 27U:**
+
+`P27UDA-RGP`: REDMI 显示器 G Pro 27U
+
+**REDMI 显示器 G Pro 27U 2026:**
+
+`P27UEA-RGP`: REDMI 显示器 G Pro 27U 2026
+
+**REDMI 显示器 G Pro 32U 2026:**
+
+`P32UEA-RGP`: REDMI 显示器 G Pro 32U 2026
+
+## 电视主机与盒子
+
+**小米电视主机:**
+
+`MDZ-18-DA`: 小米电视主机
+
+**小米家庭影院:**
+
+`MDZ-19-DA`: 小米家庭影院
+
+**小米盒子:**
+
+`MDZ-05-AA`: 小米盒子
+
+`MDZ-06-AA` `MDZ-06-AB`: 新小米盒子
+
+`MDZ-09-AA`: 小米盒子增强版 (iCNTV)
+
+`MDZ-09-AK`: 小米盒子增强版 (GITV)
+
+`MDZ-15-AA`: 小米盒子 mini
+
+`MDZ-16-AA`: 小米盒子 3 / 小米盒子 3c
+
+`MDZ-18-AA`: 小米盒子 3 增强版
+
+`MDZ-19-AA`: 小米盒子 3s
+
+`MDZ-21-AA`: 小米盒子 4
+
+`MDZ-20-AA`: 小米盒子 4c
+
+`MDZ-23-AA`: 小米盒子 4 SE
+
+`MDZ-25-AA`: 小米盒子 4S
+
+`MDZ-26-AA`: 小米盒子 4S Pro
+
+`MDZ-30-AA`: 小米盒子 4S MAX
+
+`MOB2MB-5P`: 小米盒子 5
+
+`MOB1MB-5M`: 小米盒子 5 MAX

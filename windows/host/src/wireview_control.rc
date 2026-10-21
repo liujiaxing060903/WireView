@@ -1,0 +1,4 @@
+#define IDI_WIREVIEW_APP 200
+
+// 由 tools/generate_app_icons.ps1 从当前 WireView 品牌原图生成。
+IDI_WIREVIEW_APP ICON "../assets/ui/wireview-app-icon.ico"

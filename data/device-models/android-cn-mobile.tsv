@@ -1,0 +1,2592 @@
+# normalizedModel	name	category
+2012051	小米 1S 联通版	phone
+2012052	小米 1S 青春版	phone
+2012053	小米 1S 电信版	phone
+2012061	小米 2 联通版	phone
+2012062	小米 2 电信版	phone
+2012121	小米 2A 联通版	phone
+2013012	小米 2S 联通版	phone
+2013021	小米 2S 电信版	phone
+2013022	红米手机 移动版	phone
+2013023	红米手机 联通版	phone
+2013028	红米 1S 电信版	phone
+2013029	红米 1S 联通版	phone
+2013061	小米 3 移动版	phone
+2013062	小米 3 联通版	phone
+2013063	小米 3 电信版	phone
+2013121	红米 Note 联通 3G 增强版	phone
+2013122	红米 Note 移动 3G 增强版	phone
+2014011	红米 1S 移动 3G 版	phone
+2014017	红米 Note 移动 3G 标准版	phone
+2014018	红米 Note 联通 3G 标准版	phone
+2014021	红米 Note 联通 4G 增强版	phone
+2014022	红米 Note 移动 4G 增强版	phone
+2014112	红米 2 移动合约版	phone
+2014215	小米 4 联通 3G 版	phone
+2014216	小米 4 移动 4G 版	phone
+2014218	小米 4 电信 3G 版	phone
+2014501	红米 1S 移动 4G 版	phone
+2014502	红米 2A 标准版	phone
+2014616	小米 Note 双网通版	phone
+2014617	小米 Note 联通合约版	phone
+2014618	小米 Note 移动合约版	phone
+2014619	小米 Note 全网通版	phone
+2014716	小米 4 电信 4G 版	phone
+2014719	小米 4 联通 4G 版	phone
+2014726	小米 4 电信 4G 合约版	phone
+2014811	红米 2 联通版	phone
+2014812	红米 2 电信版	phone
+2014813	红米 2 移动版	phone
+2014816	红米 2A 高配版	phone
+2014821	红米 2 电信合约版	phone
+2014910	红米 Note 电信 4G 双卡合约版	phone
+2014911	红米 Note 移动 4G 双卡合约版	phone
+2014912	红米 Note 联通 4G 双卡版	phone
+2014915	红米 Note 移动 4G 双卡版	phone
+2014916	红米 Note 电信 4G 双卡版	phone
+2015021	小米 Note 顶配版 双网通版	phone
+2015022	小米 Note 顶配版 全网通版	phone
+2015051	红米 Note 2 双网通版	phone
+2015052	红米 Note 2 移动版	phone
+2015055	红米 Note 2 移动合约版	phone
+2015056	红米 Note 2 移动合约高配版	phone
+2015201	小米 5 标准版	phone
+2015211	小米 Note 2 全网通版	phone
+2015212	小米 Note 2 移动 4G+ 版	phone
+2015213	小米 Note 2 (全球频段)	phone
+2015501	小米 Note 顶配版 移动合约版	phone
+2015561	小米 4c 全网通版	phone
+2015562	小米 4c 移动合约版	phone
+2015611	红米 Note 3 移动合约版	phone
+2015617	红米 Note 3 双网通版	phone
+2015628	小米 5 高配版 / 尊享版	phone
+2015711	小米 5s	phone
+2015712	红米 Note 2 双网通高配版	phone
+2015716	小米平板 2	tablet
+2015810	红米 3 联通合约 标准版	phone
+2015812	红米 3 移动合约 标准版	phone
+2015818	红米 3 联通合约 高配版	phone
+2015911	小米 4S	phone
+2016001	小米 Max 标准版	phone
+2016007	小米 Max 高配版	phone
+2016020	红米 Pro 标准版	phone
+2016021	红米 Pro 高配版 / 尊享版	phone
+2016030	红米 3S	phone
+2016033	红米 3X 全网通版 (联通定制)	phone
+2016035	红米 3X 移动合约版	phone
+2016036	红米 3X 全网通版	phone
+2016050	红米 Note 4 全网通版	phone
+2016051	红米 Note 4 移动版	phone
+2016060	红米 4 高配版	phone
+2016070	小米 5s Plus	phone
+2016080	小米 MIX	phone
+2016089	小米 5c	phone
+2016090	红米 4 标准版	phone
+2016101	红米 Note 4X 高通 全网通版	phone
+2016111	红米 4A 全网通版	phone
+2016112	红米 4A 移动 4G+ 版	phone
+2016130	红米 Note 4X 高通 移动 4G+ 版	phone
+21051182C	小米平板 5	tablet
+21051191C	CyberDog 仿生四足机器人	phone
+2106118C	Xiaomi MIX 4	phone
+2107119DC	Xiaomi 11 青春活力版	phone
+21091116AC	Redmi Note 11 5G	phone
+21091116C	Redmi Note 11 Pro	phone
+21091116UC	Redmi Note 11 Pro+	phone
+2109119BC	Xiaomi Civi	phone
+21121119SC	Redmi Note 11 4G	phone
+21121210C	Redmi K50 电竞版	phone
+2112123AC	Xiaomi 12X	phone
+2201116SC	Redmi Note 11E Pro	phone
+22011211C	Redmi K50 Pro	phone
+2201122C	Xiaomi 12 Pro	phone
+2201123C	Xiaomi 12	phone
+22021211RC	Redmi K40S	phone
+220233L2C	Redmi 10A	phone
+2203121C	Xiaomi 12S Ultra	phone
+22041211AC	Redmi K50	phone
+22041216C	Redmi Note 11T Pro	phone
+22041216UC	Redmi Note 11T Pro+	phone
+22041219C	Redmi Note 11E 5G	phone
+22061218C	Xiaomi MIX Fold 2	phone
+2206122SC	Xiaomi 12S Pro	phone
+2206123SC	Xiaomi 12S	phone
+2207122MC	Xiaomi 12 Pro 天玑版	phone
+22081212C	Redmi K50 至尊版	phone
+22081281AC	小米平板 5 Pro 12.4 英寸	tablet
+22081283C	Redmi Pad	tablet
+2209129SC	Xiaomi Civi 2	phone
+22095RA98C	Redmi Note 11R 5G	phone
+22101316C	Redmi Note 12 Pro	phone
+22101316UC	Redmi Note 12 探索版	phone
+22101316UCP	Redmi Note 12 Pro+	phone
+22101317C	Redmi Note 12 5G / Redmi Note 12R Pro	phone
+22101320C	Redmi Note 12 Pro 极速版	phone
+2210132C	Xiaomi 13 Pro	phone
+2211133C	Xiaomi 13	phone
+22120RN86C	Redmi 12C	phone
+22122RK93C	Redmi K60E	phone
+22127RK46C	Redmi K60 Pro	phone
+23013RK75C	Redmi K60	phone
+23043RP34C	Xiaomi Pad 6	tablet
+23046PNC9C	Xiaomi Civi 3	phone
+23046RP50C	Xiaomi Pad 6 Pro	tablet
+23049RAD8C	Redmi Note 12 Turbo	phone
+2304FPN6DC	Xiaomi 13 Ultra	phone
+23054RA19C	Redmi Note 12T Pro	phone
+23073RPBFC	Redmi Pad SE	tablet
+23076RA4BC	Redmi 12R	phone
+23077RABDC	Redmi 12 5G	phone
+23078RKD5C	Redmi K60 至尊版	phone
+2307BRPDCC	Xiaomi Pad 6 Max 14	tablet
+2308CPXD0C	Xiaomi MIX Fold 3	phone
+23090RA98C	Redmi Note 13 Pro+	phone
+23113RKC6C	Redmi K70	phone
+23116PN5BC	Xiaomi 14 Pro / Xiaomi 14 Pro 钛金属版	phone
+23117RK66C	Redmi K70 Pro	phone
+2311BPN23C	Xiaomi 14 Pro 钛金属版 (卫星通讯)	phone
+2311DRK48C	Redmi K70E	phone
+2311FRAFDC	Redmi Note 13R Pro	phone
+23124RN87C	Redmi 13C 5G / Redmi 13R 5G	phone
+23127PN0CC	Xiaomi 14	phone
+2312CRAD3C	Redmi Note 13 Pro (LPDDR5 + UFS 3.1)	phone
+2312DRA50C	Redmi Note 13 Pro (LPDDR4x + UFS 2.2)	phone
+2312DRAABC	Redmi Note 13 5G	phone
+24018RPACC	Xiaomi Pad 6S Pro 12.4	tablet
+24031PN0DC	Xiaomi 14 Ultra	phone
+24053PY09C	Xiaomi Civi 4 Pro	phone
+2405AVPB7C	小米澎湃智能座舱 (第一代 SU7/SU7 Ultra)	phone
+2405CPX3DC	Xiaomi MIX Flip	phone
+2405CRPFDC	Redmi Pad Pro Wi-Fi	tablet
+24069RA21C	Redmi Turbo 3	phone
+2406ERN9CC	Redmi Note 13R	phone
+24072PX77C	Xiaomi MIX Fold 4	phone
+24074RPD2C	Redmi Pad Pro 5G	tablet
+2407FRK8EC	Redmi K70 至尊版	phone
+24090RA29C	Redmi Note 14 Pro	phone
+24091RPADC	Xiaomi Pad 7 Pro	tablet
+24094RAD4C	Redmi Note 14 5G / REDMI Note 15R Pro	phone
+2409BRN2CC	Redmi 14C / REDMI 17C	phone
+2410CRP4CC	Xiaomi Pad 7	tablet
+2410DPN6CC	Xiaomi 15 Pro	phone
+24115RA8EC	Redmi Note 14 Pro+	phone
+24117RK2CC	REDMI K80	phone
+2411DRN47C	Redmi 14R 5G	phone
+24122RKC7C	REDMI K80 Pro	phone
+24127RK2CC	REDMI K80 Pro 冠军版	phone
+24129PN74C	Xiaomi 15	phone
+24129RT7CC	REDMI Turbo 4	phone
+25010PN30C	Xiaomi 15 Ultra 双卫星版	phone
+25019PNF3C	Xiaomi 15 Ultra	phone
+25032RP42C	Xiaomi Pad 7 Ultra	tablet
+25033VP3FC	小米澎湃智能座舱 (YU7/新一代 SU7)	phone
+2503CVPC6C	小米汽车后排移动控制屏	phone
+25040RP0AC	REDMI Pad 2	tablet
+25042PN24C	Xiaomi 15S Pro	phone
+25053RP5CC	Xiaomi Pad 7S Pro 12.5	tablet
+25053RT47C	REDMI Turbo 4 Pro	phone
+25057RA09C	REDMI Note 15R	phone
+2505APX7BC	Xiaomi MIX Flip 2	phone
+25060RK16C	REDMI K80 至尊版	phone
+25067PYE3C	Xiaomi Civi 5 Pro	phone
+25079RPDCC	REDMI K Pad	tablet
+25080RABDC	REDMI Note 15 Pro	phone
+25082RNC1C	REDMI 15R 5G	phone
+25091RP04C	Xiaomi Pad 8 Pro	tablet
+25097RP43C	Xiaomi Pad 8	tablet
+25098PN5AC	Xiaomi 17 Pro	phone
+25098RA98C	REDMI Note 15	phone
+25099RP13C	REDMI Pad 2 Pro	tablet
+2509BRP2DC	REDMI Pad 2 Pro 5G	tablet
+2509FPN0BC	Xiaomi 17 Pro Max	phone
+25102RK69C	REDMI K90 Pro Max 冠军版	phone
+25102RKBEC	REDMI K90 Pro Max	phone
+25104RADAC	REDMI Note 15 Pro+ 卫星消息版	phone
+2510DRK44C	REDMI K90	phone
+2510ERA8BC	REDMI Note 15 Pro+	phone
+25113PN0EC	Xiaomi 17	phone
+2511FRT34C	REDMI Turbo 5	phone
+25128PNA1C	Xiaomi 17 Ultra by Leica (卫星通讯)	phone
+2512BPNDAC	Xiaomi 17 Ultra / Xiaomi 17 Ultra by Leica (非卫星)	phone
+26020RN1AC	REDMI R70 5G / REDMI R70m 5G	phone
+26021RN18C	REDMI Note 17	phone
+2602BRNA4C	REDMI 17 5G	phone
+2602BRT18C	REDMI Turbo 5 Max	phone
+2603ARP14C	REDMI Pad 2 SE	tablet
+26048RP6AC	REDMI K Pad 2	tablet
+2604ERP4DC	REDMI Pad 2 SE 4G	tablet
+2604FRK1EC	REDMI K90 Max	phone
+2605EPN8EC	Xiaomi 17 Max	phone
+26062RN92C	REDMI M100	phone
+2607DRA18C	REDMI Note 17 Pro	phone
+7D-501U	荣耀 X1 3G 版	tablet
+7D-503L	荣耀 X1 4G 版	tablet
+7D-503LT	荣耀 X1 移动 4G 版	tablet
+A0101	小米平板	tablet
+A403ZT	nubia S 5G SoftBank	phone
+A404ZT	nubia Flip 2 SoftBank	phone
+A502ZT	nubia Fold SoftBank	phone
+A507ZT	nubia S2e SoftBank	phone
+AAK-AN00	荣耀 WIN RT	phone
+AAP-AN00	荣耀 WIN	phone
+ABR-AN00	荣耀 X70i	phone
+AC2001	一加 Nord 印度版	phone
+AC2003	一加 Nord 欧洲版 / 国际版	phone
+ADA-AL00	HUAWEI nova 12 Pro	phone
+ADA-AL00U	HUAWEI nova 12 Ultra	phone
+ADA-AL10U	HUAWEI nova 12 Ultra 星耀版	phone
+ADT-AN00	荣耀 X40 GT / 荣耀 X40 GT 竞速版	phone
+ADY-AL00	HUAWEI Pura 70	phone
+ADY-AL10	HUAWEI Pura 70 北斗卫星消息版	phone
+AGI-AN00	荣耀 X60 GT	phone
+AGM-AL09HN	荣耀平板 Z3 9.7 英寸 LTE 版	tablet
+AGM-W09HN	荣耀平板 Z3 9.7 英寸 Wi-Fi 版	tablet
+AGM3-AL09HN	荣耀平板 7 10.1 英寸 LTE 版	tablet
+AGM3-W09HN	荣耀平板 7 10.1 英寸 Wi-Fi 版	tablet
+AGR-AL09HN	荣耀平板 X6 9.7 英寸 LTE 版	tablet
+AGR-W09HN	荣耀平板 X6 9.7 英寸 Wi-Fi 版	tablet
+AGS-L09	荣耀畅玩平板 2 9.6 英寸 LTE 版	tablet
+AGS-W09	荣耀畅玩平板 2 9.6 英寸 Wi-Fi 版	tablet
+AGS2-AL00	华为畅享平板 10.1 英寸 LTE 版	tablet
+AGS2-AL00HN	荣耀平板 5 10.1 英寸 LTE 版	tablet
+AGS2-W09	华为畅享平板 10.1 英寸 Wi-Fi 版	tablet
+AGS2-W09HN	荣耀平板 5 10.1 英寸 Wi-Fi 版	tablet
+AGS3-AL09HN	荣耀平板 6 10.1 英寸 LTE 版	tablet
+AGS3-W00D	华为畅享平板 2 10.1 英寸 Wi-Fi 版 (4GB+64GB)	tablet
+AGS3-W00E	华为畅享平板 2 10.1 英寸 Wi-Fi 版 (4GB+128GB)	tablet
+AGS3-W09HN	荣耀平板 6 10.1 英寸 Wi-Fi 版	tablet
+AGS3K-AL20	HUAWEI MatePad SE 10.1 英寸 LTE 版	tablet
+AGS3K-W20	HUAWEI MatePad SE 10.1 英寸 Wi-Fi 版	tablet
+AGS5-AL00	HUAWEI MatePad SE 10.4 英寸 LTE 版	tablet
+AGS5-W00	HUAWEI MatePad SE 10.4 英寸 Wi-Fi 版	tablet
+AGS5Z-AL00	华为擎云 C5e 10.4 英寸 LTE 版	tablet
+AGS6-W00	HUAWEI MatePad SE 11 英寸 Wi-Fi 版	tablet
+AGS6-W10	HUAWEI MatePad SE 活力版 11 英寸 Wi-Fi 版	tablet
+AGT-AN00	荣耀 80 GT	phone
+AKA-AL10	荣耀 Play4T	phone
+ALA-AN70	荣耀 V40 轻奢版 5G	phone
+ALI-AN00	荣耀 X50	phone
+ALN-AL10	HUAWEI Mate 60 Pro+	phone
+ALP-AL00	HUAWEI Mate 10 全网通版	phone
+ALP-AN00	荣耀 X50 Pro / 荣耀 X50 GT	phone
+ALP-TL00	HUAWEI Mate 10 移动 4G+ 版	phone
+ALT-AL00	HUAWEI Mate X3	phone
+ALT-AL10	HUAWEI Mate X5	phone
+ALT-AN00	荣耀 Play9T 5G	phone
+AMG-AN00	荣耀 GT	phone
+AMM-AN00	荣耀 300	phone
+AMP-AN00	荣耀 300 Pro	phone
+AMP-AN10	荣耀 300 Ultra	phone
+ANA-AL00	HUAWEI P40 4G 全网通版	phone
+ANA-AN00	HUAWEI P40 5G 全网通版	phone
+ANA-TN00	HUAWEI P40 5G 移动版	phone
+ANB-AN00	荣耀 80 Pro 直屏版	phone
+ANE-AL00	HUAWEI nova 3e 全网通版	phone
+ANE-TL00	HUAWEI nova 3e 移动 4G+ 版	phone
+ANG-AN00	HUAWEI nova 8 5G	phone
+ANN-AN00	荣耀 80	phone
+ANP-AN00	荣耀 80 Pro	phone
+ANY-AN00	荣耀 X30 5G	phone
+APH-AN00	荣耀 Robot Phone	phone
+AQM-AL00	华为畅享 10S 全网通版	phone
+AQM-AL10	荣耀 Play4T Pro	phone
+AQM-TL00	华为畅享 10S 移动 4G+ 版	phone
+ARE-AL00	荣耀 8X Max 全网通版 (骁龙 636)	phone
+ARE-AL10	荣耀 8X Max 全网通版 (骁龙 660)	phone
+ARE-TL00	荣耀 8X Max 移动 4G+ 版 (骁龙 636)	phone
+ARS-AL00	华为畅享 MAX 全网通版	phone
+ARS-TL00	华为畅享 MAX 移动 4G+ 版	phone
+ART-TL00X	华为畅享 10 移动 4G+ 版	phone
+ASK-AL00X	荣耀 Play3 全网通版 (麒麟 710F)	phone
+ASK-AL20	荣耀 Play3 全网通版 (麒麟 710A)	phone
+ASK-TL00X	荣耀 Play3 移动 4G+ 版 (麒麟 710F)	phone
+ATH-AL00	荣耀 7i 全网通版	phone
+ATH-CL00	荣耀 7i 电信版	phone
+ATH-TL00	荣耀 7i 移动定制版	phone
+ATH-TL00H	荣耀 7i 移动渠道版	phone
+ATH-UL00	荣耀 7i 双 4G 版	phone
+ATU-AL10	华为畅享 8e 全网通版	phone
+ATU-TL10	华为畅享 8e 移动 4G+ 版	phone
+AUM-AL00	荣耀畅玩 7A 全网通标配版	phone
+AUM-AL20	荣耀畅玩 7A 全网通高配版	phone
+AUM-TL00	荣耀畅玩 7A 移动 4G+ 标配版	phone
+AUM-TL20	荣耀畅玩 7A 移动 4G+ 高配版	phone
+BAC-AL00	HUAWEI nova 2 Plus 全网通版	phone
+BAC-TL00	HUAWEI nova 2 Plus 移动 4G+ 版	phone
+BAH-AL00	华为平板 M3 青春版 10.1 英寸 LTE 版	tablet
+BAH-W09	华为平板 M3 青春版 10.1 英寸 Wi-Fi 版	tablet
+BAH2-AL10	华为平板 M5 青春版 10.1 英寸 LTE 版	tablet
+BAH2-W09	华为平板 M5 青春版 10.1 英寸 Wi-Fi 版	tablet
+BAH3-AL00	HUAWEI MatePad 10.4 英寸 LTE 版 (麒麟 810)	tablet
+BAH3-AN10	HUAWEI MatePad 5G 10.4 英寸 (麒麟 820)	tablet
+BAH3-W09	HUAWEI MatePad 10.4 英寸 Wi-Fi 版 (麒麟 810)	tablet
+BAH3-W59	HUAWEI MatePad 10.4 英寸 Wi-Fi 版 (麒麟 820)	tablet
+BAH4-AL10	HUAWEI MatePad 10.4 英寸 2022 悦动版 LTE 版 (骁龙 778G 4G)	tablet
+BAH4-W19	HUAWEI MatePad 10.4 英寸 2022 悦动版 Wi-Fi 版 (骁龙 778G 4G)	tablet
+BAL-AL60	HUAWEI Pocket S	phone
+BBG7-W00	华为擎云 C7 (第 2 代) 11.5 英寸 Wi-Fi 版	tablet
+BBH7-W00	华为擎云 C7 (第 3 代) 11.5 英寸 Wi-Fi 版	tablet
+BCC-N	荣耀 MagicBook 14 2026	phone
+BDR-WFE9HN	荣耀 MagicBook 15 2021 i7 (荣耀终端)	phone
+BDR-WFH9HN	荣耀 MagicBook 15 2021 i5 (荣耀终端)	phone
+BE2011	一加 Nord N100 北美版	phone
+BE2012	一加 Nord N100 T-Mobile 版	phone
+BE2013	一加 Nord N100 国际版	phone
+BE2015	一加 Nord N100 Metro 版	phone
+BE2025	一加 Nord N10 Metro 版	phone
+BE2026	一加 Nord N10 北美版	phone
+BE2028	一加 Nord N10 T-Mobile 版	phone
+BE2029	一加 Nord N10 欧洲版 / 国际版	phone
+BG2-W09	荣耀畅玩平板 2 7 英寸 Wi-Fi 版	tablet
+BGO-DL09	荣耀畅玩平板 LTE 版	tablet
+BJS5-W00	华为擎云 C5 (第 3 代) 11.5 英寸 Wi-Fi 版	tablet
+BKK-AL00	荣耀畅玩 8C 全网通版 (4GB+64GB)	phone
+BKK-AL10	荣耀畅玩 8C 全网通版	phone
+BKK-TL00	荣耀畅玩 8C 移动 4G+ 版	phone
+BKL-AL00	荣耀 V10 全网通标配版	phone
+BKL-AL10	荣耀 V10 全网通高配版	phone
+BKL-AL20	荣耀 V10 全网通尊享版	phone
+BKL-TL10	荣耀 V10 移动 4G+ 版	phone
+BKQ-AN00	荣耀 Magic8	phone
+BKQ-AN10	荣耀 Magic8 Pro	phone
+BKQ-AN20	荣耀 Magic8 RSR 保时捷设计	phone
+BKQ-AN80	荣耀 Magic8 (16GB+1TB)	phone
+BKQ-AN90	荣耀 Magic8 Pro (16GB+1TB)	phone
+BKY-W00	HUAWEI MatePad Air 12 英寸 Wi-Fi 版 (8GB+256GB)	tablet
+BKY-W10	HUAWEI MatePad Air 12 英寸 Wi-Fi 版 (12GB+256GB)	tablet
+BLA-AL00	HUAWEI Mate 10 Pro 全网通版	phone
+BLA-TL00	HUAWEI Mate 10 Pro 移动 4G+ 版	phone
+BLF5-W00	华为擎云 C5x 11 英寸 Wi-Fi 版	tablet
+BLK-AL00	HUAWEI nova 12	phone
+BLK-AL80	HUAWEI nova 13	phone
+BMH-WDQ9HN	荣耀 MagicBook 15 2021 R5 (8GB+256GB)	phone
+BMH-WFP9HN	荣耀 MagicBook 15 2021 R7	phone
+BMH-WFQ9HN	荣耀 MagicBook 15 2021 R5 (16GB+512GB)	phone
+BND-AL00	荣耀畅玩 7X 全网通版 (4GB+64GB)	phone
+BND-AL10	荣耀畅玩 7X 全网通版	phone
+BND-TL10	荣耀畅玩 7X 移动 4G+ 版	phone
+BNE-AL00	HUAWEI nova 10 SE	phone
+BOD-WFE9HN	荣耀 MagicBook 15 2021 i7 (华为终端)	phone
+BOD-WFH9HN	荣耀 MagicBook 15 2021 i5 (华为终端)	phone
+BOH-WAE9HN	荣耀 MagicBook 15 i7	phone
+BOH-WAH9HN	荣耀 MagicBook 15 i5	phone
+BOH-WAH9HNP	荣耀 MagicBook 15 i5 (16GB+512GB)	phone
+BOH-WAP9HNL	荣耀 MagicBook 15 科技尝鲜版 R7	phone
+BOH-WAP9HNR	荣耀 MagicBook 15 R7	phone
+BOH-WAQ9HNL	荣耀 MagicBook 15 科技尝鲜版 R5	phone
+BOH-WAQ9HNR	荣耀 MagicBook 15 R5	phone
+BOH-WAQ9HNRP	荣耀 MagicBook 15 R5 (16GB+512GB)	phone
+BOHL-WDQ9HN	荣耀 MagicBook 15 2020 R5 (8GB+256GB)	phone
+BOHL-WFP9HN	荣耀 MagicBook 15 2020 R7	phone
+BOHL-WFQ9HN	荣耀 MagicBook 15 2020 R5 (16GB+512GB)	phone
+BON-AL00	HUAWEI nova 11 SE	phone
+BRA-AL00	HUAWEI Mate 60	phone
+BRC-AN00	荣耀 X60	phone
+BRE-AL00A	华为畅享 70X 活力版 (128GB)	phone
+BRE-AL00B	华为畅享 70X 活力版 (256GB/512GB)	phone
+BRE-AL80	华为畅享 70X	phone
+BRE-AL80A	华为畅享 70X 尊享版	phone
+BRP-AN00	荣耀 X60 Pro	phone
+BRP-AN80	荣耀 X60 Pro 卫星版	phone
+BRQ-AL00	HUAWEI nova 8 Pro 4G	phone
+BRQ-AN00	HUAWEI nova 8 Pro 5G	phone
+BRT-AN09	荣耀平板 V7 Pro 11 英寸 5G 版	tablet
+BRT-W09	荣耀平板 V7 Pro 11 英寸 Wi-Fi 版	tablet
+BSN-AN00	荣耀 X80 Pro Max	phone
+BTK-AL00	HUAWEI MatePad 11.5 英寸 2023 LTE 版	tablet
+BTK-W00	HUAWEI MatePad 11.5 英寸 2023 Wi-Fi 版	tablet
+BTKR-W00	HUAWEI MatePad 11.5 英寸 2024 Wi-Fi 版	tablet
+BTKZ-AL00	华为擎云 C5 (第 2 代) 11.5 英寸 LTE 版	tablet
+BTKZ-W00	华为擎云 C5 (第 2 代) 11.5 英寸 Wi-Fi 版	tablet
+BTV-DL09	华为平板 M3 LTE 版	tablet
+BTV-W09	华为平板 M3 Wi-Fi 版	tablet
+BVE-W10	华为擎云 C5z 10.4 英寸 Wi-Fi 版	tablet
+BVL-AN00	荣耀 Magic6	phone
+BVL-AN16	荣耀 Magic6 Pro	phone
+BVL-AN20	荣耀 Magic6 至臻版	phone
+BZA-L00	华为平板 C3 (华为平板 T3 行业专享版) 9.6 英寸 LTE 版	tablet
+BZA-W00	华为平板 C3 (华为平板 T3 行业专享版) 9.6 英寸 Wi-Fi 版	tablet
+BZC-AL00	华为平板 C3 9.7 英寸 2020 LTE 版	tablet
+BZC-W00	华为平板 C3 9.7 英寸 2020 Wi-Fi 版	tablet
+BZD-W00	华为平板 C3 8 英寸 2020 Wi-Fi 版	tablet
+BZK-L00	华为平板 C3 (华为平板 T3 行业专享版) 8 英寸 LTE 版	tablet
+BZK-W00	华为平板 C3 (华为平板 T3 行业专享版) 8 英寸 Wi-Fi 版	tablet
+BZT-AL00	华为平板 C5 10.1 英寸 LTE 标配版	tablet
+BZT-AL10	华为平板 C5 10.1 英寸 LTE 高配版	tablet
+BZT-W09	华为平板 C5 10.1 英寸 Wi-Fi 版	tablet
+BZT3-AL00	华为平板 C5 10.4 英寸 2020 LTE 版	tablet
+BZT3-W09	华为平板 C5 10.4 英寸 2020 Wi-Fi 版	tablet
+BZT4-AL10	华为平板 C5 10.4 英寸 2022 LTE 版	tablet
+BZT4-W19	华为平板 C5 10.4 英寸 2022 Wi-Fi 版	tablet
+BZW-AL00	华为平板 C5 8 英寸 2020 LTE 版 (4GB+32GB)	tablet
+BZW-AL10	华为平板 C5 8 英寸 2020 LTE 版 (4GB+64GB)	tablet
+C8817D	荣耀畅玩 4 电信版	phone
+CAM-AL00	荣耀畅玩 5A 全网通版	phone
+CAM-CL00	荣耀畅玩 5A 电信版	phone
+CAM-TL00	荣耀畅玩 5A 移动增强版	phone
+CAM-TL00H	荣耀畅玩 5A 移动渠道版	phone
+CAM-UL00	荣耀畅玩 5A 双 4G 版	phone
+CAS-AL50	HUAWEI nova 16 SE	phone
+CDL-AN50	HUAWEI nova 7 SE 5G 乐活版	phone
+CET-AL00	HUAWEI Mate 50	phone
+CET-AL60	HUAWEI Mate 50E	phone
+CGA-W00	荣耀平板 MagicPad 3 13.3 英寸 Wi-Fi 版	tablet
+CGL-W00	荣耀 MagicPad 3 12.5 英寸 Wi-Fi 版	tablet
+CHA-AL80	HUAWEI nova 10z	phone
+CHE-TL00	荣耀畅玩 4X 移动定制版 (2015)	phone
+CHE-TL00H	荣耀畅玩 4X 移动渠道版 (2015)	phone
+CHE1-CL10	荣耀畅玩 4X 电信版	phone
+CHE1-CL20	荣耀畅玩 4X 全网通版	phone
+CHE2-TL00M	荣耀畅玩 4X 移动定制版 (2014)	phone
+CHE2-UL00	荣耀畅玩 4X 联通版	phone
+CHG-W60	荣耀平板 GT2 Pro 12.5 英寸 Wi-Fi 版	tablet
+CHL-AL00	荣耀 Play5T Pro	phone
+CHL-AL60	HUAWEI nova 8 SE 活力版	phone
+CHL-AN00	荣耀 X20 SE 5G	phone
+CHM-CL00	荣耀畅玩 4C 电信版	phone
+CHM-TL00	荣耀畅玩 4C 移动定制版	phone
+CHM-TL00H	荣耀畅玩 4C 移动渠道版	phone
+CHM-UL00	荣耀畅玩 4C 双 4G 版	phone
+CHZ-AL00	华为畅享 90 Pro Max	phone
+CLE-AN00	荣耀 Magic V Flip2	phone
+CLK-AN00	荣耀 Play8T 5G	phone
+CLT-AL00	HUAWEI P20 Pro 全网通版	phone
+CLT-AL00L	HUAWEI P20 Pro 真皮限量版 全网通版	phone
+CLT-AL01	HUAWEI P20 Pro 全网通版 (6GB+64GB)	phone
+CLT-TL00	HUAWEI P20 Pro 移动 4G+ 版	phone
+CLT-TL01	HUAWEI P20 Pro 移动 4G+ 版 (6GB+64GB)	phone
+CMA-AN00	荣耀畅玩 30 Plus 5G	phone
+CMA-AN40	荣耀 Play6T 5G	phone
+CMR-AL09	华为平板 M5 10.8 英寸 LTE 版	tablet
+CMR-AL19	华为平板 M5 Pro LTE 版	tablet
+CMR-W09	华为平板 M5 10.8 英寸 Wi-Fi 版	tablet
+CMR-W19	华为平板 M5 Pro Wi-Fi 版	tablet
+CND-AN00	HUAWEI nova 7 SE 5G 活力版	phone
+COL-AL00	荣耀 10 全网通标配版	phone
+COL-AL10	荣耀 10 全网通高配版	phone
+COL-TL00	荣耀 10 移动 4G+ 标配版	phone
+COL-TL10	荣耀 10 移动 4G+ 高配版	phone
+COR-AL00	荣耀 Play 全网通标配版	phone
+COR-AL10	荣耀 Play 全网通高配版	phone
+COR-TL10	荣耀 Play 移动 4G+ 高配版	phone
+CPH2381	一加 Nord CE 2 Lite 印度版	phone
+CPH2389	一加 Nord N300	phone
+CPH2399	一加 Nord 2T 国际版	phone
+CPH2401	一加 Nord 2T 印度版	phone
+CPH2409	一加 Nord CE 2 Lite 欧洲版 / 国际版	phone
+CPH2411	一加 10R 长寿版 印度版	phone
+CPH2413	一加 10T 印度版	phone
+CPH2415	一加 10T 欧洲版 / 国际版	phone
+CPH2417	一加 10T 北美版	phone
+CPH2419	一加 10T T-Mobile 版	phone
+CPH2423	一加 10R 印度版	phone
+CPH2447	一加 11 印度版	phone
+CPH2449	一加 11 欧洲版 / 国际版 / 一加 11 Concept	phone
+CPH2451	一加 11 北美版	phone
+CPH2459	一加 Nord N20	phone
+CPH2465	一加 Nord CE 3 Lite 国际版	phone
+CPH2467	一加 Nord CE 3 Lite 印度版	phone
+CPH2469	一加 Nord N20 SE	phone
+CPH2487	一加 11R 印度版	phone
+CPH2491	一加 Nord 3 印度版	phone
+CPH2493	一加 Nord 3 欧洲版	phone
+CPH2513	一加 Nord N30 北美版	phone
+CPH2515	一加 Nord N30 T-Mobile 版	phone
+CPH2551	一加 Open	phone
+CPH2569	一加 Nord CE 3 印度版	phone
+CPH2573	一加 12 印度版	phone
+CPH2581	一加 12 欧洲版 / 国际版	phone
+CPH2583	一加 12 北美版	phone
+CPH2585	一加 12R 印度版 / 原神刻晴定制机	phone
+CPH2605	一加 Nord N30 SE 欧洲版	phone
+CPH2609	一加 12R 欧洲版 / 国际版 / 原神刻晴定制机	phone
+CPH2611	一加 12R 北美版 / 原神刻晴定制机	phone
+CPH2613	一加 Nord CE 4 印度版	phone
+CPH2619	一加 Nord CE 4 Lite 印度版	phone
+CPH2621	一加 Nord CE 4 Lite 欧洲版 / 国际版	phone
+CPH2645	一加 13R 欧洲版 / 国际版	phone
+CPH2647	一加 13R 北美版	phone
+CPH2649	一加 13 印度版	phone
+CPH2653	一加 13 欧洲版 / 国际版	phone
+CPH2655	一加 13 北美版	phone
+CPH2661	一加 Nord 4 印度版	phone
+CPH2663	一加 Nord 4 欧洲版 / 国际版	phone
+CPH2691	一加 13R 印度版	phone
+CPH2707	一加 Nord 5 印度版	phone
+CPH2709	一加 Nord 5 国际版	phone
+CPH2717	一加 Nord CE 5 印度版	phone
+CPH2719	一加 Nord CE 5 国际版	phone
+CPH2723	一加 13s 印度版	phone
+CPH2745	一加 15 印度版	phone
+CPH2747	一加 15 欧洲版 / 国际版	phone
+CPH2749	一加 15 北美版	phone
+CPH2767	一加 15R 印度版	phone
+CPH2769	一加 15R 欧洲版 / 国际版	phone
+CPH2771	一加 15R 北美版	phone
+CPH2793	一加 Nord 6 印度版	phone
+CPH2795	一加 Nord 6 国际版	phone
+CPH2805	一加 Nord CE 6 印度版	phone
+CPH2807	一加 Nord CE 6 国际版	phone
+CPH2943	一加 Nord CE 6 Lite 印度版	phone
+CPH2955	一加 N6 印度版	phone
+CPN-AL00	华为平板 M3 青春版 8.0 英寸 LTE 版	tablet
+CPN-W09	华为平板 M3 青春版 8.0 英寸 Wi-Fi 版	tablet
+CRS-AL00	HUAWEI nova 16 Pro	phone
+CRT-AN00	荣耀 X50i	phone
+CTR-AL00	华为畅享 50 Pro	phone
+CTR-AL20	华为畅享 70 Pro	phone
+CUN-AL00	荣耀畅玩 5 全网通版	phone
+CUN-TL00	荣耀畅玩 5 移动定制版	phone
+DAL-W00	HUAWEI MatePad Pro 12 英寸 Wi-Fi 版	tablet
+DAL-W20	HUAWEI MatePad Pro 12 英寸 悦享款 Wi-Fi 版	tablet
+DBR-W00	HUAWEI MatePad 11 英寸 2023 Wi-Fi 版	tablet
+DBR-W10	HUAWEI MatePad 11 英寸 2023 Wi-Fi 柔光版	tablet
+DBY-W09	HUAWEI MatePad 11 英寸 Wi-Fi 版	tablet
+DBY2-AL00	HUAWEI MatePad Air 11.5 英寸 LTE 版	tablet
+DBY2-W00	HUAWEI MatePad Air 11.5 英寸 Wi-Fi 版	tablet
+DBY2Z-AL00	华为擎云 C7 11.5 英寸 Wi-Fi 版	tablet
+DCO-AL00	HUAWEI Mate 50 Pro	phone
+DE2117	一加 Nord N200 北美版	phone
+DE2118	一加 Nord N200 T-Mobile 版	phone
+DEL-AL10	HUAWEI Mate X7	phone
+DEL-AL20	HUAWEI Mate X7 典藏版	phone
+DIG-AL00	华为畅享 6S 全网通版	phone
+DIG-TL10	华为畅享 6S 移动 4G+ 版	phone
+DIO-AN00	荣耀 X40i	phone
+DLI-AL10	荣耀畅玩 6A 全网通版	phone
+DLI-TL20	荣耀畅玩 6A 移动定制版	phone
+DMG-W00	HUAWEI MatePad 11.5 S 灵动款 Wi-Fi 版	tablet
+DN2101	一加 Nord 2 印度版	phone
+DN2103	一加 Nord 2 欧洲版	phone
+DNN-AN00	荣耀 400	phone
+DNP-AN00	荣耀 400 Pro	phone
+DRA-54	荣耀 MagicBook Pro 16 Ultra 5 (24GB 内存)	phone
+DRA-56	荣耀 MagicBook Pro 16 Ultra 5 (16GB 内存)	phone
+DRA-72	荣耀 MagicBook Pro 16 Ultra 7 (32GB 内存)	phone
+DRA-AL00	华为畅享 8e 青春 全网通版	phone
+DRA-TL00	华为畅享 8e 青春 移动 4G+ 版	phone
+DRB-P	荣耀 MagicBook Pro 16 2025	phone
+DUA-AL00	荣耀畅玩 7 全网通版	phone
+DUA-TL00	荣耀畅玩 7 移动 4G+ 版	phone
+DUB-AL00A	华为畅享 9 全网通顶配版	phone
+DUB-TL00	华为畅享 9 移动 4G+ 标配/高配版	phone
+DUB-TL00A	华为畅享 9 移动 4G+ 顶配版	phone
+DUK-AL20	荣耀 V9 全网通版	phone
+DUK-TL30	荣耀 V9 移动定制版	phone
+DVC-AN00	华为畅享 Z 5G	phone
+DVC-AN20	华为畅享 20 Pro 5G 全网通版	phone
+DVC-TN20	华为畅享 20 Pro 5G 移动版	phone
+DVD-AN00	荣耀 Power	phone
+DVD-AN80	荣耀 Power 卫星版	phone
+EB2101	一加 Nord CE 印度版	phone
+EB2103	一加 Nord CE 欧洲版 / 国际版	phone
+EBG-AN00	荣耀 30 Pro 5G 全网通版	phone
+EBG-AN10	荣耀 30 Pro+ 5G	phone
+EBG-TN00	荣耀 30 Pro 5G 移动定制版	phone
+EDI-AL10	荣耀 Note8 全网通版	phone
+EDI-DL00	荣耀 Note8 移动/联通版	phone
+ELE-AL00	HUAWEI P30 全网通版	phone
+ELE-TL00	HUAWEI P30 移动 4G+ 版	phone
+ELE2-W00	荣耀平板 X10 Pro 11.5 英寸 Wi-Fi 版	tablet
+ELE2-W19	荣耀平板 X10 Pro 柔光版 11.5 英寸 Wi-Fi 版	tablet
+ELI-AN00	荣耀 200	phone
+ELN-W09	荣耀平板 X8 Pro 11.5 英寸 Wi-Fi 版	tablet
+ELN2-W09	荣耀平板 X9 Pro 11.5 英寸 Wi-Fi 版	tablet
+ELP-AN00	荣耀 200 Pro	phone
+ELS-AN00	HUAWEI P40 Pro 5G 全网通版	phone
+ELS-AN10	HUAWEI P40 Pro+ 5G 全网通版	phone
+ELS-TN00	HUAWEI P40 Pro 5G 移动版	phone
+ELS-TN10	HUAWEI P40 Pro+ 5G 移动版	phone
+ELZ-AN00	荣耀 Magic3	phone
+ELZ-AN10	荣耀 Magic3 Pro	phone
+ELZ-AN20	荣耀 Magic3 至臻版	phone
+EMA-AL00U	HUAWEI nova 16	phone
+EML-AL00	HUAWEI P20 全网通版	phone
+EML-TL00	HUAWEI P20 移动 4G+ 版	phone
+EVA-AL00	HUAWEI P9 全网通版 (32GB)	phone
+EVA-AL10	HUAWEI P9 全网通版 (64GB)	phone
+EVA-CL00	HUAWEI P9 电信版	phone
+EVA-DL00	HUAWEI P9 双 4G 版	phone
+EVA-TL00	HUAWEI P9 移动版	phone
+EVE-AL00	华为畅享 50z	phone
+EVR-AL00	HUAWEI Mate 20 X 全网通版	phone
+EVR-AN00	HUAWEI Mate 20 X 5G	phone
+EVR-TL00	HUAWEI Mate 20 X 移动 4G+ 版	phone
+FCP-AN10	荣耀 Magic V3	phone
+FCP-AN20	荣耀 Magic V3 双卫星版	phone
+FDR-A01W	华为揽阅 M2 青春版 10.1 英寸 Wi-Fi 版	tablet
+FDR-A03L	华为揽阅 M2 青春版 10.1 英寸 LTE 版	tablet
+FGD-AL00	华为畅享 70	phone
+FIG-AL00	华为畅享 7S 全网通标配版	phone
+FIG-AL10	华为畅享 7S 全网通高配版	phone
+FIG-TL00	华为畅享 7S 移动 4G+ 标配版	phone
+FIG-TL10	华为畅享 7S 移动 4G+ 高配版	phone
+FLC-AN00	荣耀 Magic Vs3	phone
+FMB-P	荣耀 MagicBook Pro 14 2025	phone
+FMB-PM	荣耀 MagicBook Pro 14 2025 极客版	phone
+FNE-AN00	荣耀 70	phone
+FOA-AL00	HUAWEI nova 11	phone
+FRD-AL00	荣耀 8 全网通版 (3/4GB+32GB)	phone
+FRD-AL10	荣耀 8 全网通版 (4GB+64GB)	phone
+FRD-DL00	荣耀 8 移动/联通版	phone
+FRD-TL00	荣耀 8 移动版	phone
+FRD-WDG9	荣耀猎人游戏本 V700 i5 (8GB+512GB) (华为终端)	phone
+FRD-WFD9	荣耀猎人游戏本 V700 i7 (16GB+512GB) (华为终端)	phone
+FRD-WFG9	荣耀猎人游戏本 V700 i5 (16GB+512GB) (华为终端)	phone
+FRI-AN00	荣耀 Magic Vs	phone
+FRI-AN10	荣耀 Magic Vs 至臻版	phone
+FRL-AN00A	华为畅享 20 Plus 5G 全网通版	phone
+FRL-TN00	华为畅享 20 Plus 5G 移动版	phone
+FRR-WFD9	荣耀猎人游戏本 V700 i7 (16GB+512GB) (荣耀终端)	phone
+FRR-WFG9	荣耀猎人游戏本 V700 i5 (16GB+512GB) (荣耀终端)	phone
+FYJ01QP	小米米家翻译机	phone
+G620S-UL00	荣耀畅玩 4 联通版	phone
+G621-TL00	荣耀畅玩 4 移动定制版	phone
+G621-TL00M	荣耀畅玩 4 移动渠道版	phone
+G750-T00	荣耀 3X 双 3G 版	phone
+G750-T01	荣耀真八核畅玩版	phone
+G750-T20	荣耀 3X Pro	phone
+G750-U00	荣耀 3X 联通版	phone
+GDI-W09	荣耀平板 MagicPad 13 英寸 Wi-Fi 版	tablet
+GEM-703L	荣耀 X2	tablet
+GEM-703LT	荣耀 X2 移动版	tablet
+GEM-W00	HUAWEI MatePad Pro Max 13.2 英寸 Wi-Fi 版	tablet
+GEM-W10	HUAWEI MatePad Pro Max 13.2 英寸 Wi-Fi 版 (20GB+1TB)	tablet
+GEM-W40	HUAWEI MatePad Pro Max 13.2 英寸 悦享款 Wi-Fi 版	tablet
+GFY-AL00	华为畅享 70S	phone
+GIA-AN00	荣耀 60 SE 5G	phone
+GIA-AN80	荣耀 80 SE	phone
+GLA-AL00	HUAWEI nova 10 Pro	phone
+GLK-AL00	HUAWEI nova 5i 全网通版	phone
+GLK-LX1U	HUAWEI nova 5i 联通定制版	phone
+GLK-TL00	HUAWEI nova 5i 移动 4G+ 版	phone
+GLO-F56	荣耀 MagicBook 14 2022 i5	phone
+GLO-F76	荣耀 MagicBook 14 2022 i7	phone
+GLO-G52	荣耀 MagicBook 14 2023 i5 (32GB+1TB)	phone
+GLO-G56	荣耀 MagicBook 14 2023 i5 (16GB+512GB)	phone
+GLO-G561	荣耀 MagicBook 14 2023 i5 (16GB+1TB)	phone
+GLO-N56	荣耀 MagicBook 14 2022 R5	phone
+GLO-N76	荣耀 MagicBook 14 2022 R7	phone
+GM1900	一加 7 国行版	phone
+GM1901	一加 7 印度版	phone
+GM1903	一加 7 欧洲版	phone
+GM1905	一加 7 北美版 / 国际版	phone
+GM1910	一加 7 Pro 国行版	phone
+GM1911	一加 7 Pro 印度版	phone
+GM1913	一加 7 Pro 欧洲版	phone
+GM1915	一加 7 Pro 北美版 / 国际版	phone
+GM1917	一加 7 Pro T-Mobile 版	phone
+GM1920	一加 7 Pro 5G 欧洲版	phone
+GM1925	一加 7 Pro 5G Sprint 版	phone
+GN2200	一加 Nord N20	phone
+GOA-AL80	HUAWEI nova 11 Pro	phone
+GOA-AL80U	HUAWEI nova 11 Ultra	phone
+GOT-AL09	HUAWEI MatePad Pro 11 英寸 性能版 LTE 版	tablet
+GOT-AL19	HUAWEI MatePad Pro 11 英寸 性能版 LTE 版 (12GB+512GB)	tablet
+GOT-W09	HUAWEI MatePad Pro 11 英寸 性能版 Wi-Fi 版	tablet
+GOT-W29	HUAWEI MatePad Pro 11 英寸 Wi-Fi 版	tablet
+GRL-AL10	HUAWEI Mate XT 非凡大师	phone
+GRL-AL20	HUAWEI Mate XTs 非凡大师	phone
+GT-I8190N	Galaxy S3 Mini	phone
+GT-I9000	Galaxy S 公开版	phone
+GT-I9100	Galaxy S2 (Exynos)	phone
+GT-I9100G	Galaxy S2 (德州仪器)	phone
+GT-I9108	Galaxy S2 移动定制版	phone
+GT-I9220	Galaxy Note 公开版	phone
+GT-I9228	Galaxy Note 移动定制版	phone
+GT-I9300	Galaxy S3 公开版	phone
+GT-I9300I	Galaxy S3 Neo+ 公开版	phone
+GT-I9308	Galaxy S3 移动定制版	phone
+GT-I9308I	Galaxy S3 Neo+ 移动定制版	phone
+GT-I9500	Galaxy S4 公开版	phone
+GT-I9502	Galaxy S4 联通定制版	phone
+GT-I9507V	Galaxy S4 联通 4G 定制版	phone
+GT-I9508	Galaxy S4 移动定制版	phone
+GT-I9508V	Galaxy S4 移动 4G 定制版	phone
+GT-N7100	Galaxy Note2 公开版	phone
+GT-N7108	Galaxy Note2 移动定制版	phone
+GT-N7108D	Galaxy Note2 移动 4G 定制版	phone
+H30-C00	荣耀 3C 电信版	phone
+H30-L01	荣耀 3C 移动 4G 版	phone
+H30-L01M	荣耀 3C 移动 4G 定制版	phone
+H30-L02	荣耀 3C 联通 4G 版	phone
+H30-T00	荣耀 3C 移动 3G 版 (4GB)	phone
+H30-T10	荣耀 3C 移动 3G 版 (8GB)	phone
+H30-U10	荣耀 3C 联通 3G 版	phone
+H60-L01	荣耀 6 移动版	phone
+H60-L02	荣耀 6 联通版	phone
+H60-L03	荣耀 6 移动定制版	phone
+H60-L11	荣耀 6 移动高配版	phone
+H60-L12	荣耀 6 联通高配版	phone
+H60-L21	荣耀 6 至尊版	phone
+HBB-WAE9PHNL	荣耀 MagicBook Pro 2020 i7	phone
+HBB-WAH9PHNL	荣耀 MagicBook Pro 2020 i5	phone
+HBL-W19	荣耀 MagicBook Pro i5	phone
+HBL-W19L	荣耀 MagicBook Pro 科技尝鲜版 i5	phone
+HBL-W29	荣耀 MagicBook Pro i7	phone
+HBL-W29L	荣耀 MagicBook Pro 科技尝鲜版 i7	phone
+HBN-AL00	HUAWEI Pura 70 Pro	phone
+HBP-AL00	HUAWEI Pura 70 Ultra	phone
+HD1900	一加 7T 国行版	phone
+HD1901	一加 7T 印度版	phone
+HD1903	一加 7T 欧洲版	phone
+HD1905	一加 7T 北美版 / 国际版	phone
+HD1907	一加 7T T-Mobile 版	phone
+HD1910	一加 7T Pro 国行版	phone
+HD1911	一加 7T Pro 印度版	phone
+HD1913	一加 7T Pro 欧洲版 / 国际版	phone
+HD1925	一加 7T Pro 5G T-Mobile 版 / 一加 Concept One	phone
+HDL-AL09	荣耀 Waterplay 8 英寸 LTE 版	tablet
+HDL-W09	荣耀 Waterplay 8 英寸 Wi-Fi 版	tablet
+HDN-L09	荣耀 Waterplay 10.1 英寸 LTE 版	tablet
+HDN-W09	荣耀 Waterplay 10.1 英寸 Wi-Fi 版	tablet
+HED-AL00	HUAWEI Pura 80	phone
+HEY-W09	荣耀平板 8 12 英寸 Wi-Fi 版	tablet
+HEY2-AN00	荣耀平板 Z7 12.1 英寸 5G 版	tablet
+HEY2-W09	荣耀平板 9 12.1 英寸 Wi-Fi 版	tablet
+HEY2-W19	荣耀平板 9 柔光版 12.1 英寸 Wi-Fi 版	tablet
+HEY3-W00	荣耀平板 10 12.1 英寸 Wi-Fi 版	tablet
+HEY3-W10	荣耀平板 10 柔光版 12.1 英寸 Wi-Fi 版	tablet
+HEY4-AN00	荣耀平板 20 12.1 英寸 5G 版	tablet
+HEY4-W09	荣耀平板 20 12.1 英寸 Wi-Fi 版	tablet
+HEY4-W19	荣耀平板 20 柔光版 12.1 英寸 Wi-Fi 版	tablet
+HGE-W56	荣耀 MagicBook V 14 i5	phone
+HGE-W76	荣耀 MagicBook V 14 i7	phone
+HGF-W56	荣耀 MagicBook V 14 2022 i5	phone
+HGF-W76	荣耀 MagicBook V 14 2022 i7	phone
+HIP-AL00	HUAWEI nova 16 Ultra	phone
+HJC-AN90	荣耀 Play5 5G	phone
+HJC-LX9	荣耀畅玩 20 Pro	phone
+HLK-AL10	荣耀 9X PRO	phone
+HLK-TL00	荣耀 9X 移动 4G+ 版	phone
+HLY-W19R	荣耀 MagicBook Pro R5	phone
+HLY-W19RL	荣耀 MagicBook Pro 科技尝鲜版 R5	phone
+HLY-W19RLP	荣耀 MagicBook Pro 科技尝鲜版 R5 (16GB+512GB)	phone
+HLY-W19RP	荣耀 MagicBook Pro R5 (16GB+512GB)	phone
+HLY-W29R	荣耀 MagicBook Pro R7	phone
+HLY-W29RL	荣耀 MagicBook Pro 科技尝鲜版 R7	phone
+HLYL-WFP9	荣耀 MagicBook Pro 2020 R7 (华为终端)	phone
+HLYL-WFQ9	荣耀 MagicBook Pro 2020 R5 (华为终端)	phone
+HMA-AL00	HUAWEI Mate 20 全网通版	phone
+HMA-TL00	HUAWEI Mate 20 移动 4G+ 版	phone
+HMW-AL10	HUAWEI MatePad Paper 典藏版 10.3 英寸 LTE 版	tablet
+HMW-W09	HUAWEI MatePad Paper 10.3 英寸 Wi-Fi 版	tablet
+HOL-T00	荣耀 3C 畅玩版 移动版	phone
+HOL-U10	荣耀 3C 畅玩版 联通版	phone
+HOP-AL00	HUAWEI Pura X Max	phone
+HOP-AL10	HUAWEI Pura X Max 典藏版	phone
+HPB-TN00	荣耀 70 Pro+	phone
+HRY-AL00	荣耀 10 青春版 全网通版	phone
+HRY-AL00A	荣耀 10 青春版 全网通版 (麒麟 710F)	phone
+HRY-AL00T	荣耀 20i 全网通版	phone
+HRY-AL00TA	荣耀 20i 全网通版 (麒麟 710F)	phone
+HRY-TL00	荣耀 10 青春版 移动 4G+ 版	phone
+HRY-TL00T	荣耀 20i 移动 4G+ 版	phone
+HUAWEI A199	华为麦芒 A199	phone
+HUAWEI ALE-CL00	华为 P8 青春版 电信版	phone
+HUAWEI ALE-TL00	华为 P8 青春版 移动版	phone
+HUAWEI ALE-UL00	华为 P8 青春版 双 4G 版	phone
+HUAWEI B199	华为麦芒 B199	phone
+HUAWEI C199	华为麦芒 C199	phone
+HUAWEI C199S	华为麦芒 3S	phone
+HUAWEI C8860E	荣耀 Honor 电信版	phone
+HUAWEI C8950D	荣耀 Honor+ 电信版	phone
+HUAWEI CAZ-AL00	HUAWEI nova 全网通标配版	phone
+HUAWEI CAZ-AL10	HUAWEI nova 全网通高配版	phone
+HUAWEI CAZ-TL10	HUAWEI nova 移动定制标配版	phone
+HUAWEI CAZ-TL20	HUAWEI nova 移动定制高配版	phone
+HUAWEI CRR-CL00	HUAWEI Mate S 电信臻享版	phone
+HUAWEI CRR-CL20	HUAWEI Mate S 电信臻逸版	phone
+HUAWEI CRR-TL00	HUAWEI Mate S 移动臻享版	phone
+HUAWEI CRR-UL00	HUAWEI Mate S 双 4G 臻享版	phone
+HUAWEI CRR-UL20	HUAWEI Mate S 双 4G 臻逸版	phone
+HUAWEI D2-0082	华为 Ascend D2 联通版	phone
+HUAWEI D2-2010	华为 Ascend D2 电信版	phone
+HUAWEI D2-5000	华为 Ascend D2 移动 3G 版	phone
+HUAWEI D2-6070	华为 Ascend D2 移动 4G 版	phone
+HUAWEI G6-C00	华为 Ascend G6 电信版	phone
+HUAWEI G6-T00	华为 Ascend G6 移动版	phone
+HUAWEI G6-U00	华为 Ascend G6 联通版	phone
+HUAWEI G7-TL00	华为 Ascend G7 移动版	phone
+HUAWEI G7-UL20	华为 Ascend G7 联通版	phone
+HUAWEI GRA-CL00	华为 P8 电信标配版	phone
+HUAWEI GRA-CL10	华为 P8 电信高配版	phone
+HUAWEI GRA-TL00	华为 P8 移动标配版	phone
+HUAWEI GRA-UL00	华为 P8 双 4G 标配版	phone
+HUAWEI GRA-UL10	华为 P8 双 4G 高配版	phone
+HUAWEI HN3-U01	荣耀 3 outdoor	phone
+HUAWEI M2-801W	华为揽阅 M2 8.0 Wi-Fi 版	tablet
+HUAWEI M2-803L	华为揽阅 M2 8.0 LTE 版	tablet
+HUAWEI M2-A01L	华为揽阅 M2 10.0 LTE 版	tablet
+HUAWEI M2-A01W	华为揽阅 M2 10.0 Wi-Fi 版	tablet
+HUAWEI MLA-AL00	HUAWEI 麦芒 5 全网通标配版	phone
+HUAWEI MLA-AL10	HUAWEI 麦芒 5 全网通高配版	phone
+HUAWEI MLA-TL00	HUAWEI G9 Plus 移动 4G 版	phone
+HUAWEI MLA-TL10	HUAWEI G9 Plus 移动版	phone
+HUAWEI MLA-UL00	HUAWEI G9 Plus 双 4G 版	phone
+HUAWEI MT1-T00	华为 Ascend Mate 移动版	phone
+HUAWEI MT1-U06	华为 Ascend Mate 联通版	phone
+HUAWEI MT2-C00	华为 Ascend Mate 2 电信 3G 版	phone
+HUAWEI MT2-L02	华为 Ascend Mate 2 移动 4G 版	phone
+HUAWEI MT2-L05	华为 Ascend Mate 2 联通 4G 版	phone
+HUAWEI MT2-U071	华为 Ascend Mate 2 联通 3G 版	phone
+HUAWEI MT7-CL00	华为 Ascend Mate 7 电信版	phone
+HUAWEI MT7-TL00	华为 Ascend Mate 7 移动版	phone
+HUAWEI MT7-TL10	华为 Ascend Mate 7 双 4G 版	phone
+HUAWEI MT7-UL00	华为 Ascend Mate 7 联通版	phone
+HUAWEI NXT-AL10	HUAWEI Mate 8 全网通版	phone
+HUAWEI NXT-CL00	HUAWEI Mate 8 电信版	phone
+HUAWEI NXT-DL00	HUAWEI Mate 8 双 4G 版	phone
+HUAWEI NXT-TL00	HUAWEI Mate 8 移动版	phone
+HUAWEI P2-0000	华为 Ascend P2	phone
+HUAWEI P6 S-U06	华为 Ascend P6S 联通版	phone
+HUAWEI P6-C00	华为 Ascend P6 电信版	phone
+HUAWEI P6-T00	华为 Ascend P6 移动渠道版	phone
+HUAWEI P6-T00V	华为 Ascend P6 移动定制版	phone
+HUAWEI P6-U06	华为 Ascend P6 联通版	phone
+HUAWEI P7-L00	华为 Ascend P7 联通版	phone
+HUAWEI P7-L05	华为 Ascend P7 移动渠道版	phone
+HUAWEI P7-L07	华为 Ascend P7 移动定制版	phone
+HUAWEI P7-L09	华为 Ascend P7 电信版	phone
+HUAWEI RIO-AL00	华为麦芒 4 全网通版	phone
+HUAWEI RIO-CL00	华为麦芒 4 电信 4G 版	phone
+HUAWEI RIO-TL00	华为 G7 Plus 移动版	phone
+HUAWEI RIO-UL00	华为 G7 Plus 联通版	phone
+HUAWEI T8950	荣耀 Honor+ 移动版	phone
+HUAWEI T9510E	华为 Ascend D1 四核 XL 移动版	phone
+HUAWEI TAG-AL00	华为畅享 5S 全网通版	phone
+HUAWEI TAG-CL00	华为畅享 5S 电信 4G 版	phone
+HUAWEI TAG-TL00	华为畅享 5S 移动 4G 版	phone
+HUAWEI TIT-AL00	华为畅享 5 全网通版	phone
+HUAWEI TIT-TL00	华为畅享 5 移动 4G 版	phone
+HUAWEI U8860	荣耀 Honor 联通版	phone
+HUAWEI U8950D	荣耀 Honor+ 联通版	phone
+HUAWEI U9200	华为 Ascend P1	phone
+HUAWEI U9200E	华为 Ascend P1 XL	phone
+HUAWEI U9200S	华为 Ascend P1 S	phone
+HUAWEI U9500	华为 Ascend D1	phone
+HUAWEI U9500E	华为 Ascend D1 XL	phone
+HUAWEI U9508	荣耀四核爱享版	phone
+HUAWEI U9510	华为 Ascend D1 四核	phone
+HUAWEI U9510E	华为 Ascend D1 四核 XL	phone
+HUAWEI VNS-AL00	HUAWEI G9 青春版 全网通版	phone
+HUAWEI VNS-CL00	HUAWEI G9 青春版 电信版	phone
+HUAWEI VNS-DL00	HUAWEI G9 青春版 双 4G 版	phone
+HUAWEI VNS-TL00	HUAWEI G9 青春版 移动版	phone
+HWI-AL00	HUAWEI nova 2s 全网通版	phone
+HWI-TL00	HUAWEI nova 2s 移动 4G+ 版	phone
+HYLR-WDQ9	荣耀 MagicBook Pro 2020 R5 (荣耀终端)	phone
+HYLR-WFP9	荣耀 MagicBook Pro 2020 R7 (荣耀终端)	phone
+HYM-W56	荣耀 MagicBook 16 2021 R5	phone
+HYM-W76	荣耀 MagicBook 16 2021 R7	phone
+ICL-AL10	HUAWEI Mate X6	phone
+ICL-AL20	HUAWEI Mate X6 典藏版	phone
+IN2010	一加 8 国行版	phone
+IN2011	一加 8 印度版	phone
+IN2013	一加 8 欧洲版	phone
+IN2015	一加 8 北美版 / 国际版	phone
+IN2017	一加 8 T-Mobile 版	phone
+IN2019	一加 8 Visible 版 / Verizon 版	phone
+IN2020	一加 8 Pro 国行版	phone
+IN2021	一加 8 Pro 印度版	phone
+IN2023	一加 8 Pro 欧洲版	phone
+IN2025	一加 8 Pro 北美版 / 国际版	phone
+INE-AL00	HUAWEI nova 3i 全网通版	phone
+INE-TL00	HUAWEI nova 3i 移动 4G+ 版	phone
+IV2201	一加 Nord CE 2 印度版	phone
+JAT-AL00	荣耀畅玩 8A 全网通版	phone
+JAT-TL00	荣耀畅玩 8A 移动 4G+ 版	phone
+JDN-AL00	荣耀平板 2 LTE 版	tablet
+JDN-W09	荣耀平板 2 Wi-Fi 版	tablet
+JDN2-W09	华为平板 M5 青春版 8 英寸 Wi-Fi 版	tablet
+JDN2-W09HN	荣耀平板 5 8 英寸 Wi-Fi 版	tablet
+JDY-AN00	荣耀 Play9C 5G	phone
+JGC-N	荣耀 MagicBook 16 2026	phone
+JKM-AL00	华为畅享 9 Plus 全网通版	phone
+JKM-AL00A	华为畅享 9 Plus 全网通版 (4GB+64GB)	phone
+JKM-AL00B	华为畅享 9 Plus 全网通版 (麒麟 710F)	phone
+JKM-TL00	华为畅享 9 Plus 移动 4G+ 版	phone
+JLH-AN00	荣耀 50 SE 5G	phone
+JLN-AL00	HUAWEI nova 9 SE	phone
+JMM-AL00	荣耀 V9 Play 全网通标配版	phone
+JMM-AL10	荣耀 V9 Play 全网通高配版	phone
+JMM-TL00	荣耀 V9 Play 移动定制标配版	phone
+JMM-TL10	荣耀 V9 Play 移动定制高配版	phone
+JNY-AL10	HUAWEI nova 6 SE 全网通版	phone
+JNY-TL10	HUAWEI nova 6 SE 移动版	phone
+JSC-AL50	HUAWEI nova 8 SE 4G 全网通版	phone
+JSC-AN00	HUAWEI nova 8 SE 5G 全网通版	phone
+JSC-TN00	HUAWEI nova 8 SE 5G 移动版	phone
+JSM-TL00	荣耀 8X 移动 4G+ 版	phone
+JSN-AL00	荣耀 8X 全网通版	phone
+JSN-AL00A	荣耀 8X 全网通版 (麒麟 710F)	phone
+JUY-AL00	华为畅享 80	phone
+JUY-AL50	华为畅享 90 Plus / 华为畅享 90m Plus	phone
+JUY-AL80	华为畅享 90	phone
+K99J	nubia Pad SE	tablet
+KB2000	一加 8T 国行版	phone
+KB2001	一加 8T 印度版	phone
+KB2003	一加 8T 欧洲版	phone
+KB2005	一加 8T 北美版 / 国际版 / 一加 8T Concept	phone
+KB2007	一加 8T+ T-Mobile 版	phone
+KEE-AL00	HUAWEI Pura 90	phone
+KIW-AL10	荣耀畅玩 5X 全网通版	phone
+KIW-CL00	荣耀畅玩 5X 电信版	phone
+KIW-TL00	荣耀畅玩 5X 移动定制版	phone
+KIW-TL00H	荣耀畅玩 5X 移动公开版	phone
+KIW-UL00	荣耀畅玩 5X 双 4G 版	phone
+KJR-W09	荣耀平板 V6 10.4 英寸 Wi-Fi 版 (荣耀终端)	tablet
+KKG-AN00	荣耀 X10 Max 5G	phone
+KKG-AN70	荣耀 X30 Max 5G	phone
+KLE-AL00U	HUAWEI nova 15 Pro	phone
+KNT-AL10	荣耀 V8 全网通版	phone
+KNT-AL20	荣耀 V8 全网通版 (麒麟 955, 2K 显示屏)	phone
+KNT-TL10	荣耀 V8 移动版	phone
+KNT-UL10	荣耀 V8 移动/联通版	phone
+KOB-L09	荣耀畅玩平板 2 8 英寸 LTE 版	tablet
+KOB-W09	荣耀畅玩平板 2 8 英寸 Wi-Fi 版	tablet
+KOB2-AL00HN	荣耀平板 X7 8 英寸 LTE 版	tablet
+KOB2-W09HN	荣耀平板 X7 8 英寸 Wi-Fi 版	tablet
+KOB2KZ-AL00	华为擎云 C5 8 英寸 LTE 版	tablet
+KOB2KZ-W09	华为擎云 C5 8 英寸 Wi-Fi 版	tablet
+KOZ-AL00	荣耀畅玩 20	phone
+KOZ-AL00CM	荣耀畅玩 20a	phone
+KOZ-AL40	荣耀 Play5T	phone
+KPL-W00	荣耀 MagicBook 锐龙版	phone
+KPR-W19	荣耀 MagicBook 2019 锐龙版 R5	phone
+KPR-W29	荣耀 MagicBook 2019 锐龙版 R7	phone
+KPRC-W10L	荣耀 MagicBook 2019 科技尝鲜版 R5	phone
+KPRC-W20L	荣耀 MagicBook 2019 科技尝鲜版 R7	phone
+KRJ-AN00	荣耀平板 V6 10.4 英寸 5G 版 (华为终端)	tablet
+KRJ-W09	荣耀平板 V6 10.4 英寸 Wi-Fi 版 (华为终端)	tablet
+KRJ2-AN00	荣耀平板 V7 10.4 英寸 5G 版	tablet
+KRJ2-W09	荣耀平板 V7 10.4 英寸 Wi-Fi 版	tablet
+KSA-AL00	荣耀畅玩 8 全网通版	phone
+KSA-AL10	荣耀 Play3e	phone
+KSA-TL00	荣耀畅玩 8 移动 4G+ 版	phone
+LAB-AN00	荣耀 Play11T 5G	phone
+LDN-AL00	华为畅享 8 全网通标配版	phone
+LDN-AL10	华为畅享 8 全网通 NFC 版	phone
+LDN-AL20	华为畅享 8 全网通高配版	phone
+LDN-TL00	华为畅享 8 移动 4G+ 标配版	phone
+LDN-TL10	华为畅享 8 移动 4G+ NFC 版	phone
+LDN-TL20	华为畅享 8 移动 4G+ 高配版	phone
+LDY-AN00	荣耀 Magic8 Pro Air	phone
+LE2100	一加 9R 国行版	phone
+LE2101	一加 9R 印度版	phone
+LE2110	一加 9 国行版	phone
+LE2111	一加 9 印度版	phone
+LE2113	一加 9 欧洲版	phone
+LE2115	一加 9 北美版 / 国际版	phone
+LE2117	一加 9 T-Mobile 版	phone
+LE2119	一加 9 Verzion 版	phone
+LE2120	一加 9 Pro 国行版	phone
+LE2121	一加 9 Pro 印度版	phone
+LE2123	一加 9 Pro 欧洲版	phone
+LE2125	一加 9 Pro 北美版 / 国际版	phone
+LE2127	一加 9 Pro T-Mobile 版	phone
+LEM-AL00	HUAWEI Pocket 2	phone
+LEM-AL50	HUAWEI Pocket 2 优享版	phone
+LGE-AN00	荣耀 Magic4	phone
+LGE-AN10	荣耀 Magic4 Pro	phone
+LGE-AN20	荣耀 Magic4 至臻版	phone
+LIO-AL00	HUAWEI Mate 30 Pro 全网通版	phone
+LIO-AN00	HUAWEI Mate 30 Pro 5G 全网通版	phone
+LIO-AN00M	HUAWEI Mate 30E Pro 5G	phone
+LIO-AN00P	HUAWEI Mate 30 RS 保时捷设计	phone
+LIO-TL00	HUAWEI Mate 30 Pro 移动 4G+ 版	phone
+LIO-TN00	HUAWEI Mate 30 Pro 5G 移动版	phone
+LLD-AL20	荣耀 9i 全网通版 (4GB+64GB)	phone
+LLD-AL30	荣耀 9i 全网通版	phone
+LLD-TL10	荣耀 9 青春版 移动 4G+ 版	phone
+LLY-AN00	荣耀 X50i+	phone
+LMR-AL00	HUAWEI Pura 80 Pro	phone
+LMR-AL10	HUAWEI Pura 80 Pro+	phone
+LNA-AL00	HUAWEI P60	phone
+LNA-AN00	荣耀 X80i	phone
+LND-AL30	荣耀畅玩 7C 全网通标配版	phone
+LND-AL40	荣耀畅玩 7C 全网通高配版	phone
+LND-TL30	荣耀畅玩 7C 移动 4G+ 标配版	phone
+LND-TL40	荣耀畅玩 7C 移动 4G+ 高配版	phone
+LOG-AN00	荣耀畅玩 70 Plus 5G / 荣耀畅玩 70m Plus 5G	phone
+LOG-AN10	荣耀 Play10 5G / 荣耀 Play10T 5G	phone
+LON-AL00	HUAWEI Mate 9 Pro	phone
+LPD-20W	nubia Pad 3D	tablet
+LRA-AL00	荣耀 20 青春版 全网通版	phone
+LRA-AN00	荣耀 Magic V Flip	phone
+LRA-TL00	荣耀 20 青春版 移动 4G+ 版	phone
+LRT-W00	HUAWEI MatePad Air 12 英寸 2025 Wi-Fi 版 (8GB+256GB)	tablet
+LRT-W20	HUAWEI MatePad Air 12 英寸 2025 Wi-Fi 版	tablet
+LRT-W30	HUAWEI MatePad Air 12 英寸 2025 Wi-Fi 柔光版	tablet
+LSA-AN00	荣耀 60 5G	phone
+LYA-AL00	HUAWEI Mate 20 Pro 全网通版	phone
+LYA-AL00P	HUAWEI Mate 20 RS 保时捷设计	phone
+LYA-AL10	HUAWEI Mate 20 Pro 全网通版 (8GB+256GB)	phone
+LYA-TL00	HUAWEI Mate 20 Pro 移动 4G+ 版	phone
+LYN-AN00	荣耀 X60i	phone
+M025EC	Xiaomi 17T Pro	phone
+M098FE	REDMI K100 Pro Max	phone
+M1803D5XA	小米 MIX 2S 尊享版 (全球频段)	phone
+M1803D5XC	小米 MIX 2S 联通电信定制版	phone
+M1803D5XE	小米 MIX 2S 全网通版	phone
+M1803D5XT	小米 MIX 2S 移动 4G+ 版	phone
+M1803E1A	小米 8 全网通版	phone
+M1803E1C	小米 8 联通电信定制版	phone
+M1803E1T	小米 8 移动 4G+ 版	phone
+M1803E6C	红米 S2 联通电信定制版	phone
+M1803E6E	红米 S2 全网通版	phone
+M1803E6T	红米 S2 移动 4G+ 版	phone
+M1804C3CC	红米 6A 联通电信定制版	phone
+M1804C3CE	红米 6A 全网通版	phone
+M1804C3CT	红米 6A 移动 4G+ 版	phone
+M1804C3DC	红米 6 联通电信定制版	phone
+M1804C3DE	红米 6 全网通版	phone
+M1804C3DT	红米 6 移动 4G+ 版	phone
+M1804D2SC	小米 6X 联通电信定制版	phone
+M1804D2SE	小米 6X 全网通版	phone
+M1804D2ST	小米 6X 移动 4G+ 版	phone
+M1804E4A	小米 Max 3 全网通版	phone
+M1804E4C	小米 Max 3 联通电信定制版	phone
+M1804E4T	小米 Max 3 移动 4G+ 版	phone
+M1805D1SC	红米 6 Pro 联通电信定制版	phone
+M1805D1SE	红米 6 Pro 全网通版	phone
+M1805D1ST	红米 6 Pro 移动 4G+ 版	phone
+M1805E2A	小米 8 SE	phone
+M1806D9E	小米平板 4 LTE 版	tablet
+M1806D9PE	小米平板 4 Plus LTE 版	tablet
+M1806D9W	小米平板 4 Wi-Fi 版	tablet
+M1807E8A	小米 8 屏幕指纹版	phone
+M1807E8S	小米 8 透明探索版	phone
+M1808D2TC	小米 8 青春版 联通电信定制版	phone
+M1808D2TE	小米 8 青春版 全网通版	phone
+M1808D2TT	小米 8 青春版 移动 4G+ 版	phone
+M1810E5A	小米 MIX 3 (全球频段)	phone
+M1810E5E	小米 MIX 3	phone
+M1810E5GG	小米 MIX 3 5G	phone
+M1810F6LE	Redmi 7 全网通版	phone
+M1810F6LT	Redmi 7 运营商全网通版	phone
+M1901F7BE	Redmi Note 7 Pro	phone
+M1901F7C	Redmi Note 7 联通电信定制版	phone
+M1901F7E	Redmi Note 7 全网通版	phone
+M1901F7T	Redmi Note 7 移动 4G+ 版	phone
+M1901F9E	小米 Play 全网通版	phone
+M1901F9T	小米 Play 移动 4G+ 版	phone
+M1902F1A	小米 9 全网通版	phone
+M1902F1C	小米 9 联通电信定制版	phone
+M1902F1T	小米 9 移动 4G+ 版	phone
+M1903C3EC	Redmi 7A 联通电信定制版	phone
+M1903C3EE	Redmi 7A 全网通版	phone
+M1903C3ET	Redmi 7A 移动 4G+ 版	phone
+M1903F10A	Redmi K20 全网通版	phone
+M1903F10C	Redmi K20 运营商全网通版	phone
+M1903F11A	Redmi K20 Pro 全网通版	phone
+M1903F11C	Redmi K20 Pro 运营商全网通版	phone
+M1903F2A	小米 9 SE	phone
+M1904F3BC	小米 CC9	phone
+M1904F3BT	小米 CC9 美图定制版	phone
+M1906F9SC	小米 CC9e	phone
+M1906G7E	Redmi Note 8 Pro 全网通版	phone
+M1906G7T	Redmi Note 8 Pro 运营商全网通版	phone
+M1908C3IC	Redmi 8 运营商全网通版	phone
+M1908C3IE	Redmi 8 全网通版	phone
+M1908C3JC	Redmi Note 8 运营商全网通版	phone
+M1908C3JE	Redmi Note 8 全网通版	phone
+M1908C3KE	Redmi 8A	phone
+M1908F1XE	小米 9 Pro 5G	phone
+M1910F4E	小米 CC9 Pro	phone
+M1912G7BC	Redmi K30 4G 运营商全网通版	phone
+M1912G7BE	Redmi K30 4G 全网通版	phone
+M2001G7AC	Redmi K30 5G	phone
+M2001G7AE	Redmi K30 5G / Redmi K30 5G 极速版	phone
+M2001J11C	Redmi K30 Pro	phone
+M2002J9E	小米 10 青春版	phone
+M2003J15SC	Redmi 10X 4G	phone
+M2004J19C	Redmi 9	phone
+M2004J7AC	Redmi 10X 5G	phone
+M2004J7BC	Redmi 10X Pro 5G	phone
+M2006C3LC	Redmi 9A	phone
+M2006J10C	Redmi K30 至尊纪念版	phone
+M2007J17C	Redmi Note 9 Pro 5G	phone
+M2007J1SC	小米 10 至尊纪念版	phone
+M2007J22C	Redmi Note 9 5G	phone
+M2007J3SC	Redmi K30S 至尊纪念版	phone
+M2010J19SC	Redmi Note 9 4G	phone
+M2011J18C	MIX FOLD 小米折叠屏手机	phone
+M2011K2C	小米 11	phone
+M2012K10C	Redmi K40 游戏增强版	phone
+M2012K11AC	Redmi K40	phone
+M2012K11C	Redmi K40 Pro	phone
+M2101K9C	小米 11 青春版	phone
+M2102J2SC	小米 10S	phone
+M2102K1AC	小米 11 Pro	phone
+M2102K1C	小米 11 Ultra	phone
+M2103K19C	Redmi Note 10 5G / Redmi Note 11SE	phone
+M2104K10AC	Redmi Note 10 Pro	phone
+M2105K81AC	小米平板 5 Pro Wi-Fi 版	tablet
+M2105K81C	小米平板 5 Pro 5G	tablet
+M332BF	REDMI K90 至尊版	phone
+M511CD	REDMI K100 Pro	phone
+M531DA	Xiaomi 17T	phone
+MAA-AN00	荣耀 100	phone
+MAA-AN10	荣耀 100 Pro	phone
+MAE136	红米 4X 全网通版	phone
+MAG-AN00	荣耀 90 GT	phone
+MAO-AL00	华为畅享 60 Pro	phone
+MAR-AL00	HUAWEI nova 4e 全网通版	phone
+MAR-TL00	HUAWEI nova 4e 移动 4G+ 版	phone
+MAT136	红米 4X 移动 4G+ 版	phone
+MBE6A5	红米 Note 4X MTK 全网通版	phone
+MBH-AN10	荣耀 Magic V5	phone
+MBT6A5	红米 Note 4X MTK 移动 4G+ 版	phone
+MCE16	小米 6 全网通版	phone
+MCE3B	红米 5A 全网通版	phone
+MCE8	小米 Note 3 全网通版	phone
+MCE91	小米平板 3	tablet
+MCT1	小米 6 移动 4G+ 版	phone
+MCT3B	红米 5A 移动 4G+ 版	phone
+MCT8	小米 Note 3 移动 4G+ 版	phone
+MDE1	红米 5 全网通版	phone
+MDE2	小米 5X 全网通版	phone
+MDE40	小米 Max 2 全网通版	phone
+MDE5	小米 MIX 2 黑色陶瓷版 全网通版	phone
+MDE5S	小米 MIX 2 全陶瓷尊享版	phone
+MDE6	红米 Note 5A 全网通 标准版	phone
+MDE6S	红米 Note 5A 全网通 高配版	phone
+MDT1	红米 5 移动 4G+ 版	phone
+MDT2	小米 5X 移动 4G+ 版	phone
+MDT4	小米 Max 2 移动 4G+ 版	phone
+MDT5	小米 MIX 2 黑色陶瓷版 移动 4G+ 版	phone
+MDT6	红米 Note 5A 移动 4G+ 标准版	phone
+MDT6S	红米 Note 5A 移动 4G+ 高配版	phone
+MEC7S	红米 Note 5 联通电信定制版	phone
+MED-TL00	华为畅享 10e 移动 4G+ 版	phone
+MEE7	红米 5 Plus 全网通版	phone
+MEE7S	红米 Note 5 全网通版	phone
+MEP-AN00	荣耀 500 Pro	phone
+MET7	红米 5 Plus 移动 4G+ 版	phone
+MET7S	红米 Note 5 移动 4G+ 版	phone
+MEY-AN00	荣耀 500	phone
+MGA-AL00	华为畅享 50	phone
+MGA-AL40	华为畅享 60	phone
+MGI-AN00	荣耀 Magic V	phone
+MHA-AL00	HUAWEI Mate 9 全网通版	phone
+MHA-TL00	HUAWEI Mate 9 移动 4G+ 版	phone
+MI-ONE	小米 1 青春版	phone
+MI-ONE C1	小米 1 电信版	phone
+MI-ONE PLUS	小米 1 联通版	phone
+MIA-AL00	HUAWEI nova 14 Pro	phone
+MIS-AL00	HUAWEI nova 13 Pro	phone
+MLD-AL00	华为畅享 20e (麒麟 710A)	phone
+MLD-AL10	华为畅享 20e (Helio P35)	phone
+MLN-AL00	HUAWEI Pura 90 Pro	phone
+MLR-AL00	HUAWEI MatePad Mini 悦读版 8.8 英寸	tablet
+MLR-AL10	HUAWEI MatePad Mini 8.8 英寸	tablet
+MNA-AL00	HUAWEI P60 Pro	phone
+MOA-TL00	荣耀畅玩 9A 移动 4G+ 版	phone
+MON-AL19	华为平板 C5 8 英寸 LTE 版	tablet
+MON-W19	华为平板 C5 8 英寸 Wi-Fi 版	tablet
+MRA-521	荣耀 MagicBook Art 14 Ultra 5 (32GB+1TB)	phone
+MRA-561	荣耀 MagicBook Art 14 Ultra 5 (16GB+1TB)	phone
+MRA-721	荣耀 MagicBook Art 14 Ultra 7 (32GB+1TB)	phone
+MRB-A	荣耀 MagicBook Art 14 2025	phone
+MRD-AL00	华为畅享 9e 全网通版	phone
+MRD-TL00	华为畅享 9e 移动 4G+ 版	phone
+MRDI-W00	HUAWEI MatePad Pro 12.2 英寸 2025 Wi-Fi 版	tablet
+MRDI-W10	HUAWEI MatePad Pro 12.2 英寸 2025 Wi-Fi 柔光版	tablet
+MRDI-W20	HUAWEI MatePad Pro 12.2 英寸 2025 Wi-Fi 柔光版 (16GB+1TB)	tablet
+MRO-521	荣耀 MagicBook Art 14 骁龙 X Elite (32GB+1TB)	phone
+MRO-AL10	HUAWEI MatePad Pro 12.2 英寸 SIM 卡版 (16GB+1TB)	tablet
+MRO-W00	HUAWEI MatePad Pro 12.2 英寸 Wi-Fi 版	tablet
+MRO-W10	HUAWEI MatePad Pro 12.2 英寸 Wi-Fi 版 (16GB+1TB)	tablet
+MRT-AL10	HUAWEI nova 14 Ultra	phone
+MRX-AL09	HUAWEI MatePad Pro 10.8 英寸 LTE 版 (6GB+128GB/8GB+256GB)	tablet
+MRX-AL19	HUAWEI MatePad Pro 10.8 英寸 LTE 版 (8GB+512GB)	tablet
+MRX-AN19	HUAWEI MatePad Pro 10.8 英寸 5G 版	tablet
+MT2110	一加 9RT 国行版	phone
+MT2111	一加 9RT 印度版	phone
+MTN-AN00	荣耀 X70	phone
+MTN-AN80	荣耀 X70 (12GB+512GB)	phone
+MXW-AN00	荣耀 30 青春版 5G 全网通版	phone
+MXW-TN00	荣耀 30 青春版 5G 移动定制版	phone
+MYA-AL10	荣耀畅玩 6 全网通版	phone
+MYA-TL10	荣耀畅玩 6 移动定制版	phone
+NAM-AL00	HUAWEI nova 9	phone
+NBD-WFE9HN	荣耀 MagicBook 14 2021 i7 (华为终端)	phone
+NBD-WFH9HN	荣耀 MagicBook 14 2021 i5 (华为终端)	phone
+NBL-WAE9HN	荣耀 MagicBook 14 i7	phone
+NBL-WAE9HNP	荣耀 MagicBook 14 i7 (16GB+512GB)	phone
+NBL-WAH9HN	荣耀 MagicBook 14 i5	phone
+NBL-WAH9HNP	荣耀 MagicBook 14 i5 (16GB+512GB)	phone
+NBL-WAP9HNL	荣耀 MagicBook 14 科技尝鲜版 R7	phone
+NBL-WAP9HNR	荣耀 MagicBook 14 R7	phone
+NBL-WAQ9HNL	荣耀 MagicBook 14 科技尝鲜版 R5	phone
+NBL-WAQ9HNR	荣耀 MagicBook 14 / 14 SE R5	phone
+NBL-WAQ9HNRP	荣耀 MagicBook 14 R5 (16GB+512GB)	phone
+NBLL-WFP9HN	荣耀 MagicBook 14 2020 R7	phone
+NBLL-WFQ9HN	荣耀 MagicBook 14 2020 R5	phone
+NCO-AL00	HUAWEI nova 10	phone
+NDL-AL00	荣耀平板 X9 11 英寸 LTE 版	tablet
+NDL-W00	荣耀平板 Z5a 11 英寸 Wi-Fi 版	tablet
+NDL-W09	荣耀平板 X9 11 英寸 Wi-Fi 版	tablet
+NDL2-W09	荣耀平板 X10 11 英寸 Wi-Fi 版	tablet
+NDR-WFE9HN	荣耀 MagicBook 14 2021 i7 (荣耀终端)	phone
+NDR-WFH9HN	荣耀 MagicBook 14 2021 i5 (荣耀终端)	phone
+NE2210	一加 10 Pro 国行版	phone
+NE2211	一加 10 Pro 印度版	phone
+NE2213	一加 10 Pro 欧洲版 / 国际版	phone
+NE2215	一加 10 Pro 北美版	phone
+NE2217	一加 10 Pro T-Mobile 版	phone
+NEM-AL10	荣耀畅玩 5C 全网通版	phone
+NEM-TL00	荣耀畅玩 5C 移动定制版	phone
+NEM-TL00H	荣耀畅玩 5C 移动公开版	phone
+NEM-UL00	荣耀畅玩 5C 双 4G 版	phone
+NEO-AL00	HUAWEI Mate RS 保时捷设计	phone
+NEW-AN90	荣耀 Play5 活力版 5G	phone
+NIC-AN00	荣耀 Play10C 5G	phone
+NIR-WAP9HNRP	荣耀 MagicBook 14 SE 2021 R7	phone
+NLA-AL00	荣耀畅玩 70C	phone
+NLA-AN00	荣耀 Play10A 5G / 荣耀 Play11C 5G	phone
+NLR-WAQ9HNR	荣耀 MagicBook 14 SE 2021 R5 (8GB+256GB)	phone
+NMH-WDQ9HN	荣耀 MagicBook 14 2021 R5 (8GB+256GB/8GB+512GB)	phone
+NMH-WFP9HN	荣耀 MagicBook 14 2021 R7	phone
+NMH-WFQ9HN	荣耀 MagicBook 14 2021 R5 (16GB+512GB)	phone
+NOP-AN00	HUAWEI Mate 40 Pro+ 5G	phone
+NP01J	红魔电竞平板 5G	tablet
+NP02J	nubia Pad 3D II	tablet
+NP03J	红魔电竞平板 Pro	tablet
+NP05J	红魔电竞平板 3 Pro	tablet
+NP06J	红魔游戏平板 5 Pro	tablet
+NT01	nubia Pad Pro	tablet
+NTH-AN00	荣耀 50 5G	phone
+NTN-AN20	荣耀 X20 5G	phone
+NTS-AL00	荣耀 Magic 全网通版	phone
+NUBIA 8150N	nubia Neo 5G	phone
+NUBIA 8550	nubia V50 Vita	phone
+NWB-G	荣耀 WIN 游戏本 H7	phone
+NWC2-G	荣耀 WIN 游戏本 H9	phone
+NX301J	nubia N5	phone
+NX302J	nubia 小牛	phone
+NX403A	nubia Z5S mini	phone
+NX501	nubia Z5	phone
+NX505H	nubia Z7 Max 双 4G 版	phone
+NX505J	nubia Z7 Max 全网通版	phone
+NX506J	nubia Z7	phone
+NX507H	nubia Z7 mini 双 4G 版	phone
+NX507J	nubia Z7 mini 全网通版	phone
+NX508H	nubia Z9 双 4G 版	phone
+NX508J	nubia Z9 全网通版	phone
+NX510J	nubia Z9 Max 全网通版	phone
+NX511H	nubia Z9 mini 双 4G 版	phone
+NX511J	nubia Z9 mini 全网通版	phone
+NX512H	nubia Z9 Max 双 4G 版	phone
+NX512J	nubia Z9 Max 极速版	phone
+NX513H	nubia My 布拉格 双 4G 版	phone
+NX513J	nubia My 布拉格 全网通版	phone
+NX518J	nubia Z9 Max 精英版	phone
+NX523J	nubia Z11 Max	phone
+NX529J	nubia Z11 mini	phone
+NX531J	nubia Z11	phone
+NX535J	nubia Z11 Max 经典版	phone
+NX541J	nubia N1	phone
+NX549J	nubia Z11 miniS	phone
+NX551J	nubia M2	phone
+NX563J	nubia Z17	phone
+NX569H	nubia Z17 mini 高配版	phone
+NX569J	nubia Z17 mini 标准版	phone
+NX573J	nubia M2 青春版	phone
+NX575J	nubia N2	phone
+NX589J	nubia Z17 miniS	phone
+NX591J	nubia Z17 畅享版	phone
+NX595J	nubia Z17S	phone
+NX601J	nubia X6	phone
+NX606J	nubia Z18	phone
+NX609J	红魔电竞游戏手机	phone
+NX611J	nubia Z18 mini	phone
+NX612J	nubia V18	phone
+NX616J	nubia X	phone
+NX619J	红魔 Mars 电竞手机	phone
+NX627J	nubia Z20	phone
+NX629J	红魔 3	phone
+NX651J	nubia Play	phone
+NX659J	红魔 5G	phone
+NX666J	腾讯红魔游戏手机 6R	phone
+NX667J	nubia Z30 Pro	phone
+NX669J	腾讯红魔游戏手机 6	phone
+NX669J-P	腾讯红魔游戏手机 6 Pro	phone
+NX669J-S	腾讯红魔游戏手机 6S Pro	phone
+NX679J	红魔 7	phone
+NX679S	红魔 7S	phone
+NX701J	nubia Z40 Pro	phone
+NX702J	nubia Z40S Pro	phone
+NX709J	红魔 7 Pro	phone
+NX709S	红魔 7S Pro	phone
+NX711J	nubia Z50 / nubia Z50S	phone
+NX712J	nubia Z50 Ultra	phone
+NX713J	nubia Z50S Pro	phone
+NX715J	nubia Z50 SE	phone
+NX721J	nubia Z60 Ultra / nubia Z60 Ultra 领先版	phone
+NX724J	nubia Flip 5G / nubia Flip 5G S	phone
+NX725J	nubia Z60S Pro	phone
+NX729J	红魔 8 Pro / 红魔 8 Pro+	phone
+NX729S	红魔 8S Pro / 红魔 8S Pro+	phone
+NX732J	nubia Flip 2 国行版	phone
+NX733J	nubia Z70 Ultra	phone
+NX736J	nubia Z70 Ultra 星空典藏版 (卫星通信)	phone
+NX737J	nubia Z70S Ultra 摄影师版	phone
+NX741J	nubia Z80 Ultra	phone
+NX769J	红魔 9 Pro / 红魔 9 Pro+	phone
+NX779J	红魔 10 Air	phone
+NX789J	红魔 10 Pro / 红魔 10 Pro+	phone
+NX799J	红魔 11 Air	phone
+NX809J	红魔 11 Pro / 红魔 11 Pro+	phone
+NX907J	nubia M2 畅玩版	phone
+NZA-AL00	荣耀 Play5T 活力版	phone
+OCE-AL50	HUAWEI Mate 40E 4G	phone
+OCE-AN10	HUAWEI Mate 40 5G	phone
+OCE-AN50	HUAWEI Mate 40E 5G	phone
+ONE A0001	一加手机 全网通版 / 移动版 / 国际版	phone
+ONE A1001	一加手机 联通版	phone
+ONE A2001	一加手机 2	phone
+ONE A2003	一加手机 2 国际版	phone
+ONE A2005	一加手机 2 北美版	phone
+ONE E1000	一加手机 X 全网通版	phone
+ONE E1001	一加手机 X 移动版 / 联通版	phone
+ONE E1003	一加手机 X 国际版	phone
+ONE E1005	一加手机 X 北美版	phone
+ONEPLUS A3000	一加手机 3 国行版	phone
+ONEPLUS A3003	一加手机 3 国际版	phone
+ONEPLUS A3010	一加手机 3T 国行版	phone
+ONEPLUS A3013	一加手机 3T 国际版	phone
+ONEPLUS A5000	一加 5	phone
+ONEPLUS A5010	一加 5T	phone
+ONEPLUS A6000	一加 6 国行版	phone
+ONEPLUS A6003	一加 6 国际版	phone
+ONEPLUS A6010	一加 6T 国行版	phone
+ONEPLUS A6013	一加 6T 国际版	phone
+OPD2203	一加平板 (2023) 国际版	tablet
+OPD2304	一加平板 Go LTE	tablet
+OPD2305	一加平板 Go Wi-Fi	tablet
+OPD2403	一加平板 2 (2024) 国际版	tablet
+OPD2404	一加平板 Pro 国行版	tablet
+OPD2407	一加平板 (2024) 国行版	tablet
+OPD2413	一加平板 2 Pro 国行版	tablet
+OPD2415	一加平板 3 国际版	tablet
+OPD2480	一加平板 Lite Wi-Fi	tablet
+OPD2481	一加平板 Lite LTE	tablet
+OPD2504	一加平板 Go 2 Wi-Fi	tablet
+OPD2505	一加平板 Go 2 5G	tablet
+OPD2508	一加平板 2 (2025) 国行版	tablet
+OPD2513	一加平板 3 Pro 国行版	tablet
+OPD2514	一加平板 4 国际版	tablet
+OXF-AN00	荣耀 V30 5G	phone
+OXF-AN10	荣耀 V30 PRO 5G	phone
+OXP-AN00	荣耀 Play4 Pro 5G	phone
+P0110	nubia M153 豆包手机助手技术预览版	phone
+PAAM00	OPPO R15 梦镜版 全网通版	phone
+PAAT00	OPPO R15 梦镜版 移动版	phone
+PACM00	OPPO R15 全网通版	phone
+PACT00	OPPO R15 移动版	phone
+PADM00	OPPO A3 全网通版	phone
+PADT00	OPPO A3 移动版	phone
+PAFM00	OPPO Find X 标准版 全网通版	phone
+PAFT00	OPPO Find X 标准版 移动版	phone
+PAFT10	OPPO Find X 超级闪充版 移动版	phone
+PAHM00	OPPO Find X 超级闪充版/兰博基尼版 全网通版	phone
+PAR-AL00	HUAWEI nova 3 全网通版	phone
+PAR-TL00	HUAWEI nova 3 移动 4G+ 版	phone
+PBBM00	OPPO A7x 全网通版	phone
+PBBT00	OPPO A7x 移动版	phone
+PBCM10	OPPO R15x 全网通版	phone
+PBCM30	OPPO K1	phone
+PBCT10	OPPO R15x 移动版	phone
+PBDM00	OPPO R17 Pro 全网通版	phone
+PBDT00	OPPO R17 Pro 移动版	phone
+PBEM00	OPPO R17 全网通版	phone
+PBET00	OPPO R17 移动版	phone
+PBFM00	OPPO A7 全网通版	phone
+PBFT00	OPPO A7 移动版	phone
+PCAM00	OPPO Reno 全网通版	phone
+PCAM10	OPPO A9 全网通版	phone
+PCAT00	OPPO Reno 移动版	phone
+PCAT10	OPPO A9 移动版	phone
+PCCM00	OPPO Reno 10 倍变焦版 全网通版	phone
+PCCT00	OPPO Reno 10 倍变焦版 移动版	phone
+PCDM00	OPPO A7n 全网通版	phone
+PCDM10	OPPO Reno Z 全网通版	phone
+PCDT00	OPPO A7n 移动版	phone
+PCDT10	OPPO Reno Z 移动版	phone
+PCE-AL30	HUAWEI MatePad Pro 13.2 英寸 SIM 卡版	tablet
+PCE-AL40	HUAWEI MatePad Pro 13.2 英寸 典藏版 SIM 卡版	tablet
+PCE-W30	HUAWEI MatePad Pro 13.2 英寸 Wi-Fi 版	tablet
+PCE-W40	HUAWEI MatePad Pro 13.2 英寸 Wi-Fi 版 (16GB+1TB)	tablet
+PCEM00	OPPO A9x 全网通版	phone
+PCET00	OPPO A9x 移动版	phone
+PCGM00	OPPO K3 全网通版	phone
+PCGT00	OPPO K3 移动版	phone
+PCHM00	OPPO A11n 全网通版	phone
+PCHM10	OPPO A11 全网通版	phone
+PCHM30	OPPO A11x 全网通版	phone
+PCHT00	OPPO A11n 移动版	phone
+PCHT10	OPPO A11 移动版	phone
+PCHT30	OPPO A11x 移动版	phone
+PCKM00	OPPO Reno2 全网通版	phone
+PCKM80	OPPO Reno2 Z 全网通版	phone
+PCKT00	OPPO Reno2 移动版	phone
+PCKT80	OPPO Reno2 Z 移动版	phone
+PCLM10	OPPO Reno Ace	phone
+PCLM50	OPPO Reno3 元气版 全网通版	phone
+PCNM00	OPPO K5 全网通版	phone
+PCNT00	OPPO K5 移动版	phone
+PCPM00	OPPO A91 全网通版	phone
+PCPT00	OPPO A91 移动版	phone
+PCRM00	OPPO Reno3 Pro 全网通版	phone
+PCRT00	OPPO Reno3 Pro 移动版	phone
+PCRT01	OPPO Reno3 元气版 移动版	phone
+PCT-AL10	荣耀 V20 全网通版	phone
+PCT-TL10	荣耀 V20 移动 4G+ 版	phone
+PDAM10	OPPO A52 全网通版	phone
+PDAT10	OPPO A52 移动版	phone
+PDBM00	OPPO A8 全网通版	phone
+PDBT00	OPPO A8 移动版	phone
+PDCM00	OPPO Reno3 全网通版	phone
+PDCT00	OPPO Reno3 移动版	phone
+PDEM10	OPPO Find X2 全网通版	phone
+PDEM30	OPPO Find X2 Pro	phone
+PDET10	OPPO Find X2 移动版	phone
+PDHM00	OPPO Ace2	phone
+PDKM00	OPPO A92s 全网通版	phone
+PDKT00	OPPO A92s 移动版	phone
+PDNM00	OPPO Reno4 Pro 全网通版	phone
+PDNT00	OPPO Reno4 Pro 移动版	phone
+PDPM00	OPPO Reno4 全网通版	phone
+PDPT00	OPPO Reno4 移动版	phone
+PDRM00	OPPO Reno5 Pro+	phone
+PDSM00	OPPO Reno5 Pro 全网通版	phone
+PDST00	OPPO Reno5 Pro 移动版	phone
+PDVM00	OPPO A11s	phone
+PDYM10	OPPO A72n	phone
+PDYM20	OPPO A72 全网通版	phone
+PDYT20	OPPO A72 移动版	phone
+PE-CL00	荣耀 6 Plus 电信版	phone
+PE-TL00M	荣耀 6 Plus 移动定制版	phone
+PE-TL10	荣耀 6 Plus 双 4G 高配版	phone
+PE-TL20	荣耀 6 Plus 移动渠道版	phone
+PE-UL00	荣耀 6 Plus 联通版	phone
+PEAM00	OPPO Reno4 SE 全网通版	phone
+PEAT00	OPPO Reno4 SE 移动版	phone
+PECT30	OPPO A53 (2020) 移动版	phone
+PEDM00	OPPO Find X3	phone
+PEEM00	OPPO Find X3 Pro	phone
+PEFM00	OPPO A35	phone
+PEGM00	OPPO Reno5 全网通版	phone
+PEGM10	OPPO Reno5 K 全网通版	phone
+PEGT00	OPPO Reno5 移动版	phone
+PEGT10	OPPO Reno5 K 移动版	phone
+PEHM00	OPPO A93 全网通版	phone
+PEHT00	OPPO A93 移动版	phone
+PELM00	OPPO A95	phone
+PEMM00	OPPO A55s	phone
+PENM00	OPPO Reno6 Pro+	phone
+PEPM00	OPPO Reno6 Pro	phone
+PEQM00	OPPO Reno6	phone
+PERM00	OPPO K7x	phone
+PERM10	OPPO K9s / OPPO K10 活力版	phone
+PESM10	OPPO A36	phone
+PEUM00	OPPO Find N	phone
+PEXM00	OPPO K9	phone
+PEYM00	OPPO K9 Pro	phone
+PFCM00	OPPO Reno7 SE	phone
+PFDM00	OPPO Reno7 Pro	phone
+PFEM10	OPPO Find X5 Pro	phone
+PFFM10	OPPO Find X5	phone
+PFFM20	OPPO Find X5 Pro 天玑版	phone
+PFGM00	OPPO A93s	phone
+PFJM10	OPPO Reno7	phone
+PFTM10	OPPO A97	phone
+PFTM20	OPPO A56s	phone
+PFUM10	OPPO A96	phone
+PFVM10	OPPO A56	phone
+PFZM10	OPPO Reno8 Pro+	phone
+PGAM10	OPPO Reno8 Pro	phone
+PGBM10	OPPO Reno8	phone
+PGCM10	OPPO K9x	phone
+PGEM10	OPPO Find X6 Pro	phone
+PGFM10	OPPO Find X6	phone
+PGGM10	OPPO K10x	phone
+PGIM10	OPPO K10 Pro	phone
+PGJM10	OPPO K10	phone
+PGKM10	一加 Ace 国行版	phone
+PGP110	一加 Ace Pro 国行版 / 原神限定版	phone
+PGT-AN00	荣耀 Magic5	phone
+PGT-AN10	荣耀 Magic5 Pro	phone
+PGT-AN20	荣耀 Magic5 至臻版	phone
+PGT110	OPPO Find N2 Flip	phone
+PGU110	OPPO Find N2	phone
+PGW110	OPPO Reno9 Pro+	phone
+PGX110	OPPO Reno9 Pro	phone
+PGZ110	一加 Ace 竞速版 国行版	phone
+PHA120	OPPO A96	phone
+PHB110	一加 11 国行版	phone
+PHF110	OPPO K11x	phone
+PHJ110	OPPO A58	phone
+PHK110	一加 Ace 2 国行版 / 原神定制礼盒	phone
+PHM110	OPPO Reno9	phone
+PHN110	OPPO Find N3 / OPPO Find N3 典藏版	phone
+PHP110	一加 Ace 2V 国行版	phone
+PHQ110	OPPO A1 Pro	phone
+PHS110	OPPO A1 5G (2023)	phone
+PHT110	OPPO Find N3 Flip	phone
+PHU110	OPPO Reno10 Pro+	phone
+PHV110	OPPO Reno10 Pro	phone
+PHW110	OPPO Reno10	phone
+PHY110	OPPO Find X7 Ultra	phone
+PHY120	OPPO Find X7 Ultra 卫星通信版	phone
+PHZ110	OPPO Find X7	phone
+PIC-AL00	HUAWEI nova 2 全网通版	phone
+PIC-TL00	HUAWEI nova 2 移动 4G+ 版	phone
+PJA110	一加 Ace 2 Pro 国行版 / 原神派蒙主题礼盒	phone
+PJB110	OPPO A1s / OPPO A2	phone
+PJC110	OPPO K11	phone
+PJD110	一加 12 国行版	phone
+PJE110	一加 Ace 3 国行版 / 原神刻晴定制机	phone
+PJF110	一加 Ace 3V 国行版	phone
+PJG110	OPPO A2 Pro	phone
+PJH110	OPPO Reno11	phone
+PJJ110	OPPO Reno11 Pro	phone
+PJR110	OPPO K12	phone
+PJS110	OPPO A2x	phone
+PJT110	OPPO K12x	phone
+PJU110	OPPO A1i / OPPO A2m	phone
+PJV110	OPPO Reno12	phone
+PJW110	OPPO Reno12 Pro	phone
+PJX110	一加 Ace 3 Pro 国行版	phone
+PJY110	OPPO A3 Pro / OPPO A5 Plus	phone
+PJZ110	一加 13 国行版	phone
+PKA110	OPPO A3 5G (2024) / OPPO A3i Plus	phone
+PKB110	OPPO Find X8	phone
+PKC110	OPPO Find X8 Pro	phone
+PKC130	OPPO Find X8 Pro 卫星通信版	phone
+PKD110	OPPO A3 活力版	phone
+PKD120	OPPO A3m	phone
+PKD130	OPPO A3x	phone
+PKG110	一加 Ace 5 国行版	phone
+PKH110	OPPO Find N5	phone
+PKH120	OPPO Find N5 卫星通信版	phone
+PKJ110	OPPO Find X8 Ultra	phone
+PKK110	OPPO Reno13 Pro	phone
+PKL110	OPPO A3i	phone
+PKM110	OPPO Reno13	phone
+PKN-AL00	HUAWEI nova 16z	phone
+PKP110	OPPO A5 Pro	phone
+PKQ110	OPPO A5 5G (2025) / OPPO A6 Plus	phone
+PKR110	一加 Ace 5 Pro 国行版	phone
+PKS110	OPPO K12 Plus	phone
+PKT110	OPPO Find X8s	phone
+PKU110	OPPO Find X8 Ultra 卫星通信版	phone
+PKV110	OPPO A5 活力版	phone
+PKW110	OPPO A5x / OPPO A5m	phone
+PKW120	OPPO A6i	phone
+PKX110	一加 13T 国行版	phone
+PKZ110	OPPO Reno14 Pro	phone
+PLA-AL10	HUAWEI Mate 70 Pro+	phone
+PLA110	OPPO Reno14	phone
+PLB110	OPPO Find X8s+	phone
+PLC110	一加 Ace 5 至尊版 国行版	phone
+PLD110	OPPO K12s	phone
+PLE-703L	华为揽阅 M2 青春版 7.0 英寸 全网通版	tablet
+PLE-703LT	华为揽阅 M2 青春版 7.0 英寸 双 4G 版	tablet
+PLE110	OPPO K13 Turbo Pro	phone
+PLF110	一加 Ace 5 竞速版 国行版	phone
+PLG110	OPPO Find X9 Pro	phone
+PLG120	OPPO Find X9 Pro 卫星通信版	phone
+PLJ110	OPPO Find X9	phone
+PLK-AL10	荣耀 7 全网通高配版	phone
+PLK-CL00	荣耀 7 电信版	phone
+PLK-TL00	荣耀 7 移动定制版	phone
+PLK-TL01H	荣耀 7 移动渠道版	phone
+PLK-TL11H	荣耀 7 移动增强版	phone
+PLK-UL00	荣耀 7 双 4G 版	phone
+PLK110	一加 15 国行版	phone
+PLL110	OPPO A6 GT / OPPO A6 Max / OPPO A6l	phone
+PLM110	OPPO K13 Turbo	phone
+PLN110	OPPO A6 Pro	phone
+PLP110	OPPO Find N6	phone
+PLP120	OPPO Find N6 卫星通信版	phone
+PLQ110	一加 Ace 6 国行版	phone
+PLR-AL50	HUAWEI Mate 70 Pro 优享版	phone
+PLR110	一加 Ace 6T 国行版	phone
+PLS120	OPPO A6	phone
+PLT120	OPPO A6s / OPPO A6i+ / OPPO A6k	phone
+PLT130	OPPO A6v	phone
+PLT140	OPPO A6x / OPPO A6m	phone
+PLU-AL10	HUAWEI Mate 70 RS 非凡大师	phone
+PLU110	一加 Turbo 6 国行版	phone
+PLV110	OPPO Reno15 Pro	phone
+PLW110	OPPO Reno15	phone
+PLY110	一加 Turbo 6V 国行版	phone
+PLZ110	一加 15T 国行版	phone
+PMA110	OPPO Find X9 Ultra	phone
+PMA120	OPPO Find X9 Ultra 卫星通信版	phone
+PMB110	一加 Ace 6 至尊版 国行版	phone
+PMC110	OPPO A6c	phone
+PMD110	OPPO Reno15c	phone
+PME110	OPPO Find X9s Pro	phone
+PMG110	OPPO K15 Pro+	phone
+PMH110	OPPO K15 Pro	phone
+PMK110	OPPO Reno16 Pro	phone
+PMM110	OPPO Reno16	phone
+PMT110	OPPO A6s Pro	phone
+PNM-AN10	荣耀 Magic V6	phone
+PNM-AN20	荣耀 Magic V6 (16GB+1TB)	phone
+POT-AL00A	华为畅享 9S 全网通版	phone
+POT-TL00A	华为畅享 9S 移动 4G+ 版	phone
+PPA-AL20	华为畅享 20 SE	phone
+PPG-AN00	荣耀 GT Pro	phone
+PRA-AL00	荣耀 8 青春版 全网通标配版	phone
+PRA-AL00X	荣耀 8 青春版 全网通高配/顶配版	phone
+PRA-TL10	荣耀 8 青春版 移动定制版	phone
+PSD-AL00	HUAWEI nova Flip	phone
+PSD-AL80	HUAWEI nova Flip S	phone
+PSN-AL00	HUAWEI nova 15	phone
+PTP-AN00	荣耀 Magic7	phone
+PTP-AN10	荣耀 Magic7 Pro	phone
+PTP-AN20	荣耀 Magic7 RSR 保时捷设计	phone
+PTP-AN60	荣耀 Magic7 (16GB+1TB)	phone
+PTP-AN70	荣耀 Magic7 Pro 卫星通信版	phone
+PYC110	OPPO A7 Pro Max	phone
+PYD110	OPPO K15	phone
+PYR110	一加 Turbo 6X Pro 国行版	phone
+PYS110	一加 Turbo 6X 国行版	phone
+QXS-W00	HUAWEI MatePad Edge	tablet
+QXS-W10	HUAWEI MatePad Edge (24GB+1TB)	tablet
+QXS-W20	HUAWEI MatePad Edge 液冷版	tablet
+REA-AN00	荣耀 90	phone
+REP-AN00	荣耀 90 Pro	phone
+RKY-AN00	荣耀畅玩 40 Plus 5G	phone
+RKY-AN10	荣耀 Play7T 5G	phone
+RMO-AN00	荣耀 X40	phone
+RMP2108	真我平板 X	tablet
+RMX1851	真我 X 青春版	phone
+RMX1901	真我 X	phone
+RMX1931	真我 X2 Pro	phone
+RMX1971	真我 Q	phone
+RMX1991	真我 X2	phone
+RMX2025	真我 X50 5G 移动版	phone
+RMX2051	真我 X50 5G 全网通版	phone
+RMX2052	真我 X50t 5G 电信合作版	phone
+RMX2071	真我 X50 Pro 5G	phone
+RMX2072	真我 X50 Pro 玩家版	phone
+RMX2111	真我 V5 5G 全网通版	phone
+RMX2112	真我 V5 5G 运营商定制版	phone
+RMX2117	真我 Q2 5G	phone
+RMX2121	真我 X7 Pro 5G	phone
+RMX2141	真我 X50m 5G	phone
+RMX2142	真我 X50m 5G 运营商定制版	phone
+RMX2173	真我 Q2 Pro 5G	phone
+RMX2176	真我 X7 5G	phone
+RMX2200	真我 Q2i 5G	phone
+RMX2201	真我 V3 5G 运营商定制版	phone
+RMX2202	真我 GT 5G	phone
+RMX2205	真我 Q3 Pro 5G	phone
+RMX3031	真我 GT Neo 5G	phone
+RMX3041	真我 V13 5G 全网通版	phone
+RMX3042	真我 Q3i 5G	phone
+RMX3043	真我 V13 5G 运营商定制版	phone
+RMX3092	真我 V15 5G 全网通版	phone
+RMX3093	真我 V15 5G 运营商定制版	phone
+RMX3115	真我 X7 Pro 至尊版 5G 全网通版	phone
+RMX3116	真我 X7 Pro 至尊版 5G 运营商定制版	phone
+RMX3121	真我 V11 5G 全网通版	phone
+RMX3122	真我 V11 5G 运营商定制版	phone
+RMX3125	真我 V11s 5G	phone
+RMX3142	真我 Q3 Pro 狂欢版	phone
+RMX3161	真我 Q3 5G	phone
+RMX3300	真我 GT2 Pro	phone
+RMX3310	真我 GT2	phone
+RMX3350	真我 GT Neo 闪速版	phone
+RMX3357	真我 GT Neo2T	phone
+RMX3361	真我 GT 大师版	phone
+RMX3366	真我 GT 大师探索版	phone
+RMX3370	真我 GT Neo2 / 真我 GT Neo2 龙珠定制版	phone
+RMX3372	真我 Q5 Pro	phone
+RMX3461	真我 Q3s	phone
+RMX3462	真我 Q3t	phone
+RMX3475	真我 V25	phone
+RMX3478	真我 Q5	phone
+RMX3551	真我 GT2 大师探索版	phone
+RMX3560	真我 GT Neo3	phone
+RMX3562	真我 GT Neo3 150W / 真我 GT Neo3 火影限定版	phone
+RMX3571	真我 V23	phone
+RMX3574	真我 Q5i	phone
+RMX3576	真我 V23i	phone
+RMX3615	真我 10	phone
+RMX3616	真我 Q5x	phone
+RMX3617	真我 10s	phone
+RMX3618	真我 V30t	phone
+RMX3619	真我 V30	phone
+RMX3663	真我 10 Pro	phone
+RMX3687	真我 10 Pro+	phone
+RMX3700	真我 GT Neo5 SE	phone
+RMX3706	真我 GT Neo5	phone
+RMX3708	真我 GT Neo5 240W	phone
+RMX3740	真我 11 Pro+	phone
+RMX3751	真我 11	phone
+RMX3770	真我 11 Pro	phone
+RMX3781	真我 V50s	phone
+RMX3783	真我 V50	phone
+RMX3800	真我 GT6	phone
+RMX3820	真我 GT5	phone
+RMX3823	真我 GT5 240W	phone
+RMX3841	真我 12 Pro+	phone
+RMX3843	真我 12 Pro / 真我 12 Pro 至尊版	phone
+RMX3850	真我 GT Neo6 SE	phone
+RMX3852	真我 GT Neo6 / 真我 GT Neo6 《完美世界》动画云曦限定礼盒	phone
+RMX3888	真我 GT5 Pro	phone
+RMX3920	真我 13 Pro+	phone
+RMX3946	真我 V70	phone
+RMX3948	真我 V70s	phone
+RMX3952	真我 13	phone
+RMX3953	真我 V60 Pro	phone
+RMX3989	真我 13 Pro 至尊版	phone
+RMX3992	真我 12	phone
+RMX3993	真我 12x	phone
+RMX3995	真我 V60	phone
+RMX3996	真我 V60s	phone
+RMX5002	真我 13 Pro	phone
+RMX5010	真我 GT7 Pro	phone
+RMX5050	真我 14 Pro+	phone
+RMX5055	真我 14 Pro	phone
+RMX5060	真我 Neo7 / 真我 Neo7 《画江湖之不良人》限定礼盒	phone
+RMX5062	真我 Neo7 Turbo / 真我 Neo7 Turbo AI版	phone
+RMX5071	真我 Neo7x	phone
+RMX5075	真我 14	phone
+RMX5080	真我 Neo7 SE	phone
+RMX5090	真我 GT7 Pro 竞速版	phone
+RMX5100	真我 15 Pro / 真我 15 Pro 《权力的游戏》限定版	phone
+RMX5105	真我 15	phone
+RMX5112	真我 15T	phone
+RMX5200	真我 GT8 Pro / 真我 GT8 Pro 阿斯顿马丁 F1 限量版	phone
+RMX6688	真我 GT7 / 真我 GT7 阿斯顿马丁 F1 限量版	phone
+RMX6699	真我 GT8	phone
+RMX8899	真我 Neo8	phone
+RNA-AN00	荣耀 50 Pro 5G 全网通版	phone
+RNA-TN00	荣耀 50 Pro 5G 移动版	phone
+RNE-AL00	HUAWEI 麦芒 6	phone
+ROD-W09	荣耀平板 9 Pro 12.1 英寸 Wi-Fi 版	tablet
+ROD-W19	荣耀平板 9 Pro 柔光版 12.1 英寸 Wi-Fi 版	tablet
+ROD2-W09	荣耀平板 MagicPad 2 12.3 英寸 Wi-Fi 版	tablet
+ROD2-W69	荣耀平板 GT Pro 12.3 英寸 Wi-Fi 版	tablet
+ROL-W00	荣耀平板 10 Pro 11.5 英寸 Wi-Fi 版	tablet
+ROL-W10	荣耀平板 10 Pro 柔光版 11.5 英寸 Wi-Fi 版	tablet
+ROL-W60	荣耀平板 GT 11.5 英寸 Wi-Fi 版	tablet
+RTE-AL00	HUAWEI nova 9 Pro	phone
+RVL-AL09	荣耀 Note10	phone
+S8-301U	华为 MediaPad M1 3G 版	tablet
+S8-301W	华为 MediaPad M1 Wi-Fi 版	tablet
+S8-303L	华为 MediaPad M1 LTE 版	tablet
+S8-701U	荣耀平板 3G 版	tablet
+S8-701W	荣耀平板 Wi-Fi 版	tablet
+SCA-AL00	HUAWEI Pura 90 Pro Max	phone
+SCH-I889	Galaxy Note 电信定制版	phone
+SCH-I909	Galaxy S 电信定制版	phone
+SCH-I919	Galaxy S Duos 电信定制版	phone
+SCH-I939	Galaxy S3 电信定制版	phone
+SCH-I939D	Galaxy S3 电信双卡定制版	phone
+SCH-I939I	Galaxy S3 Neo+ 电信定制版	phone
+SCH-I959	Galaxy S4 电信定制版	phone
+SCH-N719	Galaxy Note2 电信定制版	phone
+SCH-W2013	三星 W2013	phone
+SCH-W699	三星 W699	phone
+SCH-W799	三星 W799	phone
+SCH-W899	三星 W899	phone
+SCH-W999	三星 W999	phone
+SCL-AL00	荣耀 4A 全网通版	phone
+SCL-CL00	荣耀 4A 电信版	phone
+SCL-TL00	荣耀 4A 移动定制版	phone
+SCL-TL00H	荣耀 4A 移动渠道版	phone
+SCM-AL09	华为平板 M6 10.8 英寸 LTE 版	tablet
+SCM-W09	华为平板 M6 10.8 英寸 Wi-Fi 版	tablet
+SCMR-AL09	HUAWEI MatePad 10.8 英寸 LTE 版	tablet
+SCMR-W09	HUAWEI MatePad 10.8 英寸 Wi-Fi 版	tablet
+SDY-AN00	荣耀 70 Pro	phone
+SEA-AL00	HUAWEI nova 5 全网通版	phone
+SEA-AL10	HUAWEI nova 5 Pro 全网通版	phone
+SEA-TL00	HUAWEI nova 5 移动 4G+ 版	phone
+SEA-TL10	HUAWEI nova 5 Pro 移动 4G+ 版	phone
+SER-AN00	荣耀 WIN Turbo	phone
+SGT-AL00	HUAWEI Mate 80 Pro (麒麟 9030 Pro)	phone
+SGT-AL10	HUAWEI Mate 80 Pro Max / HUAWEI Mate 80 Pro Max 风驰版	phone
+SGT-AL50	HUAWEI Mate 80 Pro (麒麟 9030)	phone
+SGU-AL10	HUAWEI Mate 80 RS 非凡大师	phone
+SHT-AL09	华为平板 M5 8.4 英寸 LTE 版	tablet
+SHT-W09	华为平板 M5 8.4 英寸 Wi-Fi 版	tablet
+SLA-AL00	华为畅享 7 全网通版	phone
+SLA-TL10	华为畅享 7 移动 4G+ 版	phone
+SLG-W10	HUAWEI MatePad 11.5 S 2025 Wi-Fi 版	tablet
+SLG-W50	HUAWEI MatePad 11.5 S 2025 灵动款 Wi-Fi 版	tablet
+SLY-AL00	HUAWEI nova 15 Ultra	phone
+SM-A2070	Galaxy A20s	phone
+SM-A3000	Galaxy A3 公开版	phone
+SM-A3009	Galaxy A3 电信定制版	phone
+SM-A3050	Galaxy A40s 全网通版	phone
+SM-A3058	Galaxy A40s 4G+	phone
+SM-A5000	Galaxy A5 公开版	phone
+SM-A5009	Galaxy A5 电信定制版	phone
+SM-A5070	Galaxy A50s	phone
+SM-A5100	Galaxy A5 (2016) 全网通版	phone
+SM-A5108	Galaxy A5 (2016) 移动定制疾速版	phone
+SM-A5160	Galaxy A51 5G	phone
+SM-A5260	Galaxy A52 5G	phone
+SM-A5360	Galaxy A53 5G	phone
+SM-A5460	Galaxy A54 5G	phone
+SM-A5560	Galaxy A55 5G	phone
+SM-A5660	Galaxy A56 5G	phone
+SM-A5760	Galaxy A57 5G	phone
+SM-A6050	Galaxy A9 Star Lite 全网通版	phone
+SM-A6058	Galaxy A9 Star Lite 4G+	phone
+SM-A6060	Galaxy A60	phone
+SM-A7000	Galaxy A7 公开版	phone
+SM-A7009	Galaxy A7 电信定制版	phone
+SM-A7050	Galaxy A70	phone
+SM-A7070	Galaxy A70s	phone
+SM-A7100	Galaxy A7 (2016) 全网通版	phone
+SM-A7108	Galaxy A7 (2016) 移动定制疾速版	phone
+SM-A7160	Galaxy A71 5G	phone
+SM-A8000	Galaxy A8	phone
+SM-A8050	Galaxy A80	phone
+SM-A9000	Galaxy A9 (2016)	phone
+SM-A9080	Galaxy A90 5G	phone
+SM-A9100	Galaxy A9 高配版	phone
+SM-A9200	Galaxy A9s	phone
+SM-C101	Galaxy S4 zoom	phone
+SM-C5000	Galaxy C5	phone
+SM-C5010	Galaxy C5 Pro 全网通版	phone
+SM-C5018	Galaxy C5 Pro 4G+	phone
+SM-C5560	Galaxy C55 5G	phone
+SM-C7000	Galaxy C7	phone
+SM-C7010	Galaxy C7 Pro 全网通版	phone
+SM-C7018	Galaxy C7 Pro 4G+	phone
+SM-C7100	Galaxy C8 全网通版	phone
+SM-C7108	Galaxy C8 4G+	phone
+SM-C9000	Galaxy C9 Pro 全网通版	phone
+SM-C9008	Galaxy C9 Pro 4G+	phone
+SM-E5260	Galaxy F52 5G	phone
+SM-E7000	Galaxy E7 公开版	phone
+SM-E7009	Galaxy E7 电信定制版	phone
+SM-F7000	Galaxy Z Flip	phone
+SM-F7070	Galaxy Z Flip 5G	phone
+SM-F7110	Galaxy Z Flip3 5G	phone
+SM-F7210	Galaxy Z Flip4	phone
+SM-F7310	Galaxy Z Flip5	phone
+SM-F7410	Galaxy Z Flip6	phone
+SM-F7610	Galaxy Z Flip7 FE	phone
+SM-F7660	Galaxy Z Flip7	phone
+SM-F7760	Galaxy Z Flip8	phone
+SM-F9000	Galaxy Fold	phone
+SM-F9160	Galaxy Z Fold2 5G	phone
+SM-F9260	Galaxy Z Fold3 5G	phone
+SM-F9360	Galaxy Z Fold4	phone
+SM-F9460	Galaxy Z Fold5	phone
+SM-F9560	Galaxy Z Fold6	phone
+SM-F9660	Galaxy Z Fold7	phone
+SM-F9680	Galaxy Z TriFold	phone
+SM-F9710	Galaxy Z Fold8	phone
+SM-F9760	Galaxy Z Fold8 Ultra	phone
+SM-G1600	Galaxy Folder	phone
+SM-G1650	Galaxy Folder 2	phone
+SM-G5500	Galaxy On5	phone
+SM-G5510	Galaxy On5 (2016) 青春版 全网通版	phone
+SM-G5520	Galaxy On5 (2016) 时尚版 全网通版	phone
+SM-G5528	Galaxy On5 (2016) 时尚版 移动定制版	phone
+SM-G5700	Galaxy On5 (2016) 全网通版	phone
+SM-G6000	Galaxy On7	phone
+SM-G6100	Galaxy On7 (2016)	phone
+SM-G6200	Galaxy A6s	phone
+SM-G7810	Galaxy S20 FE 5G	phone
+SM-G8508S	Galaxy Alpha	phone
+SM-G8750	Galaxy S 轻奢版	phone
+SM-G8850	Galaxy A9 Star 全网通版	phone
+SM-G8858	Galaxy A9 Star 4G+	phone
+SM-G8870	Galaxy A8s	phone
+SM-G9006V	Galaxy S5 联通 4G 单卡版	phone
+SM-G9006W	Galaxy S5 联通 4G 双卡版	phone
+SM-G9008V	Galaxy S5 移动 4G 单卡版	phone
+SM-G9008W	Galaxy S5 移动 4G 双卡版	phone
+SM-G9009D	Galaxy S5 电信 3G 双卡版	phone
+SM-G9009W	Galaxy S5 电信 4G 双卡版	phone
+SM-G9200	Galaxy S6 全网通版	phone
+SM-G9208	Galaxy S6 移动定制版	phone
+SM-G9209	Galaxy S6 电信定制版	phone
+SM-G9250	Galaxy S6 edge	phone
+SM-G9280	Galaxy S6 edge+	phone
+SM-G9300	Galaxy S7 全网通版	phone
+SM-G9308	Galaxy S7 移动定制版	phone
+SM-G9350	Galaxy S7 edge	phone
+SM-G9500	Galaxy S8 全网通版	phone
+SM-G9508	Galaxy S8 4G+	phone
+SM-G9550	Galaxy S8+	phone
+SM-G9600/DS	Galaxy S9 全网通版	phone
+SM-G9608/DS	Galaxy S9 4G+	phone
+SM-G9650/DS	Galaxy S9+	phone
+SM-G9700	Galaxy S10e 全网通版	phone
+SM-G9708	Galaxy S10e 4G+	phone
+SM-G9730	Galaxy S10 全网通版	phone
+SM-G9738	Galaxy S10 4G+	phone
+SM-G9750	Galaxy S10+ 全网通版	phone
+SM-G9758	Galaxy S10+ 4G+	phone
+SM-G9810	Galaxy S20 5G	phone
+SM-G9860	Galaxy S20+ 5G	phone
+SM-G9880	Galaxy S20 Ultra 5G	phone
+SM-G9900	Galaxy S21 FE 5G	phone
+SM-G9910	Galaxy S21 5G	phone
+SM-G9960	Galaxy S21+ 5G	phone
+SM-G9980	Galaxy S21 Ultra 5G	phone
+SM-J3109	Galaxy J3 电信定制版	phone
+SM-J3110	Galaxy J3 Pro 公开版	phone
+SM-J3119	Galaxy J3 Pro 电信定制版	phone
+SM-J3119S	Galaxy J3 Pro 增强版 电信定制版	phone
+SM-J3300	Galaxy J3 (2017) 全网通版	phone
+SM-J3308	Galaxy J3 (2017) 4G+	phone
+SM-J5008	Galaxy J5 移动定制版	phone
+SM-J5108	Galaxy J5 (2016) 移动定制版	phone
+SM-J7008	Galaxy J7 移动定制版	phone
+SM-J7108	Galaxy J7 (2016) 移动定制版	phone
+SM-J7109	Galaxy J7 (2016) 电信定制版	phone
+SM-M3070	Galaxy M30s	phone
+SM-N7506V	Galaxy Note3 Lite 联通定制版	phone
+SM-N7508V	Galaxy Note3 Lite 移动定制版	phone
+SM-N7509V	Galaxy Note3 Lite 电信定制版	phone
+SM-N9002	Galaxy Note3 联通定制版	phone
+SM-N9006	Galaxy Note3 公开版	phone
+SM-N9008	Galaxy Note3 移动定制版	phone
+SM-N9008S	Galaxy Note3 4G 公开版	phone
+SM-N9008V	Galaxy Note3 移动 4G 定制版	phone
+SM-N9009	Galaxy Note3 电信定制版	phone
+SM-N9100	Galaxy Note4 公开版	phone
+SM-N9106W	Galaxy Note4 联通定制版	phone
+SM-N9108V	Galaxy Note4 移动定制版	phone
+SM-N9109W	Galaxy Note4 电信定制版	phone
+SM-N9150	Galaxy Note Edge	phone
+SM-N9200	Galaxy Note5 全网通版	phone
+SM-N9208	Galaxy Note5 移动定制版	phone
+SM-N9300	Galaxy Note7	phone
+SM-N9500	Galaxy Note8 全网通版	phone
+SM-N9508	Galaxy Note8 4G+	phone
+SM-N9600	Galaxy Note9 全网通版	phone
+SM-N9608	Galaxy Note9 4G+	phone
+SM-N9700	Galaxy Note10	phone
+SM-N9760	Galaxy Note10+ 5G	phone
+SM-N9810	Galaxy Note20 5G	phone
+SM-N9860	Galaxy Note20 Ultra 5G	phone
+SM-P583	Galaxy Tab A (2016) with S Pen 10.1 WLAN	phone
+SM-P588C	Galaxy Tab A (2016) with S Pen 10.1 LTE	phone
+SM-P610	Galaxy Tab S6 Lite WLAN	phone
+SM-P615C	Galaxy Tab S6 Lite LTE	phone
+SM-S7110	Galaxy S23 FE	phone
+SM-S9010	Galaxy S22	phone
+SM-S9060	Galaxy S22+	phone
+SM-S9080	Galaxy S22 Ultra	phone
+SM-S9110	Galaxy S23	phone
+SM-S9160	Galaxy S23+	phone
+SM-S9180	Galaxy S23 Ultra	phone
+SM-S9210	Galaxy S24	phone
+SM-S9260	Galaxy S24+	phone
+SM-S9280	Galaxy S24 Ultra	phone
+SM-S9310	Galaxy S25	phone
+SM-S9360	Galaxy S25+	phone
+SM-S9370	Galaxy S25 Edge	phone
+SM-S9380	Galaxy S25 Ultra	phone
+SM-S9420	Galaxy S26	phone
+SM-S9470	Galaxy S26+	phone
+SM-S9480	Galaxy S26 Ultra	phone
+SM-T220	Galaxy Tab A7 Lite 8.7 WLAN	phone
+SM-T225C	Galaxy Tab A7 Lite 8.7 LTE	phone
+SM-T230	Galaxy Tab4 7.0 WLAN	phone
+SM-T231	Galaxy Tab4 7.0 3G	phone
+SM-T239C	Galaxy Tab4 7.0 VE LTE	phone
+SM-T290	Galaxy Tab A (2019) 8.0 WLAN	phone
+SM-T295C	Galaxy Tab A (2019) 8.0 LTE	phone
+SM-T320	Galaxy Tab PRO 8.4 WLAN	phone
+SM-T321	Galaxy Tab PRO 8.4 3G	phone
+SM-T330	Galaxy Tab4 8.0 WLAN	phone
+SM-T331	Galaxy Tab4 8.0 3G	phone
+SM-T350	Galaxy Tab A 8.0 WLAN	phone
+SM-T355C	Galaxy Tab A 8.0 LTE	phone
+SM-T380	Galaxy Tab A (2017) 8.0 WLAN	phone
+SM-T385C	Galaxy Tab A (2017) 8.0 LTE	phone
+SM-T500	Galaxy Tab A7 10.4 WLAN	phone
+SM-T505C	Galaxy Tab A7 10.4 LTE	phone
+SM-T510	Galaxy Tab A (2019) 10.1 WLAN	phone
+SM-T520	Galaxy Tab PRO 10.1 WLAN	phone
+SM-T530	Galaxy Tab4 10.1 WLAN	phone
+SM-T531	Galaxy Tab4 10.1 3G	phone
+SM-T550	Galaxy Tab A 9.7 WLAN	phone
+SM-T555C	Galaxy Tab A 9.7 LTE	phone
+SM-T580	Galaxy Tab A (2016) 10.1 WLAN	phone
+SM-T585C	Galaxy Tab A (2016) 10.1 LTE	phone
+SM-T590	Galaxy Tab A (2018) 10.5 WLAN	phone
+SM-T595C	Galaxy Tab A (2018) 10.5 LTE	phone
+SM-T700	Galaxy Tab S 8.4 WLAN	phone
+SM-T705C	Galaxy Tab S 8.4 LTE	phone
+SM-T710	Galaxy Tab S2 8.0 WLAN (Exynos)	phone
+SM-T713	Galaxy Tab S2 8.0 WLAN (高通)	phone
+SM-T715C	Galaxy Tab S2 8.0 LTE (Exynos)	phone
+SM-T719C	Galaxy Tab S2 8.0 LTE (高通)	phone
+SM-T720	Galaxy Tab S5e WLAN	phone
+SM-T725C	Galaxy Tab S5e LTE	phone
+SM-T730	Galaxy Tab S7 FE WLAN (骁龙 750G)	phone
+SM-T733	Galaxy Tab S7 FE WLAN (骁龙 778G)	phone
+SM-T735C	Galaxy Tab S7 FE LTE	phone
+SM-T800	Galaxy Tab S 10.5 WLAN	phone
+SM-T805C	Galaxy Tab S 10.5 LTE	phone
+SM-T810	Galaxy Tab S2 9.7 WLAN (Exynos)	phone
+SM-T813	Galaxy Tab S2 9.7 WLAN (高通)	phone
+SM-T815C	Galaxy Tab S2 9.7 LTE (Exynos)	phone
+SM-T819C	Galaxy Tab S2 9.7 LTE (高通)	phone
+SM-T820	Galaxy Tab S3 WLAN	phone
+SM-T825C	Galaxy Tab S3 LTE	phone
+SM-T830	Galaxy Tab S4 WLAN	phone
+SM-T835C	Galaxy Tab S4 LTE	phone
+SM-T860	Galaxy Tab S6 WLAN	phone
+SM-T870	Galaxy Tab S7 WLAN	phone
+SM-T970	Galaxy Tab S7+ WLAN	phone
+SM-W2014	三星 W2014	phone
+SM-W2015	三星 W2015	phone
+SM-W2016	三星 W2016	phone
+SM-W2017	三星 W2017	phone
+SM-W2018	三星 W2018	phone
+SM-W2019	三星 W2019	phone
+SM-W2020	三星 W20 5G	phone
+SM-W2021	三星 W21 5G	phone
+SM-W2022	三星 W22 5G	phone
+SM-W700	Galaxy TabPro S WLAN	phone
+SM-W7023	三星 W23 Flip	phone
+SM-W7024	三星 W24 Flip	phone
+SM-W7025	三星 W25 Flip	phone
+SM-W9023	三星 W23	phone
+SM-W9024	三星 W24	phone
+SM-W9025	三星 W25	phone
+SM-W9026	三星 W26	phone
+SM-X200	Galaxy Tab A8 WLAN	phone
+SM-X205C	Galaxy Tab A8 LTE	phone
+SM-X210	Galaxy Tab A9+ WLAN	phone
+SM-X216C	Galaxy Tab A9+ 5G	phone
+SM-X230	Galaxy Tab A11+ WLAN	phone
+SM-X236C	Galaxy Tab A11+ 5H	phone
+SM-X400	Galaxy Tab S10 Lite WLAN	phone
+SM-X510	Galaxy Tab S9 FE WLAN	phone
+SM-X516C	Galaxy Tab S9 FE 5G	phone
+SM-X520	Galaxy Tab S10 FE WLAN	phone
+SM-X526C	Galaxy Tab S10 FE 5G	phone
+SM-X610	Galaxy Tab S9 FE+ WLAN	phone
+SM-X616C	Galaxy Tab S9 FE+ 5G	phone
+SM-X620	Galaxy Tab S10 FE+ WLAN	phone
+SM-X626C	Galaxy Tab S10 FE+ 5G	phone
+SM-X700	Galaxy Tab S8 WLAN	phone
+SM-X706C	Galaxy Tab S8 5G	phone
+SM-X710	Galaxy Tab S9 WLAN	phone
+SM-X730	Galaxy Tab S11 WLAN	phone
+SM-X736C	Galaxy Tab S11 5G	phone
+SM-X800	Galaxy Tab S8+ WLAN	phone
+SM-X806C	Galaxy Tab S8+ 5G	phone
+SM-X810	Galaxy Tab S9+ WLAN	phone
+SM-X820	Galaxy Tab S10+ WLAN	phone
+SM-X900	Galaxy Tab S8 Ultra WLAN	phone
+SM-X906C	Galaxy Tab S8 Ultra 5G	phone
+SM-X910	Galaxy Tab S9 Ultra WLAN	phone
+SM-X916C	Galaxy Tab S9 Ultra 5G	phone
+SM-X920	Galaxy Tab S10 Ultra WLAN	phone
+SM-X926C	Galaxy Tab S10 Ultra 5G	phone
+SM-X930	Galaxy Tab S11 Ultra WLAN	phone
+SM-X936C	Galaxy Tab S11 Ultra 5G	phone
+SNE-AL00	HUAWEI 麦芒 7	phone
+SPN-AL00	HUAWEI nova 5i Pro 全网通版	phone
+SPN-TL00	HUAWEI nova 5i Pro 移动 4G+ 版	phone
+STF-AL00	荣耀 9 全网通标配版	phone
+STF-AL10	荣耀 9 全网通高配/尊享版	phone
+STF-TL10	荣耀 9 移动 4G+ 版	phone
+STG-AL00	华为畅享 60X	phone
+STK-AL00	华为畅享 10 Plus 全网通版	phone
+STK-TL00	华为畅享 10 Plus 移动 4G+ 版	phone
+SUP-AL90	HUAWEI Mate 70 Air	phone
+T1-701U	荣耀畅玩平板	tablet
+T1-701UA	荣耀畅玩平板优享版	tablet
+T1-821W	荣耀平板优享版	tablet
+T1-823L	荣耀平板 LTE 版	tablet
+T1-A21W	荣耀畅玩平板 note	tablet
+T1-A23L	荣耀畅玩平板 note LTE 版	tablet
+TAH-AN00	HUAWEI Mate X	phone
+TAH-AN00M	HUAWEI Mate Xs	phone
+TAS-AL00	HUAWEI Mate 30 全网通版	phone
+TAS-AN00	HUAWEI Mate 30 5G 全网通版	phone
+TAS-TL00	HUAWEI Mate 30 移动 4G+ 版	phone
+TAS-TN00	HUAWEI Mate 30 5G 移动版	phone
+TET-AL00	HUAWEI Mate X2 4G	phone
+TET-AN50	HUAWEI Mate X2 典藏版 5G	phone
+TFY-AN00	荣耀 X30i 5G	phone
+TFY-AN40	荣耀 Play6T Pro 5G	phone
+TGR-W00	HUAWEI MatePad 11.5 S Wi-Fi 版	tablet
+TGR-W10	HUAWEI MatePad 11.5 S Wi-Fi 柔光版	tablet
+TLR-AL00	HUAWEI nova 14	phone
+TNA-AN00	荣耀 60 Pro 5G 全网通版	phone
+TNA-TN00	荣耀 60 Pro 5G 移动版	phone
+TNN-AN00	华为麦芒 9 5G	phone
+TNNH-AN00	荣耀 Play4 5G	phone
+TNY-AL00	荣耀 Magic2 全网通版	phone
+TNY-AL10	荣耀 Magic2 3D 感光版	phone
+TNY-TL00	荣耀 Magic2 移动 4G+ 版	phone
+TXZ-AL10	HUAWEI MatePad 11.5 英寸 2026 SIM 卡版	tablet
+TXZ-W10	HUAWEI MatePad 11.5 英寸 2026 Wi-Fi 版	tablet
+TXZ-W20	HUAWEI MatePad 11.5 英寸 2026 Wi-Fi 柔光版	tablet
+TYR-AL00	HUAWEI nova 14 活力版	phone
+V1730DA	vivo Z1i 全网通版	phone
+V1730DT	vivo Z1i 移动全网通版	phone
+V1730EA	vivo Y89	phone
+V1730GA	vivo Z3x	phone
+V1731CA	vivo Y71s	phone
+V1732A	vivo Y81 全网通版	phone
+V1732T	vivo Y81 移动全网通版	phone
+V1801A0	vivo Z1	phone
+V1809A	vivo X23 全网通版	phone
+V1809T	vivo X23 移动全网通版	phone
+V1813A	vivo Y97 全网通版	phone
+V1813BA	vivo Z3 全网通版 (骁龙 670)	phone
+V1813BT	vivo Z3 全网通版 (骁龙 710)	phone
+V1813T	vivo Y97 移动全网通版	phone
+V1814A	vivo X21s 全网通版	phone
+V1814T	vivo X21s 移动全网通版	phone
+V1816A	vivo X23 幻彩版 全网通版	phone
+V1816T	vivo X23 幻彩版 移动全网通版	phone
+V1818A	vivo Y93 全网通版	phone
+V1818CA	vivo Y91 全网通版	phone
+V1818CT	vivo Y91 移动全网通版	phone
+V1818T	vivo Y93 移动全网通版	phone
+V1821A	vivo NEX 双屏版 全网通版	phone
+V1821T	vivo NEX 双屏版 移动全网通版	phone
+V1824A	iQOO (8GB+128GB/8GB+256GB/12GB+128GB/12GB+256GB)	phone
+V1824BA	iQOO (6GB+128GB)	phone
+V1829A	vivo X27 8GB+256GB 全网通版	phone
+V1829T	vivo X27 8GB+256GB 移动全网通版	phone
+V1831A	vivo S1 全网通版	phone
+V1831T	vivo S1 移动全网通版	phone
+V1832A	vivo S1 Pro 全网通版	phone
+V1832T	vivo S1 Pro 移动全网通版	phone
+V1836A	vivo X27 Pro 全网通版	phone
+V1836T	vivo X27 Pro 移动全网通版	phone
+V1838A	vivo X27 8GB+128GB 全网通版	phone
+V1838T	vivo X27 8GB+128GB 移动全网通版	phone
+V1901A	vivo Y3 全网通版	phone
+V1901T	vivo Y3 移动全网通版	phone
+V1911A	vivo Z5x 全网通版	phone
+V1913A	vivo Y7s 全网通版	phone
+V1913T	vivo Y7s 移动全网通版	phone
+V1914A	iQOO Neo 全网通版	phone
+V1914T	iQOO Neo 移动全网通版	phone
+V1916A	iQOO Pro 5G 全网通版	phone
+V1916T	iQOO Pro 5G 移动全网通版	phone
+V1919A	vivo Z5x 移动全网通版	phone
+V1921A	vivo Z5 全网通版	phone
+V1921T	vivo Z5 移动全网通版	phone
+V1922A	iQOO Pro 全网通版	phone
+V1922T	iQOO Pro 移动全网通版	phone
+V1923A	vivo NEX 3 全网通版	phone
+V1923T	vivo NEX 3 移动全网通版	phone
+V1924A	vivo NEX 3 5G 全网通版	phone
+V1924T	vivo NEX 3 5G 移动全网通版	phone
+V1928A	vivo U3x 全网通版	phone
+V1928T	vivo U3x 移动全网通版	phone
+V1930A	vivo Y3 标准版 全网通版	phone
+V1930T	vivo Y3 标准版 移动全网通版	phone
+V1932A	vivo S5 全网通版	phone
+V1932T	vivo S5 移动全网通版	phone
+V1934A	vivo Y5s 全网通版	phone
+V1934T	vivo Y5s 移动全网通版	phone
+V1936A	iQOO Neo 855 版 全网通版	phone
+V1936AL	iQOO Neo 855 竞速版 全网通版	phone
+V1936T	iQOO Neo 855 版 移动全网通版	phone
+V1936TL	iQOO Neo 855 竞速版 移动全网通版	phone
+V1938A	vivo X30 Pro 5G 全网通版	phone
+V1938CA	vivo X30 5G 全网通版	phone
+V1938CT	vivo X30 5G 移动全网通版	phone
+V1938T	vivo X30 Pro 5G 移动全网通版	phone
+V1941A	vivo Z5i 全网通版	phone
+V1941T	vivo Z5i 移动全网通版	phone
+V1945A	vivo Y9s 全网通版	phone
+V1945T	vivo Y9s 移动全网通版	phone
+V1950A	vivo NEX 3S 5G	phone
+V1955A	iQOO 3	phone
+V1962A	vivo S6	phone
+V1962BA	vivo G1	phone
+V1963A	vivo Z6 5G	phone
+V1965A	vivo Y50	phone
+V1981A	iQOO Neo3	phone
+V1986A	iQOO Z1	phone
+V1990A	vivo Z5x 712 版	phone
+V2001A	vivo X50	phone
+V2002A	vivo Y51s 5G	phone
+V2005A	vivo X50 Pro	phone
+V2009A	vivo Y74s 5G	phone
+V2011A	vivo X50 Pro+	phone
+V2012A	iQOO Z1x	phone
+V2023A	iQOO U1	phone
+V2023EA	vivo Y50t	phone
+V2024A	iQOO 5	phone
+V2025A	iQOO 5 Pro	phone
+V2031A	vivo S7e	phone
+V2031EA	vivo S7e 活力版	phone
+V2034A	vivo Y30	phone
+V2036A	vivo Y30 标准版	phone
+V2045A	vivo Y54s 5G	phone
+V2046A	vivo X60	phone
+V2047A	vivo X60 Pro	phone
+V2048A	vivo S9e	phone
+V2049A	iQOO 7	phone
+V2054A	vivo Y31s 5G	phone
+V2055A	iQOO Neo5	phone
+V2056A	vivo X60 Pro+	phone
+V2057A	vivo Y52s 5G	phone
+V2059A	vivo X60 曲屏版	phone
+V2061A	iQOO U3 5G	phone
+V2065A	iQOO U1x	phone
+V2066A	vivo Y30 活力版	phone
+V2066BA	vivo Y30g	phone
+V2068A	vivo Y31s 标准版 5G	phone
+V2069A	vivo Y53s (t1 版) 5G	phone
+V2069BA	vivo Y75s 5G	phone
+V2072A	vivo S9	phone
+V2073A	iQOO Z3	phone
+V2080A	vivo S7t	phone
+V2085A	vivo X60t	phone
+V2099A	vivo Y30 2021	phone
+V2102A	vivo Y71t 5G	phone
+V2106A	iQOO U3x 5G	phone
+V2111A	vivo Y53s 5G	phone
+V2115A	vivo T1	phone
+V2118A	iQOO Neo5 活力版	phone
+V2120A	vivo X60t Pro	phone
+V2121A	vivo S10	phone
+V2123A	vivo Y53s (t2 版) 5G	phone
+V2130A	vivo S10e	phone
+V2131A	iQOO Z5x	phone
+V2132A	vivo X70t	phone
+V2133A	vivo X70	phone
+V2134A	vivo X70 Pro	phone
+V2136A	iQOO 8	phone
+V2140A	vivo Y10	phone
+V2141A	iQOO 8 Pro	phone
+V2143A	iQOO U3x 标准版	phone
+V2145A	vivo X70 Pro+	phone
+V2148A	iQOO Z5	phone
+V2154A	iQOO Neo5S	phone
+V2156A	vivo Y76s 5G	phone
+V2156FA	vivo Y76s (t1 版) 5G	phone
+V2157A	iQOO Neo5 SE	phone
+V2158A	vivo Y32	phone
+V2162A	vivo S12	phone
+V2163A	vivo S12 Pro	phone
+V2164A	vivo Y55s 5G	phone
+V2164KA	iQOO Z6x	phone
+V2164PA	vivo Y73t 5G	phone
+V2165A	iQOO U5 5G	phone
+V2166A	vivo Y33s 5G	phone
+V2166BA	vivo Y77e 5G / vivo Y77e (t1 版) 5G	phone
+V2168A	vivo Y10 (t1 版)	phone
+V2170A	vivo X Note	phone
+V2171A	iQOO 9	phone
+V2172A	iQOO 9 Pro	phone
+V2178A	vivo X Fold	phone
+V2180A	vivo Y10 (t2 版)	phone
+V2180GA	iQOO U5x	phone
+V2183A	vivo X80	phone
+V2185A	vivo X80 Pro	phone
+V2186A	vivo X80 Pro 天玑 9000 版	phone
+V2188A	vivo T2x	phone
+V2190A	vivo S15e	phone
+V2196A	iQOO Neo6	phone
+V2197A	iQOO U5e 5G	phone
+V2199A	iQOO Neo6 SE	phone
+V2199GA	vivo T2	phone
+V2203A	vivo S15	phone
+V2207A	vivo S15 Pro	phone
+V2217A	iQOO 10	phone
+V2218A	iQOO 10 Pro	phone
+V2219A	vivo Y77 5G	phone
+V2220A	iQOO Z6 / iQOO Z6 活力版	phone
+V2227A	vivo X90 Pro+	phone
+V2229A	vivo X Fold+	phone
+V2230A	vivo Y35 5G / vivo Y35m 5G	phone
+V2230EA	iQOO Z7i	phone
+V2231A	iQOO Neo7	phone
+V2232A	iQOO Neo7 竞速版	phone
+V2236A	vivo Y11	phone
+V2238A	iQOO Neo7 SE	phone
+V2239A	vivo S16e	phone
+V2241A	vivo X90	phone
+V2241HA	vivo X90s	phone
+V2242A	vivo X90 Pro	phone
+V2243A	iQOO 11	phone
+V2244A	vivo S16	phone
+V2245A	vivo S16 Pro	phone
+V2254A	iQOO 11 Pro	phone
+V2256A	vivo X Flip	phone
+V2266A	vivo X Fold2	phone
+V2270A	iQOO Z7	phone
+V2271A	vivo Y78+ 5G / vivo Y78+ (t1) 5G	phone
+V2272A	iQOO Z7x	phone
+V2278A	vivo Y77t 5G / vivo Y78 5G / vivo Y78m 5G	phone
+V2279A	vivo Y35+ 5G / vivo Y35m+ 5G	phone
+V2282A	vivo S17t	phone
+V2283A	vivo S17	phone
+V2284A	vivo S17 Pro	phone
+V2285A	vivo S17e	phone
+V2301A	iQOO Neo8	phone
+V2302A	iQOO Neo8 Pro	phone
+V2303A	vivo X Fold3	phone
+V2304A	iQOO 11S	phone
+V2307A	iQOO 12	phone
+V2309A	vivo X100	phone
+V2312A	iQOO Z8x	phone
+V2312BA	vivo Y78t 5G	phone
+V2313A	vivo Y100 5G	phone
+V2314A	iQOO Z8	phone
+V2314DA	vivo Y100t 5G	phone
+V2317A	vivo Y12	phone
+V2318A	vivo Y36 5G / vivo Y36m 5G / vivo Y36i 5G / vivo Y36s 5G	phone
+V2323A	vivo S18	phone
+V2324A	vivo X100 Pro	phone
+V2324HA	vivo X100s Pro	phone
+V2327A	vivo Y36t	phone
+V2329A	iQOO 12 Pro	phone
+V2334A	vivo S18e	phone
+V2337A	vivo X Fold3 Pro	phone
+V2338A	iQOO Neo9	phone
+V2339A	iQOO Neo9 Pro	phone
+V2339FA	iQOO Neo9S Pro	phone
+V2343A	vivo Y200 5G	phone
+V2344A	vivo S18 Pro	phone
+V2352A	iQOO Z9 Turbo	phone
+V2352GA	iQOO Z9 Turbo 长续航版	phone
+V2353A	iQOO Z9x	phone
+V2353DA	vivo Y200t 5G	phone
+V2354A	vivo Y37 Pro 5G	phone
+V2357A	vivo Y36c 5G / vivo Y37 5G	phone
+V2357EA	vivo Y37m 5G	phone
+V2359A	vivo X100s	phone
+V2361A	iQOO Z9	phone
+V2361GA	vivo Y200 GT 5G / vivo Y200 Pro 企业定制版	phone
+V2362A	vivo S19 Pro	phone
+V2364A	vivo S19	phone
+V2366GA	vivo X100 Ultra	phone
+V2366HA	vivo X100 Ultra 卫星通信版	phone
+V2403A	iQOO Neo9S Pro+	phone
+V2405A	vivo X200 Pro	phone
+V2405DA	vivo X200 Pro 卫星通信版	phone
+V2408A	iQOO 13	phone
+V2410A	vivo Y300 Pro	phone
+V2415A	vivo X200	phone
+V2417A	iQOO Z9 Turbo+	phone
+V2419A	vivo X200 Pro mini	phone
+V2425A	iQOO Neo10	phone
+V2426A	iQOO Neo10 Pro	phone
+V2429A	vivo S20	phone
+V2430A	vivo S20 Pro	phone
+V2435A	vivo Y300 5G / vivo Y300c	phone
+V2436A	vivo X Fold5	phone
+V2442A	vivo Y37c	phone
+V2443A	vivo Y37t 5G / vivo Y37+ 5G / vivo Y50 5G / vivo Y50i 5G / vivo Y50e 5G / vivo Y50s 5G	phone
+V2443BA	vivo Y50m 5G / vivo Y50c 5G	phone
+V2444A	vivo Y300i 5G	phone
+V2445A	iQOO Z10x	phone
+V2445EA	vivo Y300t / vivo Y300+	phone
+V2452A	iQOO Z10 Turbo	phone
+V2452GA	vivo Y300 GT	phone
+V2453A	iQOO Z10 Turbo Pro	phone
+V2454A	vivo X200 Ultra	phone
+V2454DA	vivo X200 Ultra 卫星通信版	phone
+V2456A	vivo Y300 Pro+	phone
+V2458A	vivo X200s	phone
+V2463A	iQOO Neo10 Pro+	phone
+V2464A	vivo S30	phone
+V2465A	vivo S30 Pro mini	phone
+V2502A	vivo X300 Pro	phone
+V2502DA	vivo X300 Pro 卫星通信版	phone
+V2505A	iQOO 15	phone
+V2506A	vivo Y500	phone
+V2507A	iQOO Z10 Turbo+	phone
+V2509A	vivo X300	phone
+V2516A	vivo Y500 Pro	phone
+V2520A	iQOO Neo11	phone
+V2527A	vivo S50 Pro mini	phone
+V2528A	vivo S50 / vivo S50t / vivo S50t 元气版	phone
+V2531A	vivo Y500i / vivo Y500s / vivo Y6 / vivo Y6a	phone
+V2532A	iQOO Z11x	phone
+V2532BA	vivo Y6m	phone
+V2536A	iQOO Z11 Turbo	phone
+V2541A	vivo Y6c	phone
+V2542A	vivo Y60i / vivo Y60i m 版 / vivo Y6t m 版	phone
+V2545A	vivo X Fold6	phone
+V2546A	iQOO 15 Ultra	phone
+V2547A	vivo X300 Ultra	phone
+V2547DA	vivo X300 Ultra 卫星通信版	phone
+V2548A	vivo X300s	phone
+V2551A	iQOO Z11	phone
+V2553A	vivo Y600 Turbo	phone
+V2559A	vivo Y60 / vivo Y6t / vivo Y6e	phone
+V2559BA	vivo Y60m / vivo Y60s m 版	phone
+V2559UA	iQOO Z11i	phone
+V2561A	vivo Y600 Pro	phone
+V2564A	iQOO 15T	phone
+V2571A	vivo S60	phone
+V2572A	vivo S60 元气版	phone
+V2573A	iQOO Neo11 至尊版	phone
+V2603A	iQOO Z11S	phone
+V2612A	vivo X300 E	phone
+VCA-AN00	荣耀 V Purse	phone
+VCE-AL00	HUAWEI nova 4 全网通版	phone
+VCE-TL00	HUAWEI nova 4 移动 4G+ 版	phone
+VDE-AL00	HUAWEI Pura X	phone
+VDE-AL10	HUAWEI Pura X 典藏版	phone
+VER-AN00	荣耀 Magic Vs2	phone
+VER-AN10	荣耀 Magic V2	phone
+VIE-AL10	HUAWEI P9 Plus	phone
+VKI-AN00	荣耀 600 Pro	phone
+VKJ-AN00	荣耀 600 超级版	phone
+VKJ-AN90	荣耀 600 元气版	phone
+VKY-AL00	HUAWEI P10 Plus 全网通版	phone
+VKY-TL00	HUAWEI P10 Plus 移动 4G+ 版	phone
+VLR-W09	荣耀 MagicBook 2019 i3	phone
+VLR-W09L	荣耀 MagicBook 2019 科技尝鲜版 i3	phone
+VLR-W19	荣耀 MagicBook 2019 i5	phone
+VLR-W19L	荣耀 MagicBook 2019 科技尝鲜版 i5	phone
+VLR-W19LP	荣耀 MagicBook 2019 科技尝鲜版 i5 (16GB+512GB)	phone
+VLR-W29	荣耀 MagicBook 2019 i7	phone
+VLR-W29L	荣耀 MagicBook 2019 科技尝鲜版 i7	phone
+VLT-W50	荣耀 MagicBook i5	phone
+VLT-W60	荣耀 MagicBook i7	phone
+VNE-AN00	荣耀畅玩 30 5G	phone
+VNE-AN40	荣耀 Play6C 5G	phone
+VOG-AL00	HUAWEI P30 Pro 全网通版 (8GB+128GB)	phone
+VOG-AL10	HUAWEI P30 Pro 全网通版	phone
+VOG-TL00	HUAWEI P30 Pro 移动 4G+ 版	phone
+VRD-AL09	华为平板 M6 8.4 英寸 LTE 版	tablet
+VRD-AL10	华为平板 M6 高能版 8.4 英寸 LTE 版	tablet
+VRD-W09	华为平板 M6 8.4 英寸 Wi-Fi 版	tablet
+VRD-W10	华为平板 M6 高能版 8.4 英寸 Wi-Fi 版	tablet
+VTR-AL00	HUAWEI P10 全网通版	phone
+VTR-TL00	HUAWEI P10 移动 4G+ 版	phone
+VYG-AL00	HUAWEI Mate 80	phone
+WAS-AL00	HUAWEI nova 青春版 全网通版	phone
+WAS-TL10	HUAWEI nova 青春版 移动 4G+ 版	phone
+WDY-AN00	荣耀畅玩 40 5G / 荣耀畅玩 40C 5G / 荣耀畅玩 40S 5G	phone
+WEB-AL00	HUAWEI MatePad Pro 13.2 英寸 2025 典藏版 SIM 卡版	tablet
+WEB-AL10	HUAWEI MatePad Pro 13.2 英寸 2025 SIM 卡版	tablet
+WEB-W00	HUAWEI MatePad Pro 13.2 英寸 2025 Wi-Fi 版	tablet
+WEB-W10	HUAWEI MatePad Pro 13.2 英寸 2025 Wi-Fi 版 (16GB+1TB)	tablet
+WGR-AN19	HUAWEI MatePad Pro 12.6 英寸 2021 5G 版	tablet
+WKG-AN00	华为畅享 20 5G 全网通版	phone
+WKG-TN00	华为畅享 20 5G 移动版	phone
+WLZ-AL10	HUAWEI nova 6 4G	phone
+WLZ-AN00	HUAWEI nova 6 5G	phone
+XWC-P	荣耀 MagicBook 16 2026	phone
+XYAO-W00	HUAWEI MatePad Pro 11 英寸 2024 Wi-Fi 版	tablet
+YAG-W09	荣耀平板 10 Pro Max 13 英寸 Wi-Fi 版	tablet
+YAG-W19	荣耀平板 10 Pro Max 柔光版 13 英寸 Wi-Fi 版	tablet
+YAL-AL00	荣耀 20 全网通版	phone
+YAL-AL10	荣耀 20 PRO 全网通版	phone
+YAL-AL50	荣耀 20S 全网通版	phone
+YAL-TL00	荣耀 20 移动 4G+ 版	phone
+YAL-TL10	荣耀 20 PRO 移动 4G+ 版	phone
+YAL-TL50	荣耀 20S 移动 4G+ 版	phone
+YLE-W09	荣耀 MagicPad 3 Pro 12.3 英寸 Wi-Fi 版	tablet
+YLP-W00	荣耀 MagicPad 3 Pro 13.3 英寸 Wi-Fi 版	tablet
+YOK-AN10	荣耀 V40 5G	phone
+Z2350	nubia V60 Design	phone
+Z2352N	nubia Neo 2 5G	phone
+Z2353	nubia Music	phone
+Z2356	nubia V60	phone
+Z2455	nubia Focus	phone
+Z2458	nubia V70 Design	phone
+Z2459	nubia V70	phone
+Z2460	nubia Music 2 / nubia Music Pro	phone
+Z2461	nubia Neo 3	phone
+Z2462N	nubia Focus 2 5G	phone
+Z2463N	nubia Focus 2 Ultra 5G	phone
+Z2464N	nubia Neo 3 5G	phone
+Z2465N	nubia Neo 3 GT 5G	phone
+Z2467	nubia V70 Max	phone
+Z2468N	nubia Air	phone
+Z2469N	nubia A76 5G	phone
+Z2473	nubia A56	phone
+Z2570N	nubia Neo 5 GT 5G	phone
+Z2571N	nubia Neo 5 5G	phone
+Z6255CA	nubia A75	phone
+Z6305R	nubia S2R	phone
+Z8900CA	nubia Flip 2 eSIM	phone
+Z999	中兴天机 Axon M	phone
+ZQC-P	荣耀 MagicBook Pro 14 2026	phone
+ZTE 1010L	中兴畅行 30	phone
+ZTE 1021L	中兴畅行 40 SE	phone
+ZTE 7530N	中兴远航 10	phone
+ZTE 7531N	中兴远航 30S	phone
+ZTE 7532N	中兴远航 30	phone
+ZTE 7534N	中兴远航 30 畅行版	phone
+ZTE 7541N	中兴远航 41	phone
+ZTE 7542N	中兴远航 40	phone
+ZTE 7543N	中兴小鲜 50 / 中兴畅行 50	phone
+ZTE 7546N	中兴远航 41S	phone
+ZTE 7551N	中兴小鲜 60 / 中兴远航 60 / 中兴 V80	phone
+ZTE 7552N	中兴畅行 60	phone
+ZTE 7553N	中兴畅行 60 Plus / 中兴远航 61	phone
+ZTE 7561N	中兴远航 60 Plus / 中兴远航 70 / 中兴小鲜 60 臻情版	phone
+ZTE 7661N	中兴畅行 60 Ultra	phone
+ZTE 7671N	中兴畅行 70 Plus	phone
+ZTE 7672N	中兴小鲜 70 Plus	phone
+ZTE 8010	中兴 Blade V2020 Smart	phone
+ZTE 8012N	中兴 Blade 20 5G	phone
+ZTE 8030N	中兴 S30 SE 5G	phone
+ZTE 8031	中兴 ZTE V2022	phone
+ZTE 8040N	中兴远航 30 Pro	phone
+ZTE 9000N	中兴天机 Axon 11 SE 5G	phone
+ZTE 9030N	中兴 S30 5G	phone
+ZTE 9040N	中兴远航 20 Pro	phone
+ZTE 9041N	中兴远航 30 Pro+	phone
+ZTE 9042N	中兴远航 40 Pro+	phone
+ZTE 9043N	中兴 V70 Pro	phone
+ZTE A0616	中兴 Blade A3	phone
+ZTE A0620	中兴远航 5 plus	phone
+ZTE A0722	中兴 Blade A4	phone
+ZTE A2017	中兴天机 7	phone
+ZTE A2018	中兴天机 7S	phone
+ZTE A2019 PRO	中兴天机 Axon 9 Pro	phone
+ZTE A2020 PRO	中兴天机 Axon 10 Pro 4G	phone
+ZTE A2020 SP	中兴天机 Axon 10s Pro 5G	phone
+ZTE A2020N2 PRO	中兴天机 Axon 10 Pro 5G	phone
+ZTE A2021	中兴天机 Axon 11 5G 公开版	phone
+ZTE A2021H	中兴天机 Axon 11 5G 行业版	phone
+ZTE A2022	中兴 Axon 30 Pro 5G	phone
+ZTE A2022H	中兴天机 A31 Pro 5G	phone
+ZTE A2022P	中兴 Axon 30 Ultra 5G	phone
+ZTE A2023	中兴 Axon 40 Pro	phone
+ZTE A2023BH	中兴天机 A41	phone
+ZTE A2023H	中兴天机 A41 Ultra	phone
+ZTE A2023P	中兴 Axon 40 Ultra	phone
+ZTE A2024H	中兴 Axon 50 / 中兴 Axon 50 Ultra	phone
+ZTE A2025H	中兴 Axon 60 Ultra 天通版	phone
+ZTE A2025HL	中兴 Axon 60 Ultra	phone
+ZTE A2121	中兴天机 Axon 20 5G	phone
+ZTE A2122H	中兴天机 A31 5G	phone
+ZTE A2322	中兴 Axon 30 5G / 中兴 Axon 30S 5G	phone
+ZTE A7000	中兴 Blade A7	phone
+ZTE A7010	中兴 Blade A7S	phone
+ZTE BV0701	中兴小鲜 4	phone
+ZTE BV0730	中兴 Blade A2 Plus	phone
+ZTE BV0800	中兴 Blade V8	phone
+ZTE BV0850	中兴 Blade V8 mini	phone
+ZTE C2017	中兴天机 7 MAX	phone
+ZTE PA01	中兴 Axon Pad	tablet
+ZTE V0721	中兴 Blade A2S	phone
+ZTE V0840	中兴小鲜 5	phone
+ZTE V0900	中兴 Blade V9	phone
+ZTE V0920	中兴小鲜 5S	phone
+ZTE V1000	中兴 Blade V10	phone
+ZTE V1050	中兴 Blade 20 Smart	phone

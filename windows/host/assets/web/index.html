@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WireView 控制中心</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark"><img src="ui/wireview-app-icon.png" alt="WireView"></span><span>WireView 有线副屏 <i>—</i> USB 平板副屏 <small class="brand-version">版本 1.1.20</small></span></div>
+      <div class="header-actions">
+        <button id="settings-toggle" class="icon-button" type="button" title="设置" aria-label="设置" aria-expanded="false">⚙</button>
+        <section id="settings-panel" class="settings-panel" aria-hidden="true">
+          <div class="settings-panel-heading">
+            <div>
+              <span class="settings-eyebrow">设置</span>
+              <strong>关于 WireView</strong>
+              <small>版本 1.1.20 · USB Android 副屏工具</small>
+            </div>
+          </div>
+          <p class="settings-description">视频和控制数据仅通过 USB / 本机 ADB 通道传输，不经过云端服务器。</p>
+          <div class="settings-developer">
+            <span>开发者</span>
+            <strong>S+Zn</strong>
+            <p>如有反馈或建议，欢迎通过邮箱联系。</p>
+            <div class="developer-email"><code>S_Znnn@163.com</code><button id="copy-developer-email" type="button">复制邮箱</button></div>
+          </div>
+          <button id="support-developer" class="settings-action support-action" type="button">❤　支持开发者</button>
+          <div id="support-content" class="support-content" hidden>
+            <span class="support-confetti" aria-hidden="true"></span>
+            <img id="support-qr" src="ui/developer-support.png" alt="S+Zn 的赞赏码">
+            <div class="support-copy">
+              <div class="support-copy-heading"><strong>感谢支持</strong><small>你的支持会帮助 WireView 持续改进。</small></div>
+              <div class="support-scan-actions">
+                <small id="support-scan-tip" hidden>您也可以尝试提高屏幕亮度。给您添麻烦了，感谢支持！</small>
+                <button id="support-scan-help" type="button" aria-pressed="false">扫码有问题？</button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-toggle-row">
+            <span><strong>暗色模式</strong><small>当前已开启</small></span>
+            <button id="theme-toggle" class="toggle is-on" type="button" role="switch" aria-checked="true" aria-label="切换暗色模式"><i></i></button>
+          </div>
+        </section>
+      </div>
+    </header>
+    <nav class="tabs" aria-label="控制中心模式">
+      <button class="tab is-active" data-mode="simple">简易模式</button>
+      <button class="tab" data-mode="full">完整模式</button>
+    </nav>
+    <section id="simple-page" class="page"></section>
+    <section id="full-page" class="page is-hidden"></section>
+    <section id="diagnostics-page" class="page is-hidden"></section>
+    <footer id="status-bar" class="status-bar"></footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

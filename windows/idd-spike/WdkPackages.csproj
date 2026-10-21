@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <EnableDefaultItems>false</EnableDefaultItems>
+  </PropertyGroup>
+
+  <!--
+    Restore-only project. The IddCx spike consumes the native WDK files by an
+    explicit path so the driver project does not require machine-wide WDK/VSIX
+    integration.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.WDK.x64"
+                      Version="10.0.26100.6584"
+                      PrivateAssets="all"
+                      ExcludeAssets="all" />
+  </ItemGroup>
+</Project>

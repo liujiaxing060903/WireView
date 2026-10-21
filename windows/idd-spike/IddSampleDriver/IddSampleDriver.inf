@@ -1,0 +1,72 @@
+;
+; WireViewIddDriver.inf
+;
+
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+ClassGUID = {4D36E968-E325-11CE-BFC1-08002BE10318}
+Class = Display
+ClassVer = 2.0
+Provider=%ManufacturerName%
+CatalogFile=WireViewIddDriver.cat
+DriverVer=08/22/2026,0.1.0.1
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64.10.0...22000
+
+[Standard.NTamd64.10.0...22000]
+%DeviceName%=WireView_Install, Root\WireViewIdd
+%DeviceName%=WireView_Install, WireViewIdd
+
+[SourceDisksFiles]
+WireViewIddDriver.dll=1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+; =================== UMDF Device ==================================
+
+[WireView_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=UMDriverCopy
+
+[WireView_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=WireView_HardwareDeviceSettings
+
+[WireView_HardwareDeviceSettings]
+HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "WireViewIddDriverGroup"
+
+[WireView_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[WireView_Install.NT.Wdf]
+UmdfService=WireViewIddDriver,WireViewIddDriver_Install
+UmdfServiceOrder=WireViewIddDriver
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[WireViewIddDriver_Install]
+UmdfLibraryVersion=2.25
+ServiceBinary=%13%\WireViewIddDriver.dll
+UmdfExtensions=IddCx0102
+
+[DestinationDirs]
+UMDriverCopy=13
+
+[UMDriverCopy]
+WireViewIddDriver.dll
+
+; =================== Generic ==================================
+
+[Strings]
+ManufacturerName="WireView Project"
+DiskName="WireView Indirect Display Driver Installation Disk"
+DeviceName="WireView Virtual Display Adapter"
+
+REG_MULTI_SZ  = 0x00010000
+REG_SZ        = 0x00000000
