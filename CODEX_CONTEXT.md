@@ -2,10 +2,19 @@
 
 > 本文件记录仓库与当前开发环境的项目事实，不记录聊天过程。除明确写为“待确认”的事项外，内容以当前代码、脚本、已完成构建和真机验证结果为准。
 
+## 2026-10-22 1.1.20 发布产物
+
+- 已重新构建 Windows Release 和 Android Debug APK；Windows 13 项 CTest、Android 协议/传输/持久日志三组自测，以及包内 Windows 程序自测均通过。
+- 产物：`release/WireView-1.1.20-Windows-x64.zip`、`release/WireView-1.1.20-debug.apk`、`release/WireView-1.1.20-SHA256SUMS.txt`；Android 实际清单为 `versionCode=20`、`versionName=1.1.20`、`minSdk=30`，签名与 1.1.19 一致。
+- 发布入口：<https://github.com/liujiaxing060903/WireView/releases/tag/v1.1.20>；发布说明和 SHA-256 见 `docs/releases/v1.1.20.md`。
+- 打包脚本已对齐不分发 ADB/Parsec 第三方二进制的约束，改为依赖获取说明，并补入原生 legacy 回退程序及 WebView2 许可。脚本会拦截版本不符和覆盖已有产物。
+- 上次 Android 缓存锁文件拒绝访问在允许写入用户 Gradle 缓存后未再复现，本轮无需终止 Android Studio 或现有 Java 进程。
+- 本轮未新增真机回归，Intel QSV 与 HDR/10-bit 的已知兼容性问题仍未修复。
+
 ## 2026-10-21 最新交接入口
 
 - 最新交接请先阅读 `docs/TASK_HANDOFF_2026-10-21.md`，并结合 `docs/TASK_HANDOFF_2026-09-09.md`；近期状态优先于下方旧快照。
-- 源码版本为 `1.1.20`，包含简易模式扩展副屏目标选择及失效显示器预检修复；Windows Release 的 13 项 CTest 已通过，Android 新版 APK 和 1.1.20 发布包仍待完成。
+- 源码版本为 `1.1.20`，包含简易模式扩展副屏目标选择及失效显示器预检修复；两端产物已于 2026-10-22 重新构建，详见上方发布记录。
 - 公开源码仓库：<https://github.com/liujiaxing060903/WireView>。默认分支 `main`，本地跟踪 `origin/main`；构建、发布包、备份及运行缓存均未纳入 Git。
 
 ## 2026-09-02 当前交接快照（下一次 Task 必读）

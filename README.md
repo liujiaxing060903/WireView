@@ -40,7 +40,7 @@ USB 连接用于数据传输，不要求设备支持 USB-C DP 视频输出。一
 4. 打开 `WireView 控制中心.exe`，选择“仅显示”或“触控与手写笔”。
 5. 点击“复制屏幕”或“扩展屏幕”开始使用；结束时点击“停止 WireView”。
 
-本仓库目前提供项目源码，安装包发布仍在完善中。已有 Windows 程序和 APK 时，可参考 [Windows 使用说明](docs/RELEASE_WINDOWS.md)；自行构建请参阅 [开发与调试资料](docs/DEVELOPMENT.md)。
+Windows 便携包和 Android APK 可从 [GitHub Releases](https://github.com/liujiaxing060903/WireView/releases/latest) 下载。详细步骤见 [Windows 使用说明](docs/RELEASE_WINDOWS.md)，版本改动见 [1.1.20 发布说明](docs/releases/v1.1.20.md)；自行构建请参阅 [开发与调试资料](docs/DEVELOPMENT.md)。
 
 ## 当前状态与兼容性
 
