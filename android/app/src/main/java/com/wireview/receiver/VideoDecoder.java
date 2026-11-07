@@ -14,6 +14,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
@@ -51,7 +54,13 @@ final class VideoDecoder implements AutoCloseable {
     // A 60 FPS frame budget is 16.67 ms. Two short dequeue attempts made
     // some Qualcomm decoders discard an inter frame just before an output
     // buffer became reusable, which corrupts the reference chain until GOP.
-    private static final long INPUT_RETRY_TIMEOUT_US = 200_000L;
+    private static final long INPUT_RETRY_TIMEOUT_US = 40_000L;
+    // 待解码帧队列上限。到达上限丢弃最旧帧并请求关键帧：低延迟接收端
+    // （Moonlight/scrcpy）的标准做法，防止"延迟棘轮"——两端同为 60fps 时
+    // FIFO 积压永远不会自行排空，必须靠丢帧腾出余量。
+    private static final int MAX_PENDING_FRAMES = 8;
+    // 最旧待渲染帧的到达时刻距今超过该值即整管冲刷并请求关键帧。
+    private static final long PIPELINE_FLUSH_THRESHOLD_US = 600_000L;
     private static final long OUTPUT_DRAIN_TIMEOUT_US = 0L;
     private static final long OUTPUT_POLL_INTERVAL_MILLIS = 2L;
 
@@ -74,6 +83,9 @@ final class VideoDecoder implements AutoCloseable {
     private boolean awaitingRecoveryKeyframe;
     private int decoderErrors;
     private long lastHealthReportNanos;
+    private final AtomicLong backlogDrops = new AtomicLong();
+    private final AtomicLong lastBacklogKeyframeRequestNanos = new AtomicLong();
+    private final AtomicLong lastPipelineFlushNanos = new AtomicLong();
     private final Map<Long, FrameTiming> pendingFrameTimings = new HashMap<>();
 
     VideoDecoder(
@@ -83,11 +95,25 @@ final class VideoDecoder implements AutoCloseable {
         this.selectedDecoder = selectedDecoder;
         this.forceLowLatency = forceLowLatency;
         this.listener = listener;
-        worker = Executors.newSingleThreadExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "WireViewVideoDecoder");
-            thread.setDaemon(true);
-            return thread;
-        });
+        worker = new ThreadPoolExecutor(
+                1, 1, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(MAX_PENDING_FRAMES),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "WireViewVideoDecoder");
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                (runnable, executor) -> {
+                    // 队列已满：丢最旧的待解帧，保住最新帧。被丢的可能是
+                    // P 帧，参考链可能断裂，因此节流地请求关键帧。
+                    backlogDrops.incrementAndGet();
+                    executor.getQueue().poll();
+                    if (!executor.getQueue().offer(runnable)) {
+                        backlogDrops.incrementAndGet();
+                        return;
+                    }
+                    requestBacklogKeyframe();
+                });
         outputPoller = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "WireViewOutputPoller");
             thread.setDaemon(true);
@@ -144,47 +170,70 @@ final class VideoDecoder implements AutoCloseable {
         }
 
         resetDecoderHealth();
-        try {
-            MediaFormat format = MediaFormat.createVideoFormat(
-                    MediaFormat.MIMETYPE_VIDEO_AVC,
-                    streamConfig.width,
-                    streamConfig.height);
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, streamConfig.frameRateNumerator);
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024);
-            if (selectedDecoder.lowLatency || forceLowLatency) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-            }
+        // Moonlight 式低延迟参数阶梯：每档独立 configure+start，并用金丝雀
+        // dequeue 探测"静默错误态"（部分老 OMX 在 start 后首个 native 调用
+        // 才抛异常）。失败即释放并尝试下一档。本流无 B 帧，picture-order
+        // （按解码序输出，DPB 不囤帧重排）对高通老解码器收益最大。
+        final String[] attemptKeys = {
+                null,
+                "low-latency",
+                "vendor.qti-ext-dec-picture-order.enable",
+                "vendor.qti-ext-dec-low-latency.enable",
+                "vdec-lowlatency",
+        };
+        for (final String lowLatencyKey : attemptKeys) {
+            try {
+                MediaFormat format = MediaFormat.createVideoFormat(
+                        MediaFormat.MIMETYPE_VIDEO_AVC,
+                        streamConfig.width,
+                        streamConfig.height);
+                format.setInteger(MediaFormat.KEY_FRAME_RATE, streamConfig.frameRateNumerator);
+                format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024);
+                if (lowLatencyKey != null) {
+                    format.setInteger(lowLatencyKey, 1);
+                }
+                if (selectedDecoder.lowLatency || forceLowLatency) {
+                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+                }
 
-            codec = MediaCodec.createByCodecName(selectedDecoder.name);
-            applyVendorLowLatencyParameters(codec, format);
-            codec.configure(format, surface, null, 0);
-            codec.start();
-            firstFrameRendered = false;
-            firstInputQueuedNanos = 0L;
-            listener.onStreamConfigured(
-                    streamConfig.width,
-                    streamConfig.height,
-                    streamConfig.frameRateNumerator);
-            reportDecoderHealth(true);
-            listener.onDecoderStatus(
-                    "解码器已启动：" + streamConfig.width + "×" + streamConfig.height
-                            + "@" + streamConfig.frameRateNumerator);
-            Log.i(TAG, "Configured " + selectedDecoder.name + " with " + streamConfig
-                    + ", standardLowLatency=" + selectedDecoder.lowLatency
-                    + ", forcedLowLatency=" + forceLowLatency);
-        } catch (IOException | IllegalArgumentException | IllegalStateException error) {
-            Log.e(TAG, "Cannot configure decoder", error);
-            ++decoderErrors;
-            releaseCodec();
-            reportDecoderHealth(true);
-            listener.onDecoderStatus("解码器启动失败：" + error.getMessage());
+                codec = MediaCodec.createByCodecName(selectedDecoder.name);
+                applyVendorLowLatencyParameters(codec, format);
+                codec.configure(format, surface, null, 0);
+                codec.start();
+                // 金丝雀：错误态的组件会在首个 native 调用抛 IllegalStateException。
+                final MediaCodec.BufferInfo canary = new MediaCodec.BufferInfo();
+                codec.dequeueOutputBuffer(canary, 0L);
+                firstFrameRendered = false;
+                firstInputQueuedNanos = 0L;
+                listener.onStreamConfigured(
+                        streamConfig.width,
+                        streamConfig.height,
+                        streamConfig.frameRateNumerator);
+                reportDecoderHealth(true);
+                listener.onDecoderStatus(
+                        "解码器已启动：" + streamConfig.width + "×" + streamConfig.height
+                                + "@" + streamConfig.frameRateNumerator
+                                + (lowLatencyKey == null ? "" : "（" + lowLatencyKey + "）"));
+                Log.i(TAG, "Configured " + selectedDecoder.name + " with " + streamConfig
+                        + ", lowLatencyKey=" + lowLatencyKey
+                        + ", standardLowLatency=" + selectedDecoder.lowLatency
+                        + ", forcedLowLatency=" + forceLowLatency);
+                return;
+            } catch (IOException | IllegalArgumentException | IllegalStateException error) {
+                Log.w(TAG, "Decoder config attempt failed (key=" + lowLatencyKey + ")", error);
+                releaseCodec();
+            }
         }
+        ++decoderErrors;
+        reportDecoderHealth(true);
+        listener.onDecoderStatus("解码器启动失败：所有低延迟参数组合均被拒绝");
     }
 
     private void queueFrameOnWorker(Protocol.Packet packet, long arrivalMicros) {
         if (codec == null) {
             return;
         }
+        maybeFlushPipeline(arrivalMicros);
 
         ++receivedFrames;
 
@@ -244,9 +293,60 @@ final class VideoDecoder implements AutoCloseable {
             Log.e(TAG, "Decoder failed while queuing a frame", error);
             ++decoderErrors;
             releaseCodec();
+            // 自愈：surface 与流配置仍有效时立即重建解码器，而不是停在
+            // "解码失败" 直到用户手动停止会话。
+            if (surface != null && surface.isValid() && streamConfig != null) {
+                configureCodec();
+            }
             reportDecoderHealth(true);
             listener.onDecoderStatus("解码失败：" + error.getMessage());
         }
+    }
+
+    private void requestBacklogKeyframe() {
+        long now = System.nanoTime();
+        long last = lastBacklogKeyframeRequestNanos.get();
+        if (now - last < 500_000_000L) {
+            return;
+        }
+        if (!lastBacklogKeyframeRequestNanos.compareAndSet(last, now)) {
+            return;
+        }
+        Log.w(TAG, "Decoder queue overflow, dropped oldest frames: " + backlogDrops.get());
+        listener.onKeyframeRequired(backlogDrops.get(), "解码队列积压，已丢弃旧帧");
+    }
+
+    private void maybeFlushPipeline(long arrivalMicros) {
+        if (pendingFrameTimings.isEmpty()) {
+            return;
+        }
+        long oldestArrival = Long.MAX_VALUE;
+        for (FrameTiming timing : pendingFrameTimings.values()) {
+            oldestArrival = Math.min(oldestArrival, timing.arrivalMicros);
+        }
+        boolean latencyTooHigh = arrivalMicros - oldestArrival > PIPELINE_FLUSH_THRESHOLD_US;
+        boolean backlogTooDeep = pendingFrameTimings.size() > 120;
+        if (!latencyTooHigh && !backlogTooDeep) {
+            return;
+        }
+        long now = System.nanoTime();
+        long last = lastPipelineFlushNanos.get();
+        if (now - last < 1_000_000_000L) {
+            return;
+        }
+        if (!lastPipelineFlushNanos.compareAndSet(last, now)) {
+            return;
+        }
+        try {
+            codec.flush();
+        } catch (IllegalStateException error) {
+            return;
+        }
+        Log.w(TAG, "Pipeline flushed by latency watchdog, pending="
+                + pendingFrameTimings.size() + ", latencyUs=" + (arrivalMicros - oldestArrival));
+        pendingFrameTimings.clear();
+        awaitingRecoveryKeyframe = true;
+        listener.onKeyframeRequired(backlogDrops.get(), "解码延迟过高，已冲刷解码管线");
     }
 
     private void requestRecoveryKeyframe(Protocol.Packet packet, String reason) {
@@ -280,6 +380,9 @@ final class VideoDecoder implements AutoCloseable {
                         Log.e(TAG, "Decoder failed while polling output", error);
                         ++decoderErrors;
                         releaseCodec();
+                        if (surface != null && surface.isValid() && streamConfig != null) {
+                            configureCodec();
+                        }
                         reportDecoderHealth(true);
                         listener.onDecoderStatus("解码失败：" + error.getMessage());
                         return;
@@ -295,33 +398,17 @@ final class VideoDecoder implements AutoCloseable {
     }
 
     private void drainOutput(long firstTimeoutMicros) {
+        // 排空到最新（scrcpy/moonlight 同款）：解码出多帧时只渲染最后一帧，
+        // 中间帧不渲染直接归还解码器。积压帧的显示只会贡献延迟，不会带来
+        // 信息量；归还动作同时回收输出缓冲，避免解码器反压。
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         long timeoutMicros = firstTimeoutMicros;
+        final java.util.ArrayDeque<long[]> pendingOutputs = new java.util.ArrayDeque<>();
         while (codec != null) {
             int outputIndex = codec.dequeueOutputBuffer(info, timeoutMicros);
             timeoutMicros = 0L;
             if (outputIndex >= 0) {
-                codec.releaseOutputBuffer(outputIndex, true);
-                FrameTiming timing = pendingFrameTimings.remove(info.presentationTimeUs);
-                if (timing != null && timing.sequence % 60L == 0L) {
-                    listener.onFrameTiming(
-                            timing.sequence,
-                            timing.hostTimestampMicros,
-                            timing.arrivalMicros,
-                            System.nanoTime() / 1_000L);
-                }
-                if (!firstFrameRendered) {
-                    firstFrameRendered = true;
-                    long startupMillis = firstInputQueuedNanos == 0L
-                            ? -1L
-                            : TimeUnit.NANOSECONDS.toMillis(
-                                    System.nanoTime() - firstInputQueuedNanos);
-                    Log.i(TAG, "First decoded frame released to Surface, pts="
-                            + info.presentationTimeUs + ", startupMs=" + startupMillis);
-                    listener.onDecoderStatus("首帧已解码并提交到屏幕（" + startupMillis + "ms）");
-                    listener.onFirstFrameRendered(info.presentationTimeUs, startupMillis);
-                    reportDecoderHealth(true);
-                }
+                pendingOutputs.addLast(new long[] {outputIndex, info.presentationTimeUs});
                 continue;
             }
             if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -329,6 +416,31 @@ final class VideoDecoder implements AutoCloseable {
                 continue;
             }
             break;
+        }
+        while (!pendingOutputs.isEmpty() && codec != null) {
+            final long[] pending = pendingOutputs.pollFirst();
+            final boolean render = pendingOutputs.isEmpty();
+            codec.releaseOutputBuffer((int) pending[0], render);
+            final FrameTiming timing = pendingFrameTimings.remove(pending[1]);
+            if (render && timing != null && timing.sequence % 60L == 0L) {
+                listener.onFrameTiming(
+                        timing.sequence,
+                        timing.hostTimestampMicros,
+                        timing.arrivalMicros,
+                        System.nanoTime() / 1_000L);
+            }
+            if (render && !firstFrameRendered) {
+                firstFrameRendered = true;
+                long startupMillis = firstInputQueuedNanos == 0L
+                        ? -1L
+                        : TimeUnit.NANOSECONDS.toMillis(
+                                System.nanoTime() - firstInputQueuedNanos);
+                Log.i(TAG, "First decoded frame released to Surface, pts="
+                        + pending[1] + ", startupMs=" + startupMillis);
+                listener.onDecoderStatus("首帧已解码并提交到屏幕（" + startupMillis + "ms）");
+                listener.onFirstFrameRendered(pending[1], startupMillis);
+                reportDecoderHealth(true);
+            }
         }
     }
 
@@ -339,6 +451,9 @@ final class VideoDecoder implements AutoCloseable {
         awaitingRecoveryKeyframe = false;
         decoderErrors = 0;
         lastHealthReportNanos = 0L;
+        backlogDrops.set(0L);
+        lastBacklogKeyframeRequestNanos.set(0L);
+        lastPipelineFlushNanos.set(0L);
     }
 
     private void reportDecoderHealth(boolean force) {
@@ -351,7 +466,7 @@ final class VideoDecoder implements AutoCloseable {
         listener.onDecoderHealth(
                 receivedFrames,
                 queuedFrames,
-                droppedFrames,
+                droppedFrames + backlogDrops.get(),
                 decoderErrors,
                 codec != null,
                 firstFrameRendered);
