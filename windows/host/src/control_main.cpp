@@ -1360,13 +1360,17 @@ bool apply_selected_mode_to_parsec_vdd() {
             break;
         }
     }
+    // ensure_custom_mode_available 可能弹出 UAC 授权框并泵消息；期间嵌套的
+    // kVddTimer 回调可重建 display_choices 使 first_parsec 失效（50f3d0d /
+    // 04a2492 同家族问题，全量代码审查发现的第三处），先拷出设备名。
+    const std::wstring parsec_device_name = first_parsec->device_name;
     if (!mode_supported && vdd_portrait_selected() &&
         ensure_custom_mode_available(resolution.first, resolution.second, refresh_hz)) {
         // 竖屏模式已写入自定义槽，重新枚举驱动模式表做二次验证。
         for (DWORD index = 0U;; ++index) {
             DEVMODEW candidate{};
             candidate.dmSize = sizeof(candidate);
-            if (EnumDisplaySettingsW(first_parsec->device_name.c_str(), index, &candidate) == FALSE) {
+            if (EnumDisplaySettingsW(parsec_device_name.c_str(), index, &candidate) == FALSE) {
                 break;
             }
             if (candidate.dmPelsWidth == resolution.first &&
@@ -1388,15 +1392,14 @@ bool apply_selected_mode_to_parsec_vdd() {
     current.dmPelsHeight = resolution.second;
     current.dmDisplayFrequency = refresh_hz;
     current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-    // CDS 泵消息期间嵌套 refresh 会使 first_parsec 失效，先拷出设备名。
-    const std::wstring device_name = first_parsec->device_name;
+    // CDS 泵消息期间嵌套 refresh 会使 first_parsec 失效，使用先前的拷贝。
     const LONG result = ChangeDisplaySettingsExW(
-        device_name.c_str(), &current, nullptr, CDS_UPDATEREGISTRY, nullptr);
+        parsec_device_name.c_str(), &current, nullptr, CDS_UPDATEREGISTRY, nullptr);
     if (result != DISP_CHANGE_SUCCESSFUL) {
         set_status(L"Parsec VDD 显示模式切换失败（代码 " + std::to_wstring(result) + L"）。");
         return false;
     }
-    refresh_display_choices(device_name);
+    refresh_display_choices(parsec_device_name);
     set_status(L"已同步 Parsec VDD：" + std::to_wstring(resolution.first) + L"×" +
         std::to_wstring(resolution.second) + L" @ " + std::to_wstring(refresh_hz) + L" Hz。");
     return true;
@@ -2913,6 +2916,19 @@ void recover_stale_vdd_session(HWND window) {
 }
 
 void poll_vdd_broker(HWND window) {
+    // broker 状态分支会调 start_session（内含 CDS/UAC 泵消息）；泵期间嵌套
+    // 的 WM_TIMER 若重入本函数并赶上 broker 退出，外层会对已被嵌套 teardown
+    // 置空的句柄继续走第二遍 teardown，关掉嵌套刚创建的新 broker。同一时刻
+    // 只允许一个 poll（与 start_session 重入守卫同源）。
+    static bool poll_in_progress = false;
+    if (poll_in_progress) {
+        return;
+    }
+    struct PollGuard {
+        bool& flag;
+        ~PollGuard() { flag = false; }
+    } poll_guard{poll_in_progress};
+    poll_in_progress = true;
     if (g_state.vdd_broker_process == nullptr) {
         KillTimer(window, kVddTimer);
         return;

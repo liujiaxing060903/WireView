@@ -181,7 +181,13 @@ std::vector<std::uint8_t> encode_window_list(
                 static_cast<std::uint8_t>((handle >> shift) & 0xffU));
         }
         payload.push_back(entry.area);
-        const std::string title = narrow_utf8(entry.title);
+        std::string title = narrow_utf8(entry.title);
+        // The length field is u16: a silently wrapped length would make the
+        // Android side read beyond the entry and corrupt the whole stream,
+        // so truncate oversized titles before encoding.
+        if (title.size() > 0xffffU) {
+            title.resize(0xffffU);
+        }
         payload.push_back(static_cast<std::uint8_t>(title.size() & 0xffU));
         payload.push_back(static_cast<std::uint8_t>((title.size() >> 8U) & 0xffU));
         payload.insert(payload.end(), title.begin(), title.end());

@@ -512,9 +512,15 @@ bool edge_mapping_apply(
 
 void edge_mapping_shutdown() {
     // 事件模式连接上的命令会被守护进程丢弃，Quit 必须走一条全新的
-    // 命令模式连接（探针实测）。
-    HANDLE pipe = try_open_pipe();
+    // 命令模式连接（探针实测）。旧的事件连接先显式关闭：控制中心长期
+    // 存活，置空不关会让每次停止会话都积一个内核句柄。
+    HANDLE stale = g_edge_mapping_pipe;
     g_edge_mapping_pipe = nullptr;
+    if (stale != nullptr) {
+        CancelIo(stale);
+        CloseHandle(stale);
+    }
+    HANDLE pipe = try_open_pipe();
     if (pipe == nullptr) {
         return;
     }

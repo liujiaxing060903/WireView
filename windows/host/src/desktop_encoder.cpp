@@ -2115,8 +2115,12 @@ int run_desktop_encode_session(
                     }
                 }
                 if (!resumed) {
-                    drained = true;
-                    continue;
+                    // All pipeline objects were reset above; the statistics
+                    // section dereferences frames/encoder and would crash.
+                    // Fail the session explicitly instead of falling through.
+                    std::cerr << "Desktop capture could not recover from the secure desktop"
+                                 " before the stream deadline\n";
+                    return 2;
                 }
                 // The METransformNeedInput event that brought us here came
                 // from the encoder that was just destroyed. Do not use that
