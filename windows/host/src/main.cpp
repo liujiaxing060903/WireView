@@ -4,6 +4,7 @@
 #include <Windows.h>
 
 #include "development_transport.hpp"
+#include "wifi_crypto.hpp"
 #include "idd_frame_relay_pipe.hpp"
 #include "parsec_vdd.hpp"
 #include "windows_video.hpp"
@@ -384,16 +385,20 @@ int main(int argument_count, char** arguments) {
                 reconnect_count);
         }
         if (argument_count >= 3 && std::string_view(arguments[1]) == "--reconnect-desktop") {
-            const int seconds = std::stoi(arguments[2]);
-            if (seconds < 10 || seconds > 600) {
+            const long long seconds = std::stoll(arguments[2]);
+            if (seconds < 0) {
                 throw std::invalid_argument(
-                    "reconnect test duration must be between 10 and 600 seconds");
+                    "reconnect session duration must not be negative");
             }
             std::uint16_t output_width = 0U;
             std::uint16_t output_height = 0U;
             std::uint16_t frame_rate = 60U;
             std::string capture_display_device;
             std::string status_file;
+            bool input_log_only = false;
+            bool use_wifi = false;
+            std::string wifi_remote_ip;
+            std::uint16_t wifi_remote_port = 0U;
             for (int index = 3; index < argument_count; ++index) {
                 const std::string_view option(arguments[index]);
                 if (option == "--size" && index + 1 < argument_count &&
@@ -430,15 +435,85 @@ int main(int argument_count, char** arguments) {
                     }
                     continue;
                 }
+                if (option == "--input-log-only" && !input_log_only) {
+                    input_log_only = true;
+                    continue;
+                }
+                if (option == "--remote-ip" && index + 1 < argument_count &&
+                    wifi_remote_ip.empty()) {
+                    wifi_remote_ip = arguments[++index];
+                    continue;
+                }
+                if (option == "--remote-port" && index + 1 < argument_count &&
+                    wifi_remote_port == 0U) {
+                    const unsigned long parsed = std::stoul(arguments[++index]);
+                    if (parsed == 0UL || parsed > 65535UL) {
+                        throw std::invalid_argument("remote port is out of range");
+                    }
+                    wifi_remote_port = static_cast<std::uint16_t>(parsed);
+                    continue;
+                }
+                if (option == "--transport" && index + 1 < argument_count) {
+                    const std::string_view transport(arguments[++index]);
+                    if (transport == "adb") {
+                        use_wifi = false;
+                    } else if (transport == "wifi") {
+                        use_wifi = true;
+                    } else {
+                        throw std::invalid_argument(
+                            "reconnect transport must be adb or wifi");
+                    }
+                    continue;
+                }
                 throw std::invalid_argument(
                     "--reconnect-desktop options are --size WIDTHxHEIGHT, "
-                    "--frame-rate 60|120, --display \\\\.\\DISPLAYn, and --status-file PATH");
+                    "--frame-rate 60|120, --display \\\\.\\DISPLAYn, --status-file PATH, "
+                    "--input-log-only, and --transport adb|wifi (wifi adds --remote-ip "
+                    "and --remote-port)");
             }
-            return wireview::host::run_development_reconnecting_desktop_stream_server(
-                wireview::host::kDevelopmentPort,
+            wireview::host::SessionEndpoint endpoint;
+            if (use_wifi) {
+                if (wifi_remote_ip.empty() || wifi_remote_port == 0U) {
+                    throw std::invalid_argument(
+                        "--transport wifi requires --remote-ip and --remote-port");
+                }
+                const auto environment_hex = [](const char* name) -> std::string {
+                    std::string value(129U, '\0');
+                    const DWORD length = GetEnvironmentVariableA(
+                        name, value.data(), static_cast<DWORD>(value.size()));
+                    if (length == 0U || length >= value.size()) {
+                        return {};
+                    }
+                    value.resize(length);
+                    return value;
+                };
+                endpoint.kind = wireview::host::SessionEndpoint::Kind::wifi_dial;
+                endpoint.remote_ip = wifi_remote_ip;
+                endpoint.remote_port = wifi_remote_port;
+                endpoint.wifi_key = wireview::host::from_hex(
+                    environment_hex("WIREVIEW_WIFI_KEY"));
+                endpoint.pc_uuid = wireview::host::from_hex(
+                    environment_hex("WIREVIEW_WIFI_UUID"));
+                std::string host_name(256U, '\0');
+                const DWORD name_length = GetEnvironmentVariableA(
+                    "WIREVIEW_WIFI_NAME", host_name.data(),
+                    static_cast<DWORD>(host_name.size()));
+                host_name.resize(
+                    name_length == 0U || name_length >= host_name.size() ? 0U : name_length);
+                endpoint.pc_name = host_name.empty() ? "WireView PC" : host_name;
+                if (endpoint.wifi_key.size() != 32U) {
+                    throw std::invalid_argument(
+                        "the WiFi credential environment is missing or malformed");
+                }
+            } else {
+                endpoint.kind = wireview::host::SessionEndpoint::Kind::adb_listener;
+                endpoint.port = wireview::host::kDevelopmentPort;
+            }
+            return wireview::host::run_reconnecting_desktop_stream_session(
+                endpoint,
                 std::chrono::seconds(5),
                 std::chrono::seconds(seconds),
-                false,
+                !input_log_only,
                 output_width,
                 output_height,
                 frame_rate,

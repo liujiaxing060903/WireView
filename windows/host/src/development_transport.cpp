@@ -1716,6 +1716,127 @@ int run_wifi_desktop_stream_session(
         &status);
 }
 
+int run_reconnecting_desktop_stream_session(
+    const SessionEndpoint& endpoint,
+    std::chrono::milliseconds accept_timeout,
+    std::chrono::seconds total_duration,
+    bool inject_input,
+    std::uint16_t output_width,
+    std::uint16_t output_height,
+    std::uint16_t frame_rate,
+    std::string_view capture_display_device,
+    std::string_view status_file) {
+    if (total_duration <= std::chrono::seconds::zero()) {
+        throw std::invalid_argument("reconnecting session duration must be positive");
+    }
+    if (frame_rate != 60U && frame_rate != 120U) {
+        throw std::invalid_argument("desktop stream frame rate must be 60 or 120");
+    }
+    const char* transport_name =
+        endpoint.kind == SessionEndpoint::Kind::wifi_dial ? "wifi" : "adb";
+    DevelopmentStatusPublisher status(status_file);
+    status.configure(
+        capture_display_device,
+        inject_input,
+        output_width,
+        output_height,
+        frame_rate,
+        0U,
+        transport_name);
+
+    WinsockSession winsock;
+    const auto deadline = std::chrono::steady_clock::now() + total_duration;
+    std::uint64_t interrupted_sessions = 0;
+    std::uint64_t completed_sessions = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::seconds::zero()) {
+            break;
+        }
+        // A named target is a hard product requirement; re-verify before
+        // every session so reconnect never silently falls back to primary.
+        if (!capture_display_device.empty()) {
+            (void)resolve_desktop_capture_area(capture_display_device);
+        }
+        try {
+            int result;
+            if (endpoint.kind == SessionEndpoint::Kind::wifi_dial) {
+                sockaddr_in address{};
+                address.sin_family = AF_INET;
+                address.sin_port = htons(endpoint.remote_port);
+                if (inet_pton(
+                        AF_INET, endpoint.remote_ip.c_str(), &address.sin_addr) != 1) {
+                    throw std::runtime_error("the WiFi endpoint IP is not valid IPv4");
+                }
+                std::cout << "WireView WiFi session dialing " << endpoint.remote_ip
+                          << ':' << endpoint.remote_port << '\n';
+                auto socket = connect_tcp_with_timeout(address, accept_timeout);
+                SocketByteStream stream(socket.get());
+                WifiLinkIdentity identity{endpoint.pc_uuid, endpoint.pc_name};
+                const WifiPeerInfo peer = perform_wifi_handshake(
+                    stream,
+                    identity,
+                    wireview::protocol::AuthMode::authenticate,
+                    endpoint.wifi_key,
+                    {},
+                    false,
+                    nullptr);
+                std::cout << "WiFi authentication verified with " << peer.device_name << '\n';
+                status.connected(peer.device_name);
+                result = run_connected_stream_impl(
+                    stream,
+                    nullptr,
+                    0U,
+                    0U,
+                    0U,
+                    remaining,
+                    inject_input,
+                    output_width,
+                    output_height,
+                    frame_rate,
+                    capture_display_device,
+                    &status);
+            } else {
+                result = run_server_impl(
+                    endpoint.port,
+                    accept_timeout,
+                    nullptr,
+                    0U,
+                    0U,
+                    0U,
+                    remaining,
+                    inject_input,
+                    output_width,
+                    output_height,
+                    frame_rate,
+                    capture_display_device,
+                    &status);
+            }
+            ++completed_sessions;
+            if (result == 0) {
+                break;
+            }
+            // result != 0: the endpoint timed out waiting for the tablet. Keep
+            // the loop going so the session survives a slow tablet restart.
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        } catch (const std::exception& error) {
+            if (!capture_display_device.empty()) {
+                (void)resolve_desktop_capture_area(capture_display_device);
+            }
+            ++interrupted_sessions;
+            status.interrupted(error.what());
+            std::cerr << "WireView session interrupted: " << error.what()
+                      << ". Waiting for the tablet to reconnect...\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+    }
+    std::cout << "WireView reconnecting session completed; interrupted="
+              << interrupted_sessions << " | completed=" << completed_sessions << '\n';
+    status.completed();
+    return 0;
+}
+
 int run_development_reconnecting_desktop_stream_server(
     std::uint16_t port,
     std::chrono::milliseconds accept_timeout,

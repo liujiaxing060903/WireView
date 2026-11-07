@@ -141,6 +141,31 @@ final class VideoDecoder implements AutoCloseable {
         }
 
         worker.execute(() -> {
+            // 通道重连（PC 端断线恢复）会重发同一份 start_stream：解码器
+            // 仍在位且配置未变时只清状态、等待恢复关键帧，省掉一整套
+            // configure+start（参数阶梯探测）。编码器换代（安全桌面重建等）
+            // 的重发同为同配置——此时旧参考链必须作废，但 MediaCodec 层
+            // 无需重建，flush 后等关键帧即可。
+            if (codec != null && streamConfig != null && config.equals(streamConfig)) {
+                try {
+                    codec.flush();
+                } catch (IllegalStateException ignored) {
+                    // Fall through to the full rebuild path.
+                    releaseCodec();
+                    streamConfig = config;
+                    if (surface != null && surface.isValid()) {
+                        configureCodec();
+                    } else {
+                        listener.onDecoderStatus("已收到视频配置，等待 Surface");
+                    }
+                    return;
+                }
+                pendingFrameTimings.clear();
+                awaitingRecoveryKeyframe = true;
+                listener.onDecoderStatus("通道已重连，等待恢复关键帧");
+                Log.i(TAG, "start_stream repeated with the same config; decoder kept alive");
+                return;
+            }
             releaseCodec();
             streamConfig = config;
             if (surface != null && surface.isValid()) {
@@ -565,6 +590,14 @@ final class VideoDecoder implements AutoCloseable {
                 throw new IllegalArgumentException("尺寸或帧率为零");
             }
             return new StreamConfig(width, height, fpsNumerator, fpsDenominator);
+        }
+
+        boolean equals(StreamConfig other) {
+            return other != null
+                    && width == other.width
+                    && height == other.height
+                    && frameRateNumerator == other.frameRateNumerator
+                    && frameRateDenominator == other.frameRateDenominator;
         }
 
         @Override

@@ -1,7 +1,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <thread>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -326,15 +328,20 @@ ProcessResult run_host(const Options& options, const std::filesystem::path& host
         if (!options.device_preview) {
             if (!options.wifi_endpoint.empty()) {
                 // R3 WiFi：PC 作为客户端直连平板；凭据经环境变量传递。
+                // 会话用重连入口：通道故障自动重拨，不再整场终止。
                 const auto colon = options.wifi_endpoint.rfind(L':');
                 if (colon == std::wstring::npos || colon == 0U ||
                     colon + 1U >= options.wifi_endpoint.size()) {
                     return ProcessResult{};
                 }
+                arguments[2] = L"--reconnect-desktop";
                 arguments.insert(arguments.end(), {L"--transport", L"wifi"});
                 arguments.insert(arguments.end(), {L"--remote-ip", options.wifi_endpoint.substr(0U, colon)});
                 arguments.insert(arguments.end(), {L"--remote-port", options.wifi_endpoint.substr(colon + 1U)});
             } else {
+                // USB 会话用重连入口：adb reverse 抖动/平板短暂断开时自动
+                // 恢复（监督线程保 reverse 映射，host 循环重 accept）。
+                arguments[2] = L"--reconnect-desktop";
                 arguments.insert(arguments.end(), {L"--transport", L"adb"});
             }
         }
@@ -478,7 +485,32 @@ int run(const Options& options) {
             deadline - std::chrono::steady_clock::now()).count();
         const auto session_seconds = static_cast<std::uint32_t>(
             std::max<std::int64_t>(1, remaining));
+        // R3：host 重连会话运行期间监督 adb reverse 映射。拔线会让 adbd
+        // 清掉全部 reverse；重插后若不重建，host 的 listener 永远等不到
+        // 连接。每 2s 先查 reverse --list，缺失才重建（直接重跑 reverse
+        // 会先删旧映射，踢断正在工作的连接）。
+        std::atomic_bool reverse_supervisor_running{true};
+        std::thread reverse_supervisor([&]() {
+            while (reverse_supervisor_running.load()) {
+                const auto listing = run_capture(
+                    adb, {L"-s", serial, L"reverse", L"--list"});
+                const bool mapped = listing.started && listing.exit_code == 0U &&
+                    listing.output.find(std::wstring(kReversePort)) != std::wstring::npos;
+                if (!mapped) {
+                    (void)run_capture(
+                        adb, {L"-s", serial, L"reverse",
+                              std::wstring(kReversePort), std::wstring(kReversePort)});
+                }
+                for (int tick = 0; tick < 20 && reverse_supervisor_running.load(); ++tick) {
+                    Sleep(100U);
+                }
+            }
+        });
         const ProcessResult host_result = run_host(options, host, session_seconds, reconnect_count);
+        reverse_supervisor_running.store(false);
+        if (reverse_supervisor.joinable()) {
+            reverse_supervisor.join();
+        }
         if (options.device_profile_probe) {
             return host_result.exit_code == 0U ? 0 : 4;
         }
