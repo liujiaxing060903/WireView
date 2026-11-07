@@ -3163,6 +3163,80 @@ bool start_session(
                 L"或在简易模式点击“扩展屏幕”以重新创建 WireView 副屏。 ");
             return false;
         }
+        // 复用已有 WireView 副屏时，把它的显示模式同步为本次会话的
+        // 分辨率/刷新率。模式不一致会让 Windows 桌面被缩放进编码尺寸，
+        // 表现为画面拉伸（例如 VDD 停留在 1920x1080 而投屏 1200x1920）。
+        // 设备画像等程序化选路不会经过下拉框命令，因此这里兜底执行。
+        const auto target_choice = std::find_if(
+            g_state.display_choices.begin(), g_state.display_choices.end(),
+            [&settings](const DisplayChoice& choice) {
+                return choice.device_name == settings->display_device;
+            });
+        if (target_choice != g_state.display_choices.end() && target_choice->parsec_vdd &&
+            settings->vdd_width != 0U) {
+            DEVMODEW current{};
+            current.dmSize = sizeof(current);
+            if (EnumDisplaySettingsW(
+                    target_choice->device_name.c_str(), ENUM_CURRENT_SETTINGS, &current) != FALSE &&
+                (current.dmPelsWidth != settings->vdd_width ||
+                 current.dmPelsHeight != settings->vdd_height ||
+                 current.dmDisplayFrequency != settings->vdd_refresh_hz)) {
+                if (ensure_custom_mode_available(
+                        settings->vdd_width, settings->vdd_height, settings->vdd_refresh_hz)) {
+                    // 必须基于 ENUM_CURRENT_SETTINGS 的完整 DEVMODEW 修改字段；
+                    // 全新 DEVMODEW 缺少位置等字段，会把副屏整个挤出桌面。
+                    DEVMODEW updated{};
+                    updated.dmSize = sizeof(updated);
+                    bool mode_supported = false;
+                    for (DWORD mode_index = 0U;; ++mode_index) {
+                        DEVMODEW candidate{};
+                        candidate.dmSize = sizeof(candidate);
+                        if (EnumDisplaySettingsW(
+                                target_choice->device_name.c_str(), mode_index, &candidate) == FALSE) {
+                            break;
+                        }
+                        if (candidate.dmPelsWidth == settings->vdd_width &&
+                            candidate.dmPelsHeight == settings->vdd_height &&
+                            candidate.dmDisplayFrequency == settings->vdd_refresh_hz) {
+                            mode_supported = true;
+                            break;
+                        }
+                    }
+                    if (!mode_supported) {
+                        set_status(L"副屏不支持 " +
+                            std::to_wstring(settings->vdd_width) + L"×" +
+                            std::to_wstring(settings->vdd_height) + L" @ " +
+                            std::to_wstring(settings->vdd_refresh_hz) +
+                            L" Hz，画面比例可能不正确。");
+                    } else if (EnumDisplaySettingsW(
+                                   target_choice->device_name.c_str(),
+                                   ENUM_CURRENT_SETTINGS, &updated) != FALSE) {
+                        updated.dmPelsWidth = settings->vdd_width;
+                        updated.dmPelsHeight = settings->vdd_height;
+                        updated.dmDisplayFrequency = settings->vdd_refresh_hz;
+                        updated.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+                        const LONG switch_result = ChangeDisplaySettingsExW(
+                            target_choice->device_name.c_str(), &updated, nullptr,
+                            CDS_UPDATEREGISTRY, nullptr);
+                        if (switch_result == DISP_CHANGE_SUCCESSFUL) {
+                            refresh_display_choices(target_choice->device_name);
+                            set_status(L"已将副屏显示模式同步为 " +
+                                std::to_wstring(settings->vdd_width) + L"×" +
+                                std::to_wstring(settings->vdd_height) + L" @ " +
+                                std::to_wstring(settings->vdd_refresh_hz) + L" Hz。");
+                        } else {
+                            log_control_event(L"vdd-mode-sync", L"模式切换失败，代码 " +
+                                std::to_wstring(switch_result));
+                            set_status(L"副屏显示模式同步失败，画面比例可能不正确；"
+                                L"请检查副屏支持的显示模式。");
+                        }
+                    }
+                } else {
+                    set_status(L"副屏模式与投屏分辨率不一致，且自定义模式槽不可用；"
+                        L"画面比例可能不正确。");
+                }
+            }
+        }
     }
     save_stream_settings(*settings);
 
