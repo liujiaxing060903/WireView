@@ -589,6 +589,30 @@ int notify_android_host_exited() {
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
 
+int notify_pairing_approved(wchar_t** argv) {
+    // R3：把配对 PIN 经 USB（adb broadcast）投递给平板。线缆本身是带外信道，
+    // WiFi 侧攻击者看不到该值；投递失败时用户仍可手输 PIN。
+    const std::wstring pin = argv[2];
+    if (pin.empty() || pin.size() > 32U) {
+        return 1;
+    }
+    const auto adb = find_adb();
+    if (adb.empty()) {
+        return 1;
+    }
+    const auto query = run_capture(adb, {L"devices"});
+    const auto devices = query.started && query.exit_code == 0U
+        ? connected_devices(query.output)
+        : std::vector<std::wstring>{};
+    if (devices.size() != 1U) {
+        return 1;
+    }
+    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+        L"-a", L"com.wireview.receiver.action.WIREVIEW_PAIRING_APPROVED",
+        L"--es", L"pin", pin});
+    return result.started && result.exit_code == 0U ? 0 : 1;
+}
+
 int notify_android_device_identified() {
     const auto adb = find_adb();
     if (adb.empty()) {
@@ -642,11 +666,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const bool notify_host_exited = argc == 2 && std::wstring_view(argv[1]) == L"--notify-host-exited";
     const bool notify_identified = argc == 2 && std::wstring_view(argv[1]) == L"--notify-device-identified";
     const bool notify_vdd = argc == 5 && std::wstring_view(argv[1]) == L"--notify-vdd-created";
+    const bool notify_pairing = argc == 3 && std::wstring_view(argv[1]) == L"--notify-pairing-approved";
     Options options;
-    const bool valid = !detect_device && !notify_stop && !notify_host_exited && !notify_identified && !notify_vdd && parse_arguments(argc, argv, &options);
+    const bool valid = !detect_device && !notify_stop && !notify_host_exited && !notify_identified && !notify_vdd && !notify_pairing && parse_arguments(argc, argv, &options);
     if (detect_device) {
         LocalFree(argv);
         return require_wireview_app || argc == 2 ? detect_single_adb_device(require_wireview_app) : 1;
+    }
+    if (notify_pairing) {
+        const int result = notify_pairing_approved(argv);
+        LocalFree(argv);
+        return result;
     }
     if (notify_stop) {
         LocalFree(argv);

@@ -1,6 +1,11 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// WinSock2 must precede <Windows.h>: the WiFi headers pull in sockets, and
+// letting Windows.h drag in winsock.h first causes the ws2def.h redefinition
+// cascade (see LOCAL_NOTES section 5).
+#include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <Windows.h>
 #include <Shellapi.h>
 #include <dwmapi.h>
@@ -14,6 +19,8 @@
 #include "tablet_commands.hpp"
 #include "parsec_vdd.hpp"
 #include "parsec_vdd_custom_modes.hpp"
+#include "wifi_control.hpp"
+#include "wifi_crypto.hpp"
 #ifdef WIREVIEW_WEBVIEW_UI
 #include "webview_host.hpp"
 #endif
@@ -3390,6 +3397,19 @@ bool start_session(
     }
     save_stream_settings(*settings);
 
+    // R3 WiFi 会话：目标设备必须在白名单且已知 IP（mDNS 或手动输入）。
+    // 预览/画像探测固定走 USB，不走 WiFi。
+    const bool wifi_selected = !device_preview && !device_profile_probe &&
+        wireview::host::wifi_control::has_session_target();
+    const bool wifi_session = wifi_selected;
+    std::vector<std::uint8_t> wifi_key;
+    std::wstring wifi_endpoint;
+    if (wifi_selected &&
+        !wireview::host::wifi_control::resolve_session_credential(
+            &wifi_endpoint, &wifi_key)) {
+        return false;
+    }
+
     std::error_code error;
     const auto temporary_directory = std::filesystem::temp_directory_path(error);
     if (error) {
@@ -3430,8 +3450,43 @@ bool start_session(
     if (!device_preview && !device_profile_probe) {
         argument += L" --display \"" + settings->display_device + L"\"";
     }
+    if (wifi_session) {
+        argument += L" --transport wifi \"" + wifi_endpoint + L"\"";
+    }
     std::vector<wchar_t> command(argument.begin(), argument.end());
     command.push_back(L'\0');
+
+    // WiFi 凭据经环境变量传递（不出现在命令行/进程列表），从当前进程环境
+    // 复制后追加三项；非 WiFi 会话传 nullptr 继承默认环境。
+    std::wstring wifi_environment;
+    if (wifi_session) {
+        wifi_environment.reserve(4096U);
+        LPWCH strings = GetEnvironmentStringsW();
+        if (strings != nullptr) {
+            for (wchar_t* cursor = strings; *cursor != L'\0';) {
+                wifi_environment.append(cursor);
+                wifi_environment.push_back(L'\0');
+                while (*cursor != L'\0') {
+                    ++cursor;
+                }
+                ++cursor;
+            }
+            FreeEnvironmentStringsW(strings);
+        }
+        wifi_environment += L"WIREVIEW_WIFI_KEY=";
+        {
+            const std::string key_hex = wireview::host::to_hex(wifi_key);
+            wifi_environment.append(key_hex.begin(), key_hex.end());
+        }
+        wifi_environment.push_back(L'\0');
+        wifi_environment += L"WIREVIEW_WIFI_UUID=";
+        wifi_environment += wireview::host::wifi_control::pc_uuid();
+        wifi_environment.push_back(L'\0');
+        wifi_environment += L"WIREVIEW_WIFI_NAME=";
+        wifi_environment += wireview::host::wifi_control::host_display_name();
+        wifi_environment.push_back(L'\0');
+        wifi_environment.push_back(L'\0');
+    }
 
     HANDLE job = CreateJobObjectW(nullptr, nullptr);
     if (job == nullptr) {
@@ -3463,7 +3518,7 @@ bool start_session(
             nullptr,
             FALSE,
             CREATE_NO_WINDOW,
-            nullptr,
+            wifi_session ? wifi_environment.data() : nullptr,
             working_directory.c_str(),
             &startup,
             &process)) {
@@ -4809,6 +4864,33 @@ void publish_web_state() {
     add_number(L"selectedPosition", static_cast<std::size_t>(combo_selected_index(g_state.vdd_position_selector)));
     add_number(L"selectedOrientation", static_cast<std::size_t>(combo_selected_index(g_state.vdd_orientation_selector)));
     add_bool(L"edgeMapping", g_state.edge_mapping_enabled);
+    // R3 WiFi：开关、配对进度、已发现设备与白名单。
+    add_bool(L"wifiEnabled", wireview::host::wifi_control::enabled());
+    add_bool(L"wifiPairingActive", wireview::host::wifi_control::pairing_active());
+    {
+        std::wstring devices_json;
+        for (const auto& device : wireview::host::wifi_control::devices()) {
+            if (!devices_json.empty()) {
+                devices_json += L',';
+            }
+            devices_json += L"{\"id\":\"" + json_escape(device.android_id) +
+                L"\",\"name\":\"" + json_escape(device.device_name) +
+                L"\",\"ip\":\"" + json_escape(device.ip) + L"\"}";
+        }
+        add_array(L"wifiDevices", L"[" + devices_json + L"]");
+    }
+    {
+        std::wstring whitelist_json;
+        for (const auto& entry : wireview::host::wifi_control::whitelist_entries()) {
+            if (!whitelist_json.empty()) {
+                whitelist_json += L',';
+            }
+            whitelist_json += L"{\"id\":\"" + json_escape(entry.android_id) +
+                L"\",\"name\":\"" + json_escape(entry.device_name) +
+                L"\",\"pairedAt\":\"" + json_escape(entry.paired_at) + L"\"}";
+        }
+        add_array(L"wifiWhitelist", L"[" + whitelist_json + L"]");
+    }
     add_string(L"diagnostics", web_diagnostics_text());
     json += L"}";
     g_webview_host->post_json(json);
@@ -4917,6 +4999,34 @@ void handle_web_message(std::wstring_view message) {
         } else {
             set_status(L"指针跨屏边缘映射已开启，将在下次会话生效。");
         }
+    } else if (message == L"wifi-toggle") {
+        wireview::host::wifi_control::set_enabled(
+            g_state.window, !wireview::host::wifi_control::enabled());
+    } else if (message == L"wifi-refresh") {
+        wireview::host::wifi_control::on_discover_tick();
+        set_status(L"已刷新 WiFi 设备搜索结果。");
+    } else if (message.starts_with(L"wifi-pair-ip|")) {
+        // 手动 IP 兜底：直接对输入的 IP 发起配对。
+        const std::wstring ip(message.substr(13U));
+        if (!ip.empty()) {
+            wireview::host::wifi_control::begin_pairing(ip);
+        }
+    } else if (message.starts_with(L"wifi-pair|")) {
+        // 从已发现设备列表发起配对。
+        const int index = _wtoi(std::wstring(message.substr(10U)).c_str());
+        const auto devices = wireview::host::wifi_control::devices();
+        if (index >= 0 && static_cast<std::size_t>(index) < devices.size() &&
+            !devices[static_cast<std::size_t>(index)].ip.empty()) {
+            wireview::host::wifi_control::begin_pairing(
+                devices[static_cast<std::size_t>(index)].ip);
+        }
+    } else if (message.starts_with(L"wifi-select|")) {
+        wireview::host::wifi_control::select_target(
+            std::wstring(message.substr(12U)));
+        set_status(L"WiFi 会话目标已更新；设备不在线时需先开启 WiFi 投屏等待发现。");
+    } else if (message.starts_with(L"wifi-remove|")) {
+        wireview::host::wifi_control::remove_from_whitelist(
+            std::wstring(message.substr(12U)));
     } else {
         int index{};
         if (parse_web_selector_index(
@@ -5576,6 +5686,23 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 nullptr,
                 nullptr);
             restore_stream_settings();
+            // R3：WiFi 模块接管身份文件、白名单、发现与配对线程。
+            wireview::host::wifi_control::attach_hooks(
+                {set_status,
+#ifdef WIREVIEW_WEBVIEW_UI
+                 publish_web_state,
+#else
+                 nullptr,
+#endif
+                 [] { return g_state.window; },
+                 [] { return g_state.session_launcher_path; }});
+            wireview::host::wifi_control::load_identity(
+                g_state.settings_file.parent_path());
+            if (wireview::host::wifi_control::enabled()) {
+                // 开关恢复：mDNS 启动 + 发现定时器（与 set_enabled 相同路径，
+                // 但不覆盖持久化状态）。
+                wireview::host::wifi_control::resume_enabled(window);
+            }
             g_state.recommendation = CreateWindowW(
                 L"STATIC", L"", WS_CHILD,
                 0, 0, 1, 1,
@@ -5951,6 +6078,10 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     std::to_wstring(GetLastError()));
             }
             return 0;
+        case wireview::host::wifi_control::kWifiPairingDoneMessageId: {
+            wireview::host::wifi_control::on_pairing_done(window, wparam, lparam);
+            return 0;
+        }
         case WM_DISPLAYCHANGE:
             // 显示拓扑变化（模式切换 / VDD 重建 / 唤醒）：防抖后重挂边缘映射。
             if (g_state.shell_process != nullptr && g_state.edge_mapping_enabled) {
@@ -5987,6 +6118,10 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 if (g_state.shell_process == nullptr) {
                     (void)start_session(window, g_state.session_input_enabled);
                 }
+                return 0;
+            }
+            if (wparam == wireview::host::wifi_control::kWifiDiscoverTimerId) {
+                wireview::host::wifi_control::on_discover_tick();
                 return 0;
             }
             if (wparam == kEdgeRemapTimer) {

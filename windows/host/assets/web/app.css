@@ -986,3 +986,22 @@ body.theme-light .is-device-disconnected:hover {
   #full-page .vdd-card .vdd-summary { min-height: 124px; }
   .session-title-note { font-size: 13px; }
 }
+
+/* R3 WiFi card */
+.wifi-summary { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.wifi-manual { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.wifi-manual input { flex: 1; min-width: 200px; padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); color: inherit; font-size: 13px; }
+.wifi-manual button, .wifi-mini { padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); color: inherit; font-size: 13px; cursor: pointer; }
+.wifi-manual button:hover, .wifi-mini:hover { background: rgba(255,255,255,.13); }
+.wifi-mini.wifi-danger { border-color: rgba(255,110,110,.4); color: #ff8f8f; }
+.wifi-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; }
+.wifi-row:hover { background: rgba(255,255,255,.05); }
+.wifi-name { font-weight: 600; font-size: 14px; flex: 1; }
+.wifi-meta { color: rgba(255,255,255,.45); font-size: 12px; }
+.wifi-actions { display: flex; gap: 8px; }
+.wifi-subheading { margin: 10px 0 6px; font-size: 12px; letter-spacing: .08em; color: rgba(255,255,255,.45); text-transform: uppercase; }
+.wifi-empty { color: rgba(255,255,255,.4); font-size: 13px; padding: 6px 2px; }
+body.theme-light .wifi-manual input { border-color: rgba(0,0,0,.16); background: rgba(0,0,0,.04); }
+body.theme-light .wifi-manual button, body.theme-light .wifi-mini { border-color: rgba(0,0,0,.16); background: rgba(0,0,0,.05); }
+body.theme-light .wifi-row:hover { background: rgba(0,0,0,.04); }
+body.theme-light .wifi-meta, body.theme-light .wifi-subheading, body.theme-light .wifi-empty { color: rgba(0,0,0,.45); }

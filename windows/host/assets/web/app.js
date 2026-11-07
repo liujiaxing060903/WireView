@@ -6,7 +6,8 @@
     displays: [], resolutions: [], vddModes: [], selectedDisplay: 0,
     selectedResolution: 0, selectedVddMode: 0, positions: [], selectedPosition: 0,
     orientations: [], selectedOrientation: 0, edgeMapping: true, parsecAvailable: false,
-    parsecVersion: 0, parsecDisplayCount: 0, diagnostics: ''
+    parsecVersion: 0, parsecDisplayCount: 0, diagnostics: '',
+    wifiEnabled: false, wifiPairingActive: false, wifiDevices: [], wifiWhitelist: []
   };
   const send = command => window.chrome?.webview?.postMessage(command);
   const lockedCommands = new Set(['mode-copy', 'mode-extend', 'input-off', 'input-on', 'create-vdd', 'remove-vdd', 'recover-vdd', 'preview']);
@@ -90,6 +91,25 @@
     edgeToggle.classList.toggle('is-on', edgeOn);
     edgeToggle.setAttribute('aria-checked', edgeOn ? 'true' : 'false');
     document.querySelector('#edge-mapping-hint').textContent = edgeOn ? '已开启（会话期间自动生效）' : '已关闭';
+    const wifiToggle = document.querySelector('#wifi-mode-toggle');
+    const wifiOn = state.wifiEnabled === true;
+    wifiToggle.classList.toggle('is-on', wifiOn);
+    wifiToggle.setAttribute('aria-checked', wifiOn ? 'true' : 'false');
+    document.querySelector('#wifi-mode-hint').textContent = wifiOn
+      ? (state.wifiPairingActive ? '正在配对…' : '已开启，正在搜索平板（局域网）')
+      : '与平板接入同一局域网后开启，配对一次长期有效';
+  };
+  const wifiCard = () => {
+    const whitelist = state.wifiWhitelist || [];
+    const devices = state.wifiDevices || [];
+    const whitelistRows = whitelist.length === 0
+      ? '<div class="wifi-empty">尚未配对任何平板。开启上方开关或下方搜索，配对一次后长期有效。</div>'
+      : whitelist.map((entry, index) => `<div class="wifi-row"><span class="wifi-name">${escape(entry.name || entry.id)}</span><span class="wifi-meta">${escape(entry.pairedAt || '')}</span><span class="wifi-actions"><button class="wifi-mini" data-command="wifi-select|${escape(entry.id)}">设为会话目标</button><button class="wifi-mini wifi-danger" data-command="wifi-remove|${escape(entry.id)}">删除</button></span></div>`).join('');
+    const deviceRows = devices.length === 0
+      ? ''
+      : `<div class="wifi-subheading">发现的设备</div>` + devices.map((device, index) =>
+          `<div class="wifi-row"><span class="wifi-name">${escape(device.name || device.id)}</span><span class="wifi-meta">${escape(device.ip)}</span><span class="wifi-actions"><button class="wifi-mini" data-command="wifi-pair|${index}">配对</button></span></div>`).join('');
+    return `<article class="panel advanced-card" id="wifi-card">${panelTitle('8', 'WiFi 局域网投屏')}<div class="wifi-summary"><span class="connected">${state.wifiEnabled ? '● 已开启' : '○ 未开启'}</span><span class="device-meta">平板端需打开"WiFi 投屏"开关并接入同一局域网；码率自适应，硬上限 60 Mbps。</span></div><div class="wifi-manual"><input id="wifi-manual-ip" placeholder="平板 IP（如 192.168.1.23）" aria-label="平板 IP"><button data-command="wifi-pair-manual" id="wifi-pair-manual">手动配对</button><button data-command="wifi-refresh" id="wifi-refresh">↻ 重新搜索</button></div>${deviceRows}<div class="wifi-subheading">已配对设备（白名单）</div>${whitelistRows}</article>`;
   };
   const copyDeveloperEmail = async () => {
     const email = 'S_Znnn@163.com';
@@ -173,6 +193,12 @@
       send(next ? 'edge-mapping-on' : 'edge-mapping-off');
       updateSettingsPanel();
     });
+    document.querySelector('#wifi-mode-toggle').addEventListener('click', event => {
+      event.stopPropagation();
+      state.wifiEnabled = !(state.wifiEnabled === true);
+      send('wifi-toggle');
+      updateSettingsPanel();
+    });
     document.querySelector('#theme-toggle').addEventListener('click', event => {
       event.stopPropagation();
       darkMode = !darkMode;
@@ -222,7 +248,15 @@
       node.setAttribute('aria-disabled', unavailable ? 'true' : 'false');
     });
   };
-  const render = () => { simple(); full(); addDisplayRefreshButton(); renderStatus(); applyRunLocks(); wireEvents(); };
+  const render = () => {
+    simple(); full(); addDisplayRefreshButton(); renderStatus(); applyRunLocks(); wireEvents();
+    const fullPage = document.querySelector('#full-page');
+    if (fullPage && !fullPage.classList.contains('is-hidden')) {
+      const existing = document.querySelector('#wifi-card');
+      if (existing) existing.outerHTML = wifiCard();
+      else fullPage.insertAdjacentHTML('beforeend', wifiCard());
+    }
+  };
   const layoutSnapshot = () => JSON.stringify({
     connected: state.connected,
     running: state.running,
@@ -248,11 +282,21 @@
     parsecAvailable: state.parsecAvailable,
     parsecVersion: state.parsecVersion,
     parsecDisplayCount: state.parsecDisplayCount,
-    displayName: state.displayName
+    displayName: state.displayName,
+    wifiEnabled: state.wifiEnabled,
+    wifiPairingActive: state.wifiPairingActive,
+    wifiDevices: state.wifiDevices,
+    wifiWhitelist: state.wifiWhitelist
   });
   const wireEvents = () => {
     document.querySelectorAll('[data-command]').forEach(node => node.addEventListener('click', () => {
       if (state.running && lockedCommands.has(node.dataset.command)) { showLockedMessage(); return; }
+      if (node.dataset.command === 'wifi-pair-manual') {
+        const input = document.querySelector('#wifi-manual-ip');
+        const ip = (input?.value || '').trim();
+        if (ip) send(`wifi-pair-ip|${ip}`);
+        return;
+      }
       send(node.dataset.command);
     }));
     document.querySelectorAll('[data-select]').forEach(node => {

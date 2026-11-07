@@ -25,10 +25,12 @@ add_executable(wireview_control_legacy WIN32
     src/control_main.cpp
     src/display_layout.cpp
     src/edge_mapping.cpp
+    src/mdns_browser.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
     src/reliable_byte_stream.cpp
     src/socket_stream.cpp
+    src/wifi_control.cpp
     src/wifi_crypto.cpp
     src/wifi_link.cpp
     src/wifi_whitelist.cpp
@@ -41,10 +43,12 @@ add_executable(wireview_control WIN32
     src/control_main.cpp
     src/display_layout.cpp
     src/edge_mapping.cpp
+    src/mdns_browser.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
     src/reliable_byte_stream.cpp
     src/socket_stream.cpp
+    src/wifi_control.cpp
     src/wifi_crypto.cpp
     src/wifi_link.cpp
     src/wifi_whitelist.cpp
