@@ -403,9 +403,14 @@ std::wstring compact_host_diagnostics(std::wstring output) {
         compact.substr(compact.size() - kTailCharacters);
 }
 
-std::wstring host_failure_message(const ProcessResult& result) {
+std::wstring host_failure_message(const ProcessResult& result, bool wifi_session = false) {
     const std::wstring detail = last_output_line(result.output);
-    if (detail.find(L"No WireView client connected before the timeout") != std::wstring::npos) {
+    if (detail.find(L"No WireView client connected before the timeout") != std::wstring::npos ||
+        detail.find(L"connect timed out") != std::wstring::npos ||
+        detail.find(L"connect failed") != std::wstring::npos) {
+        if (wifi_session) {
+            return L"电脑端无法通过 WiFi 连接平板：请确认两端在同一局域网、平板已开启 WiFi 投屏开关，且 IP 正确（可用重新配对更新）。";
+        }
         return L"Android 端 WireView 未在 5 分钟内连接到 Windows Host；请保持应用在前台，并检查 USB 调试和 ADB reverse。";
     }
     if (detail.find(L"client did not return HELLO_ACK") != std::wstring::npos) {
@@ -434,7 +439,7 @@ int run(const Options& options) {
                 compact_host_diagnostics(host_result.output));
             return 0;
         }
-        write_status(options, L"error", host_failure_message(host_result), 0U,
+        write_status(options, L"error", host_failure_message(host_result, true), 0U,
             compact_host_diagnostics(host_result.output));
         return static_cast<int>(host_result.exit_code);
     }

@@ -124,6 +124,27 @@ void notify_publish() {
     }
 }
 
+// mDNS responses arrive as inbound UDP; Windows blocks them for unsigned
+// apps unless a rule exists. Idempotent: query first, add only when
+// missing. Without admin rights the add fails and discovery silently
+// falls back to manual IP entry.
+void ensure_mdns_firewall_rule() {
+    const wchar_t* rule_name = L"WireView mDNS discovery";
+    std::wstring query = L"netsh advfirewall firewall show rule name=\"" +
+        std::wstring(rule_name) + L"\">nul 2>&1";
+    std::vector<wchar_t> query_buffer(query.begin(), query.end());
+    query_buffer.push_back(wchar_t(0));
+    if (_wsystem(query_buffer.data()) == 0) {
+        return;
+    }
+    std::wstring add =
+        L"netsh advfirewall firewall add rule name=\"" + std::wstring(rule_name) +
+        L"\" dir=in action=allow protocol=UDP localport=5353 profile=any>nul 2>&1";
+    std::vector<wchar_t> add_buffer(add.begin(), add.end());
+    add_buffer.push_back(wchar_t(0));
+    (void)_wsystem(add_buffer.data());
+}
+
 // PIN over USB: the cable is the out-of-band channel, so first-time pairing
 // needs no manual typing when the tablet is attached. Fire-and-forget.
 void notify_pairing_approved_over_usb(const std::string& pin) {
@@ -204,6 +225,7 @@ void set_enabled(HWND window, bool on) {
         save_identity_locked();
     }
     if (on) {
+        ensure_mdns_firewall_rule();
         if (!browser().start()) {
             notify_status(L"WiFi 投屏已开启；mDNS 自动发现不可用，请改用手动输入平板 IP。");
         } else {
