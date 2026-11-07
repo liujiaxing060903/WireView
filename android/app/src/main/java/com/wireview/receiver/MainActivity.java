@@ -381,6 +381,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         sidebar = new SidebarController(this, new SidebarController.Callbacks() {
             @Override
             public void onEscape() {
+                PersistentDiagnosticLog.record("Sidebar", "send control: escape");
                 connection.sendControlCommand(new byte[]{1});
             }
 
@@ -396,16 +397,20 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
 
             @Override
             public void onRotateOrientation() {
+                PersistentDiagnosticLog.record("Sidebar", "send control: rotate");
                 connection.sendControlCommand(new byte[]{3});
             }
 
             @Override
             public void onRequestWindowList() {
+                PersistentDiagnosticLog.record("Sidebar", "send control: window list");
                 connection.sendControlCommand(new byte[]{4});
             }
 
             @Override
             public void onMoveWindow(int token, int index, int targetArea) {
+                PersistentDiagnosticLog.record("Sidebar", "send control: move window "
+                        + index + " -> area " + targetArea);
                 ByteBuffer payload = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN);
                 payload.put((byte) 5);
                 payload.putInt(token);

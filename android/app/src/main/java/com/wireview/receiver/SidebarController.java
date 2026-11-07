@@ -516,21 +516,47 @@ final class SidebarController {
                 }
                 outAttrs.imeOptions |=
                         EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN;
+                // 微信等中文输入法不走 commitText，而是 setComposingText
+                // （组词，本地显示拼音）+ finishComposingText（上屏）——必须
+                // 追踪组词状态，上屏时把组词串发往电脑；直接 commitText 的
+                // 输入法走另一条分支。穿透模式：上屏内容不留在本地框里。
+                final String[] composing = {""};
                 return new InputConnectionWrapper(base, true) {
+                    @Override
+                    public boolean setComposingText(CharSequence text,
+                            int newCursorPosition) {
+                        composing[0] = text == null ? "" : text.toString();
+                        return super.setComposingText(text, newCursorPosition);
+                    }
+
+                    @Override
+                    public boolean finishComposingText() {
+                        if (!composing[0].isEmpty()) {
+                            sendImeText(composing[0]);
+                            composing[0] = "";
+                            imeInput.setText("");
+                        }
+                        return super.finishComposingText();
+                    }
+
                     @Override
                     public boolean commitText(CharSequence text, int newCursorPosition) {
                         if (text != null && text.length() == 1 && text.charAt(0) == '\n') {
                             sendImeKey((byte) 13);  // VK_RETURN
                         } else if (text != null && text.length() > 0) {
                             sendImeText(text.toString());
+                            composing[0] = "";
+                            imeInput.setText("");
                         }
-                        // 穿透模式：不写进本地框（文字直达电脑，输入条保持
-                        // 干净）；组词阶段的拼音仍由 setComposingText 走 super。
                         return true;
                     }
 
                     @Override
                     public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                        if (!composing[0].isEmpty()) {
+                            // 组词中的删改只作用于本地拼音，电脑还没收到字。
+                            return super.deleteSurroundingText(beforeLength, afterLength);
+                        }
                         for (int index = 0; index < beforeLength; ++index) {
                             sendImeKey((byte) 8);   // VK_BACK
                         }
@@ -546,7 +572,7 @@ final class SidebarController {
                         // 不拦截会导致平板删了字、电脑没删。
                         if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
                             Byte vk = imeKeyForAndroidKeycode(event.getKeyCode());
-                            if (vk != null) {
+                            if (vk != null && composing[0].isEmpty()) {
                                 sendImeKey(vk);
                             }
                         }
@@ -566,7 +592,7 @@ final class SidebarController {
         };
         imeInput.setTextColor(COLOR_TEXT);
         imeInput.setHintTextColor(COLOR_TEXT_DIM);
-        imeInput.setHint("输入后文字直达电脑");
+        imeInput.setHint("拼音在这里组词，选字后直达电脑");
         imeInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         imeInput.setBackground(rounded(COLOR_BUTTON_FILL, 12f, 0, 0));
         imeInput.setPadding(dp(10f), dp(8f), dp(10f), dp(8f));

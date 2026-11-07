@@ -259,6 +259,8 @@ void request_control_center_rotation() {
             control, kControlCenterRotateMessage, kControlCenterRotateRequest, 0) == FALSE) {
         std::cerr << "Rotation request dropped: PostMessage failed with "
                   << GetLastError() << '\n';
+    } else {
+        std::cout << "Rotation request posted to the control center\n";
     }
 }
 

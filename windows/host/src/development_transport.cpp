@@ -978,6 +978,8 @@ void receive_input_packets(
                 std::cerr << "Rejected WireView control command payload\n";
                 continue;
             }
+            std::cout << "Tablet control command: "
+                      << static_cast<int>(payload[0]) << '\n';
             switch (command) {
                 case wireview::host::TabletCommand::escape:
                     if (!wireview::host::inject_escape_key()) {
