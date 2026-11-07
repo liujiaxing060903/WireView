@@ -178,6 +178,20 @@ if(MSVC)
 endif()
 
 if(BUILD_TESTING)
+    # R3 WiFi 鉴权原语（CNG 封装）与 RFC 测试向量。wifi_crypto.cpp 为纯
+    # ASCII 源文件，供 wireview_host / wireview_control 与本测试共用。
+    add_executable(wireview_wifi_crypto_tests
+        src/wifi_crypto.cpp
+        tests/wifi_crypto_tests.cpp
+    )
+    target_include_directories(wireview_wifi_crypto_tests PRIVATE src)
+    target_compile_features(wireview_wifi_crypto_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_wifi_crypto_tests PRIVATE bcrypt crypt32)
+    if(MSVC)
+        target_compile_options(wireview_wifi_crypto_tests PRIVATE /W4 /WX /permissive-)
+    endif()
+    add_test(NAME wireview_wifi_crypto_tests COMMAND wireview_wifi_crypto_tests)
+
     add_executable(wireview_idd_frame_relay_tests
         src/idd_frame_relay.cpp
         tests/idd_frame_relay_tests.cpp

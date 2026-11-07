@@ -36,8 +36,13 @@ enum class PacketType : std::uint8_t {
     // PC -> Android: window list reply for the tablet application switcher.
     window_list = 14,
     // 15 was ime_control (PC -> Android auto show/hide of the tablet IME
-    // bar); the UIA auto-detect was removed at R2 close - the sidebar
-    // keyboard button is the only way to open the IME bar now.
+    // bar); the UIA auto-detect was removed at R2 close. R3 WiFi reuses no
+    // retired numbers for new meanings: the WiFi link authentication
+    // handshake uses fresh types 15..17 below (both ends ship from this
+    // repository, so there is no cross-version ambiguity).
+    auth_challenge = 15,  // PC -> tablet: start one authentication or pairing.
+    auth_response = 16,   // tablet -> PC: identity + HMAC proof.
+    auth_result = 17,     // PC -> tablet: accept / reject / credential.
 };
 
 enum class PacketFlag : std::uint8_t {
