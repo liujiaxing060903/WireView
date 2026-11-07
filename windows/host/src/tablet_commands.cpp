@@ -126,7 +126,7 @@ bool decode_window_move(
     token = read_u32_le(payload, 1U);
     index = read_u32_le(payload, 5U);
     target_area = payload[9U];
-    return target_area <= kWindowAreaVdd + 1U;
+    return target_area <= kWindowAreaVdd;
 }
 
 bool decode_ime_text(std::span<const std::uint8_t> payload, std::wstring& text) {

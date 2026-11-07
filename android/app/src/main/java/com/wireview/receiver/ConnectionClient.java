@@ -173,6 +173,14 @@ final class ConnectionClient implements AutoCloseable {
         TransportConnection activeConnection = connection;
         ExecutorService activeWriter = writer;
         if (!running.get() || activeConnection == null || activeWriter == null || payload == null) {
+            if (type == Protocol.TYPE_CONTROL_COMMAND) {
+                // 控制命令丢失必须留痕：侧边栏按钮"无响应"排查全靠它。
+                PersistentDiagnosticLog.record("ConnectionClient",
+                        "control command dropped: type=" + type
+                                + " running=" + running.get()
+                                + " connection=" + (activeConnection != null)
+                                + " writer=" + (activeWriter != null));
+            }
             return;
         }
         long sequence = outboundSequence.getAndIncrement();

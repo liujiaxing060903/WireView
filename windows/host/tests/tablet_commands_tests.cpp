@@ -24,8 +24,22 @@ void test_decode_control_command() {
     require(!decode_control_command({}, command), "empty payload must be rejected");
     require(decode_control_command(bytes({0x01}), command) &&
         command == TabletCommand::escape, "escape was not decoded");
+    require(decode_control_command(bytes({0x03}), command) &&
+        command == TabletCommand::rotate_orientation, "rotate was not decoded");
     require(decode_control_command(bytes({0x04}), command) &&
         command == TabletCommand::request_window_list, "list request was not decoded");
+    require(decode_control_command(bytes({0x63}), command) &&
+        static_cast<std::uint8_t>(command) == 0x63,
+        "unknown commands must pass through for the caller to ignore");
+}
+
+void test_decode_window_move_rejects_other_area() {
+    std::uint32_t token = 0U;
+    std::uint32_t index = 0U;
+    std::uint8_t area = 0U;
+    require(!decode_window_move(
+        bytes({0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}),
+        token, index, area), "target area 2 must be rejected per the protocol doc");
 }
 
 void test_decode_ime_text() {
@@ -122,6 +136,7 @@ void test_encode_window_list_roundtrip() {
 int main() {
     try {
         test_decode_control_command();
+        test_decode_window_move_rejects_other_area();
         test_decode_ime_text();
         test_decode_ime_key_whitelist();
         test_decode_window_move();

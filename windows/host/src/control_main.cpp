@@ -3414,6 +3414,7 @@ bool start_session(
     g_state.shell_process = process.hProcess;
     g_state.preview_active = device_preview;
     g_state.profile_probe_active = device_profile_probe;
+    g_state.session_input_enabled = enable_input && !device_preview && !device_profile_probe;
     EnableWindow(g_state.display_selector, FALSE);
     EnableWindow(g_state.refresh_displays_button, FALSE);
     EnableWindow(g_state.resolution_selector, FALSE);
@@ -5882,7 +5883,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 SetTimer(window, kEdgeRemapTimer, 1'200U, nullptr);
             }
             return 0;
-        case WM_APP:
+        case wireview::host::kControlCenterRotateMessage:
             if (wparam == wireview::host::kControlCenterRotateRequest) {
                 handle_tablet_rotate_request(window);
                 return 0;
@@ -5910,7 +5911,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             if (wparam == kRotateRestartTimer) {
                 KillTimer(window, kRotateRestartTimer);
                 if (g_state.shell_process == nullptr) {
-                    (void)start_session(window, true);
+                    (void)start_session(window, g_state.session_input_enabled);
                 }
                 return 0;
             }
