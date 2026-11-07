@@ -20,10 +20,16 @@ namespace wireview::host {
 // Sub-commands carried by packet type 13.
 enum class TabletCommand : std::uint8_t {
     escape = 1,
-    touch_keyboard = 2,
+    // 2 was the Windows touch keyboard; retired in favor of the Android IME
+    // bridge (text arrives via ime_text / ime_key).
     rotate_orientation = 3,
     request_window_list = 4,
     move_window = 5,
+    // Text committed by the Android IME: [6][u16 utf8 bytes][utf-8 text].
+    ime_text = 6,
+    // Special key from the Android IME bar: [7][u8 vk]. VK codes only
+    // (VK_BACK, VK_RETURN, VK_TAB, arrows); printable text uses ime_text.
+    ime_key = 7,
 };
 
 // Monitor classification shared by the list reply and the move request.
@@ -51,6 +57,12 @@ bool decode_window_move(
     std::uint32_t& index,
     std::uint8_t& target_area);
 
+// type 13 ime_text payload: [6][u16 utf8 bytes][utf-8 text].
+bool decode_ime_text(std::span<const std::uint8_t> payload, std::wstring& text);
+
+// type 13 ime_key payload: [7][u8 vk]; only editing keys are accepted.
+bool decode_ime_key(std::span<const std::uint8_t> payload, UINT& virtual_key);
+
 // type 14 payload: [u32 token][u16 count]
 // then per entry: [u64 hwnd][u8 area][u16 title_bytes][utf-8 title].
 std::vector<std::uint8_t> encode_window_list(
@@ -60,9 +72,12 @@ std::vector<std::uint8_t> encode_window_list(
 // Send the ESC key through SendInput (INPUT_KEYBOARD).
 bool inject_escape_key();
 
-// Launch the Windows touch keyboard (TabTip, fallback osk.exe). Returns false
-// when neither could be started.
-bool launch_touch_keyboard();
+// Inject UTF-16 text through VK_PACKET / KEYEVENTF_UNICODE, bypassing the
+// PC-side IME entirely (the Android IME already did the composition).
+bool inject_unicode_text(const std::wstring& text);
+
+// Press and release a virtual key (VK_BACK, VK_RETURN, ...).
+bool inject_virtual_key(UINT virtual_key);
 
 void request_control_center_rotation();
 

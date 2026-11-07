@@ -5,6 +5,7 @@ add_executable(wireview_host
     src/display_layout.cpp
     src/idd_frame_relay.cpp
     src/idd_frame_relay_pipe.cpp
+    src/ime_focus_watcher.cpp
     src/input_injector.cpp
     src/main.cpp
     src/parsec_vdd.cpp
@@ -157,7 +158,6 @@ target_link_libraries(wireview_host PRIVATE
     mfplat
     mfuuid
     ole32
-    shell32
     shcore
     user32
     ws2_32
@@ -262,6 +262,22 @@ if(BUILD_TESTING)
     add_test(
         NAME wireview_edge_mapping_tests
         COMMAND wireview_edge_mapping_tests)
+
+    add_executable(wireview_tablet_commands_tests
+        src/tablet_commands.cpp
+        tests/tablet_commands_tests.cpp
+    )
+    target_include_directories(wireview_tablet_commands_tests PRIVATE src)
+    target_compile_features(wireview_tablet_commands_tests PRIVATE cxx_std_20)
+    # codec 函数是纯逻辑；tablet_commands.cpp 其余部分引用 user32/dwmapi。
+    target_link_libraries(wireview_tablet_commands_tests PRIVATE user32 dwmapi)
+    if(MSVC)
+        target_compile_options(
+            wireview_tablet_commands_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(
+        NAME wireview_tablet_commands_tests
+        COMMAND wireview_tablet_commands_tests)
 
     add_executable(wireview_winusb_byte_stream_tests
         src/winusb_byte_stream.cpp

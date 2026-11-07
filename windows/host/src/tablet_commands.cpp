@@ -6,7 +6,6 @@
 #include <utility>
 
 #include <dwmapi.h>
-#include <shellapi.h>
 
 namespace wireview::host {
 namespace {
@@ -38,6 +37,21 @@ std::string narrow_utf8(const std::wstring& text) {
         WideCharToMultiByte(
             CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
             result.data(), size, nullptr, nullptr);
+    }
+    return result;
+}
+
+std::wstring widen_utf8(const std::string& text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int size = MultiByteToWideChar(
+        CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    std::wstring result(static_cast<std::size_t>(size > 0 ? size : 0), L'\0');
+    if (size > 0) {
+        MultiByteToWideChar(
+            CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+            result.data(), size);
     }
     return result;
 }
@@ -114,6 +128,43 @@ bool decode_window_move(
     return target_area <= kWindowAreaVdd + 1U;
 }
 
+bool decode_ime_text(std::span<const std::uint8_t> payload, std::wstring& text) {
+    if (payload.size() < 3U ||
+        payload[0] != static_cast<std::uint8_t>(TabletCommand::ime_text)) {
+        return false;
+    }
+    const std::size_t length = static_cast<std::size_t>(payload[1]) |
+        (static_cast<std::size_t>(payload[2]) << 8U);
+    if (3U + length != payload.size() || length == 0U) {
+        return false;
+    }
+    text = widen_utf8(std::string(
+        reinterpret_cast<const char*>(payload.data() + 3U), length));
+    return !text.empty();
+}
+
+bool decode_ime_key(std::span<const std::uint8_t> payload, UINT& virtual_key) {
+    if (payload.size() != 2U ||
+        payload[0] != static_cast<std::uint8_t>(TabletCommand::ime_key)) {
+        return false;
+    }
+    // Whitelist editing keys only; printable text always rides ime_text.
+    switch (payload[1U]) {
+        case VK_BACK:
+        case VK_TAB:
+        case VK_RETURN:
+        case VK_DELETE:
+        case VK_LEFT:
+        case VK_UP:
+        case VK_RIGHT:
+        case VK_DOWN:
+            virtual_key = payload[1U];
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::vector<std::uint8_t> encode_window_list(
     std::uint32_t token,
     const std::vector<TabletWindowEntry>& entries) {
@@ -147,31 +198,54 @@ bool inject_escape_key() {
     return SendInput(2U, inputs, sizeof(INPUT)) == 2U;
 }
 
-bool launch_touch_keyboard() {
-    // The touch keyboard is the natural choice for the tablet: it follows the
-    // focused window, so with focus on the WireView display it appears there.
-    // A desktop without a touch digitizer may refuse TabTip; osk.exe is the
-    // always-available fallback.
-    wchar_t common_files[MAX_PATH]{};
-    if (GetEnvironmentVariableW(L"CommonProgramFiles", common_files, MAX_PATH) != 0U) {
-        const std::wstring tab_tip =
-            std::wstring(common_files) + L"\\microsoft shared\\ink\\TabTip.exe";
-        if (GetFileAttributesW(tab_tip.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            const HINSTANCE result = ShellExecuteW(
-                nullptr, L"open", tab_tip.c_str(), nullptr, nullptr, SW_SHOW);
-            if (reinterpret_cast<INT_PTR>(result) > 32) {
-                return true;
+bool inject_unicode_text(const std::wstring& text) {
+    if (text.empty()) {
+        return true;
+    }
+    // VK_PACKET + KEYEVENTF_UNICODE injects characters as if typed, without
+    // running them through the desktop IME. Surrogate pairs are sent as two
+    // consecutive units, which Windows joins. Flush in chunks so one giant
+    // paste cannot overflow SendInput's internal queue.
+    constexpr std::size_t kChunkInputs = 512U;
+    std::vector<INPUT> inputs;
+    inputs.reserve(kChunkInputs);
+    const auto flush = [&inputs]() {
+        while (!inputs.empty()) {
+            const std::size_t batch = std::min(inputs.size(), kChunkInputs);
+            if (SendInput(static_cast<UINT>(batch), inputs.data(), sizeof(INPUT)) !=
+                static_cast<UINT>(batch)) {
+                return false;
             }
+            inputs.erase(inputs.begin(), inputs.begin() + static_cast<std::ptrdiff_t>(batch));
+        }
+        return true;
+    };
+    for (const wchar_t character : text) {
+        // KEYEVENTF_UNICODE requires wVk == 0; the character rides wScan.
+        INPUT down{};
+        down.type = INPUT_KEYBOARD;
+        down.ki.wVk = 0U;
+        down.ki.wScan = static_cast<WORD>(character);
+        down.ki.dwFlags = KEYEVENTF_UNICODE;
+        INPUT up = down;
+        up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        inputs.push_back(down);
+        inputs.push_back(up);
+        if (inputs.size() >= kChunkInputs && !flush()) {
+            return false;
         }
     }
-    wchar_t windows_directory[MAX_PATH]{};
-    if (GetWindowsDirectoryW(windows_directory, MAX_PATH) == 0U) {
-        return false;
-    }
-    const std::wstring osk = std::wstring(windows_directory) + L"\\System32\\osk.exe";
-    const HINSTANCE result = ShellExecuteW(
-        nullptr, L"open", osk.c_str(), nullptr, nullptr, SW_SHOW);
-    return reinterpret_cast<INT_PTR>(result) > 32;
+    return flush();
+}
+
+bool inject_virtual_key(UINT virtual_key) {
+    INPUT inputs[2]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = static_cast<WORD>(virtual_key);
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = static_cast<WORD>(virtual_key);
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(2U, inputs, sizeof(INPUT)) == 2U;
 }
 
 void request_control_center_rotation() {

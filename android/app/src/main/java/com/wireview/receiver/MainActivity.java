@@ -385,8 +385,13 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             }
 
             @Override
-            public void onTouchKeyboard() {
-                connection.sendControlCommand(new byte[]{2});
+            public void onImeText(byte[] payload) {
+                connection.sendControlCommand(payload);
+            }
+
+            @Override
+            public void onImeKey(byte[] payload) {
+                connection.sendControlCommand(payload);
             }
 
             @Override
@@ -1038,6 +1043,8 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             showDevicePreview(packet.payload);
         } else if (packet.header.type == Protocol.TYPE_WINDOW_LIST) {
             sidebar.handleWindowList(packet.payload);
+        } else if (packet.header.type == Protocol.TYPE_IME_CONTROL) {
+            sidebar.handleImeControl(packet.payload);
         }
     }
 }

@@ -9,14 +9,21 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputConnectionWrapper;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -24,6 +31,7 @@ import android.widget.TextView;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 
 /**
@@ -33,14 +41,18 @@ import java.util.ArrayList;
  * 贴边半隐藏：收起时窗口左移 4dp，只露出 8dp 宽的把手；点击把手展开面板，
  * 再次点击（或点面板头部）收回。面板提供返回（ESC）、键盘、横竖屏、应用
  * 切换四个动作，经协议 type13 发往 Windows 主机；应用切换页由 type14 回包
- * 驱动。所有视图纯代码构建，配色与接收端暗色风格一致。
+ * 驱动；输入法由 type15（PC 端 UIA 焦点探测）自动呼出，也可用键盘按钮手动
+ * 呼出——输入条拉起的是平板自己的系统输入法（如微信输入法），提交的文本
+ * 经 type13 ime_text/ime_key 直达电脑。所有视图纯代码构建。
  */
 final class SidebarController {
 
     interface Callbacks {
         void onEscape();
 
-        void onTouchKeyboard();
+        void onImeText(byte[] payload);
+
+        void onImeKey(byte[] payload);
 
         void onRotateOrientation();
 
@@ -85,6 +97,12 @@ final class SidebarController {
     private boolean expanded;
     private boolean attached;
 
+    private WindowManager.LayoutParams imeParams;
+    private LinearLayout imeBar;
+    private EditText imeInput;
+    private View keyboardRow;
+    private boolean imeShowing;
+
     private final ArrayList<WindowEntry> windows = new ArrayList<>();
     private int listToken;
 
@@ -120,6 +138,7 @@ final class SidebarController {
             return;
         }
         setExpanded(false, false);
+        hideIme();
         rootLayout.setVisibility(View.GONE);
         // 子窗口随 Activity 窗口隐藏；这里仅整窗隐藏，避免反复 add/remove。
     }
@@ -128,6 +147,13 @@ final class SidebarController {
         if (attached) {
             windowManager.removeView(rootLayout);
             attached = false;
+        }
+        imeShowing = false;
+        if (imeBar != null && imeBar.getParent() != null) {
+            windowManager.removeView(imeBar);
+        }
+        if (keyboardRow != null) {
+            keyboardRow.setAlpha(1f);
         }
         handler.removeCallbacksAndMessages(null);
     }
@@ -276,8 +302,9 @@ final class SidebarController {
 
         actionPage.addView(actionRow("↩", "返回（ESC）", "给电脑发送 Esc 键",
                 () -> callbacks.onEscape()));
-        actionPage.addView(actionRow("⌨", "键盘", "在副屏上唤出输入法",
-                () -> callbacks.onTouchKeyboard()));
+        keyboardRow = actionRow("⌨", "键盘", "呼出平板输入法打字到电脑",
+                this::toggleIme);
+        actionPage.addView(keyboardRow);
         actionPage.addView(actionRow("⟳", "横竖屏", "切换副屏方向（短暂重连）",
                 () -> callbacks.onRotateOrientation()));
         actionPage.addView(actionRow("▦", "应用切换", "把窗口移到另一块屏幕",
@@ -388,6 +415,225 @@ final class SidebarController {
         panelPages.addView(listPage, new FrameLayout.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT));
+    }
+
+    // --- 输入法输入条 ----------------------------------------------------------
+    // 独立的聚焦子窗口：拉起平板系统输入法（微信输入法等），提交的文本经
+    // type13 ime_text 转发，退格/回车等经 ime_key。PC 端 UIA 焦点探测会经
+    // type15 自动呼出/收起，键盘按钮则是手动开关。
+
+    private void buildImeWindow() {
+        imeParams = new WindowManager.LayoutParams(
+                dp(224f),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        imeParams.gravity = Gravity.BOTTOM | Gravity.START;
+        imeParams.x = dp(8f);
+        imeParams.y = dp(360f);
+
+        imeBar = new LinearLayout(activity);
+        imeBar.setOrientation(LinearLayout.HORIZONTAL);
+        imeBar.setGravity(Gravity.CENTER_VERTICAL);
+        imeBar.setBackground(rounded(COLOR_PANEL, 16f, COLOR_PANEL_STROKE, 1f));
+        imeBar.setElevation(dp(14f));
+        imeBar.setPadding(dp(8f), dp(6f), dp(8f), dp(6f));
+
+        imeInput = new EditText(activity) {
+            @Override
+            public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+                InputConnection base = super.onCreateInputConnection(outAttrs);
+                if (base == null) {
+                    return null;
+                }
+                outAttrs.imeOptions |=
+                        EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN;
+                return new InputConnectionWrapper(base, true) {
+                    @Override
+                    public boolean commitText(CharSequence text, int newCursorPosition) {
+                        if (text != null && text.length() == 1 && text.charAt(0) == '\n') {
+                            sendImeKey((byte) 13);  // VK_RETURN
+                        } else if (text != null && text.length() > 0) {
+                            sendImeText(text.toString());
+                        }
+                        return super.commitText(text, newCursorPosition);
+                    }
+
+                    @Override
+                    public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                        for (int index = 0; index < beforeLength; ++index) {
+                            sendImeKey((byte) 8);   // VK_BACK
+                        }
+                        for (int index = 0; index < afterLength; ++index) {
+                            sendImeKey((byte) 46);  // VK_DELETE
+                        }
+                        return super.deleteSurroundingText(beforeLength, afterLength);
+                    }
+
+                    @Override
+                    public boolean sendKeyEvent(KeyEvent event) {
+                        // 部分输入法用按键事件而非 deleteSurroundingText 删字，
+                        // 不拦截会导致平板删了字、电脑没删。
+                        if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
+                            Byte vk = imeKeyForAndroidKeycode(event.getKeyCode());
+                            if (vk != null) {
+                                sendImeKey(vk);
+                            }
+                        }
+                        return super.sendKeyEvent(event);
+                    }
+                };
+            }
+
+            @Override
+            public boolean onKeyDown(int keyCode, KeyEvent event) {
+                if (keyCode == KeyEvent.KEYCODE_BACK) {
+                    hideIme();
+                    return true;
+                }
+                return super.onKeyDown(keyCode, event);
+            }
+        };
+        imeInput.setTextColor(COLOR_TEXT);
+        imeInput.setHintTextColor(COLOR_TEXT_DIM);
+        imeInput.setHint("输入后文字直达电脑");
+        imeInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        imeInput.setBackground(rounded(COLOR_BUTTON_FILL, 12f, 0, 0));
+        imeInput.setPadding(dp(10f), dp(8f), dp(10f), dp(8f));
+        imeInput.setMaxLines(1);
+        imeInput.setInputType(InputType.TYPE_CLASS_TEXT);
+        imeInput.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                | EditorInfo.IME_FLAG_NO_FULLSCREEN);
+        imeInput.setOnEditorActionListener((view, actionId, event) -> {
+            sendImeKey((byte) 13);  // 软键盘回车
+            return true;
+        });
+        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(
+                0, WindowManager.LayoutParams.WRAP_CONTENT, 1f);
+        imeBar.addView(imeInput, inputParams);
+
+        TextView closeButton = text("✕", 14f, COLOR_TEXT_DIM, false);
+        closeButton.setPadding(dp(8f), 0, dp(4f), 0);
+        closeButton.setOnClickListener(view -> hideIme());
+        imeBar.addView(closeButton, new LinearLayout.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void sendImeText(String value) {
+        byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
+        if (utf8.length == 0 || utf8.length > 0xffff) {
+            return;
+        }
+        ByteBuffer payload = ByteBuffer.allocate(3 + utf8.length).order(ByteOrder.LITTLE_ENDIAN);
+        payload.put((byte) 6);
+        payload.putShort((short) utf8.length);
+        payload.put(utf8);
+        callbacks.onImeText(payload.array());
+    }
+
+    private void sendImeKey(byte virtualKey) {
+        callbacks.onImeKey(new byte[]{7, virtualKey});
+    }
+
+    private static Byte imeKeyForAndroidKeycode(int keycode) {
+        switch (keycode) {
+            case KeyEvent.KEYCODE_DEL:
+                return (byte) 8;      // VK_BACK
+            case KeyEvent.KEYCODE_FORWARD_DEL:
+                return (byte) 46;     // VK_DELETE
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                return (byte) 13;     // VK_RETURN
+            case KeyEvent.KEYCODE_TAB:
+                return (byte) 9;      // VK_TAB
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                return (byte) 37;     // VK_LEFT
+            case KeyEvent.KEYCODE_DPAD_UP:
+                return (byte) 38;     // VK_UP
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                return (byte) 39;     // VK_RIGHT
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                return (byte) 40;     // VK_DOWN
+            default:
+                return null;
+        }
+    }
+
+    void handleImeControl(byte[] payload) {
+        handler.post(() -> {
+            if (payload != null && payload.length >= 1 && payload[0] == 1) {
+                showIme();
+            } else {
+                hideIme();
+            }
+        });
+    }
+
+    private void toggleIme() {
+        if (imeShowing) {
+            hideIme();
+        } else {
+            showIme();
+        }
+    }
+
+    private void showIme() {
+        if (!attached || rootLayout.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        if (imeParams == null) {
+            buildImeWindow();
+        }
+        if (imeBar.getParent() == null) {
+            imeParams.token = activity.getWindow().getDecorView().getWindowToken();
+            if (imeParams.token == null) {
+                return;
+            }
+            try {
+                windowManager.addView(imeBar, imeParams);
+            } catch (WindowManager.BadTokenException error) {
+                PersistentDiagnosticLog.record("Sidebar", "IME bar attach failed", error);
+                return;
+            }
+        }
+        imeBar.setVisibility(View.VISIBLE);
+        imeInput.requestFocus();
+        // 子窗口刚 addView 时 WMS 焦点切换未完成，showSoftInput 常被静默
+        // 忽略；延迟重试一次显著提高呼出成功率。
+        InputMethodManager manager = (InputMethodManager)
+                activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (manager != null) {
+            manager.showSoftInput(imeInput, InputMethodManager.SHOW_IMPLICIT);
+            handler.postDelayed(() -> {
+                if (imeShowing) {
+                    manager.showSoftInput(imeInput, InputMethodManager.SHOW_IMPLICIT);
+                }
+            }, 120L);
+        }
+        if (!imeShowing) {
+            imeShowing = true;
+            keyboardRow.setAlpha(1f);
+        }
+    }
+
+    private void hideIme() {
+        boolean wasShowing = imeShowing;
+        imeShowing = false;
+        if (imeBar != null && imeBar.getParent() != null) {
+            InputMethodManager manager = (InputMethodManager)
+                    activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (manager != null && imeInput.getWindowToken() != null) {
+                manager.hideSoftInputFromWindow(imeInput.getWindowToken(), 0);
+            }
+            imeInput.clearFocus();
+            imeInput.setText("");
+            windowManager.removeView(imeBar);
+        }
+        if (wasShowing && keyboardRow != null) {
+            keyboardRow.setAlpha(0.75f);
+        }
     }
 
     // --- 页面与展开动画 --------------------------------------------------------

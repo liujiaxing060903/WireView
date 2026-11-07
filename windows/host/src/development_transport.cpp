@@ -5,6 +5,7 @@
 #include <WS2tcpip.h>
 
 #include "annex_b_stream.hpp"
+#include "ime_focus_watcher.hpp"
 #include "input_injector.hpp"
 #include "reliable_byte_stream.hpp"
 #include "tablet_commands.hpp"
@@ -629,6 +630,16 @@ void set_low_latency_socket_options(SOCKET socket) {
             sizeof(timeout_millis)) == SOCKET_ERROR) {
         throw_socket_error("setsockopt(SO_RCVTIMEO)");
     }
+    // Bound blocking sends as well: without this, a stalled adb/USB pipe
+    // would freeze the sender thread (and session shutdown) forever.
+    if (setsockopt(
+            socket,
+            SOL_SOCKET,
+            SO_SNDTIMEO,
+            reinterpret_cast<const char*>(&timeout_millis),
+            sizeof(timeout_millis)) == SOCKET_ERROR) {
+        throw_socket_error("setsockopt(SO_SNDTIMEO)");
+    }
 }
 
 sockaddr_in loopback_address(std::uint16_t port) {
@@ -766,8 +777,10 @@ void receive_input_packets(
     bool inject_input,
     InputReceiveStats& stats,
     DevelopmentStatusPublisher* status,
-    const std::function<void(std::vector<std::uint8_t>&&)>& send_reply,
-    const std::wstring& vdd_device_name) {
+    const std::function<void(
+        wireview::protocol::PacketType, std::vector<std::uint8_t>&&)>& send_reply,
+    const std::wstring& vdd_device_name,
+    std::atomic<std::uint64_t>* last_tablet_input_micros) {
     wireview::protocol::PacketStreamParser parser;
     std::vector<wireview::host::TabletWindowEntry> window_entries;
     std::uint32_t window_list_token = 0U;
@@ -806,6 +819,12 @@ void receive_input_packets(
                     std::cerr << "Rejected WireView input batch: "
                               << static_cast<int>(decoded.error) << '\n';
                     continue;
+                }
+                // Track tablet-driven pointer activity for the IME focus
+                // watcher: only tablet-driven focus changes may pop the IME.
+                if (last_tablet_input_micros != nullptr) {
+                    last_tablet_input_micros->store(
+                        monotonic_micros(), std::memory_order_relaxed);
                 }
                 stats.records += decoded.batch->records.size();
                 if (inject_input && !injector.inject_batch(*decoded.batch)) {
@@ -965,11 +984,6 @@ void receive_input_packets(
                         std::cerr << "Failed to inject the ESC key\n";
                     }
                     break;
-                case wireview::host::TabletCommand::touch_keyboard:
-                    if (!wireview::host::launch_touch_keyboard()) {
-                        std::cerr << "Failed to launch the touch keyboard\n";
-                    }
-                    break;
                 case wireview::host::TabletCommand::rotate_orientation:
                     wireview::host::request_control_center_rotation();
                     break;
@@ -979,8 +993,26 @@ void receive_input_packets(
                         vdd_device_name);
                     std::cout << "Tablet window list: " << window_entries.size()
                               << " windows | token " << window_list_token << '\n';
-                    send_reply(wireview::host::encode_window_list(
-                        window_list_token, window_entries));
+                    send_reply(
+                        wireview::protocol::PacketType::window_list,
+                        wireview::host::encode_window_list(
+                            window_list_token, window_entries));
+                    break;
+                }
+                case wireview::host::TabletCommand::ime_text: {
+                    std::wstring text;
+                    if (!wireview::host::decode_ime_text(payload, text) ||
+                        !wireview::host::inject_unicode_text(text)) {
+                        std::cerr << "Failed to inject the IME text\n";
+                    }
+                    break;
+                }
+                case wireview::host::TabletCommand::ime_key: {
+                    UINT virtual_key = 0U;
+                    if (!wireview::host::decode_ime_key(payload, virtual_key) ||
+                        !wireview::host::inject_virtual_key(virtual_key)) {
+                        std::cerr << "Failed to inject the IME key\n";
+                    }
                     break;
                 }
                 case wireview::host::TabletCommand::move_window: {
@@ -1003,6 +1035,10 @@ void receive_input_packets(
                               << " -> " << (moved ? "moved" : "failed") << '\n';
                     break;
                 }
+                default:
+                    std::cerr << "Ignored unknown WireView control command "
+                              << static_cast<int>(payload[0]) << '\n';
+                    break;
             }
         }
     }
@@ -1209,10 +1245,42 @@ void send_desktop_stream(
                 vdd_device_name_wide.data(), wide_length);
         }
     }
-    const auto send_reply = [&](std::vector<std::uint8_t>&& bytes) {
+    // PC -> Android replies (window list, IME show/hide) share the send-side
+    // write mutex with the frame sender thread.
+    std::atomic_uint64_t reply_sequence{0x5756530000000000ULL};
+    const auto send_reply = [&](wireview::protocol::PacketType type,
+                                std::vector<std::uint8_t>&& payload) {
         std::lock_guard lock(write_mutex);
-        write_all(stream, bytes);
+        write_all(
+            stream,
+            wireview::protocol::encode_packet(
+                wireview::protocol::PacketHeader{
+                    .type = type,
+                    .sequence = reply_sequence.fetch_add(1U),
+                    .timestamp_micros = monotonic_micros(),
+                },
+                payload));
     };
+
+    // Tablet IME bridge: UIA focus watcher decides when the tablet keyboard
+    // should pop, based on focused-element editability + recent tablet input.
+    std::atomic<std::uint64_t> last_tablet_input_micros{0U};
+    ImeFocusWatcher ime_watcher;
+    const auto ime_watcher_started = ime_watcher.start(
+        [&send_reply](bool show) {
+            // The watcher calls this from UIA threads; a dead socket must
+            // never propagate through the COM callback frame.
+            try {
+                send_reply(
+                    wireview::protocol::PacketType::ime_control,
+                    std::vector<std::uint8_t>{show ? std::uint8_t{1} : std::uint8_t{0}});
+            } catch (...) {
+            }
+        },
+        &last_tablet_input_micros);
+    if (!ime_watcher_started) {
+        std::cerr << "IME focus watcher unavailable; the tablet IME stays manual\n";
+    }
     std::thread input_thread([&] {
         try {
             receive_input_packets(
@@ -1224,22 +1292,23 @@ void send_desktop_stream(
                 input_stats,
                 status,
                 send_reply,
-                vdd_device_name_wide);
+                vdd_device_name_wide,
+                &last_tablet_input_micros);
         } catch (...) {
             input_error = std::current_exception();
             input_running.store(false);
         }
     });
 
-    for (std::uint64_t index = 0U; index < 8U; ++index) {
-        send_clock_sync_ping();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    next_clock_sync = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-
-    int encoder_result = 1;
     try {
+        for (std::uint64_t index = 0U; index < 8U; ++index) {
+            send_clock_sync_ping();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        next_clock_sync = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+
+        int encoder_result = 1;
         encoder_result = run_desktop_encode_session(
             duration,
             callbacks,
@@ -1247,21 +1316,27 @@ void send_desktop_stream(
             output_height,
             frame_rate,
             capture_display_device);
-    } catch (...) {
+        ime_watcher.stop();
         stop_sender();
         input_running.store(false);
         input_thread.join();
+        if (input_error) {
+            std::rethrow_exception(input_error);
+        }
+        if (encoder_result != 0) {
+            throw std::runtime_error(
+                "desktop encoder session failed: " + std::to_string(encoder_result));
+        }
+    } catch (...) {
+        // The IME watcher and the input thread are owned by this scope: tear
+        // them down on every escape path before the exception continues.
+        ime_watcher.stop();
+        stop_sender();
+        input_running.store(false);
+        if (input_thread.joinable()) {
+            input_thread.join();
+        }
         throw;
-    }
-    stop_sender();
-    input_running.store(false);
-    input_thread.join();
-    if (input_error) {
-        std::rethrow_exception(input_error);
-    }
-    if (encoder_result != 0) {
-        throw std::runtime_error(
-            "desktop encoder session failed: " + std::to_string(encoder_result));
     }
     {
         std::lock_guard lock(write_mutex);
