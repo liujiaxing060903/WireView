@@ -5,7 +5,7 @@
     resolution: '原生自动', vddMode: '--', frameRate: '60 FPS',
     displays: [], resolutions: [], vddModes: [], selectedDisplay: 0,
     selectedResolution: 0, selectedVddMode: 0, positions: [], selectedPosition: 0,
-    orientations: [], selectedOrientation: 0, parsecAvailable: false,
+    orientations: [], selectedOrientation: 0, edgeMapping: true, parsecAvailable: false,
     parsecVersion: 0, parsecDisplayCount: 0, diagnostics: ''
   };
   const send = command => window.chrome?.webview?.postMessage(command);
@@ -85,6 +85,11 @@
     themeToggle.classList.toggle('is-on', darkMode);
     themeToggle.setAttribute('aria-checked', darkMode ? 'true' : 'false');
     themeToggle.closest('.settings-toggle-row').querySelector('small').textContent = darkMode ? '当前已开启' : '当前已关闭';
+    const edgeToggle = document.querySelector('#edge-mapping-toggle');
+    const edgeOn = state.edgeMapping !== false;
+    edgeToggle.classList.toggle('is-on', edgeOn);
+    edgeToggle.setAttribute('aria-checked', edgeOn ? 'true' : 'false');
+    document.querySelector('#edge-mapping-hint').textContent = edgeOn ? '已开启（会话期间自动生效）' : '已关闭';
   };
   const copyDeveloperEmail = async () => {
     const email = 'S_Znnn@163.com';
@@ -160,6 +165,13 @@
     document.querySelector('#copy-developer-email').addEventListener('click', event => {
       event.stopPropagation();
       void copyDeveloperEmail();
+    });
+    document.querySelector('#edge-mapping-toggle').addEventListener('click', event => {
+      event.stopPropagation();
+      const next = !(state.edgeMapping !== false);
+      state.edgeMapping = next;
+      send(next ? 'edge-mapping-on' : 'edge-mapping-off');
+      updateSettingsPanel();
     });
     document.querySelector('#theme-toggle').addEventListener('click', event => {
       event.stopPropagation();

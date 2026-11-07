@@ -18,6 +18,7 @@ add_executable(wireview_host
 add_executable(wireview_control_legacy WIN32
     src/control_main.cpp
     src/display_layout.cpp
+    src/edge_mapping.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
     src/wireview_control.rc
@@ -28,6 +29,7 @@ add_executable(wireview_control_legacy WIN32
 add_executable(wireview_control WIN32
     src/control_main.cpp
     src/display_layout.cpp
+    src/edge_mapping.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
     src/webview_host.cpp

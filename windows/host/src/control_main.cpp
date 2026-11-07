@@ -9,6 +9,7 @@
 #include <uxtheme.h>
 
 #include "display_layout.hpp"
+#include "edge_mapping.hpp"
 #include "parsec_vdd.hpp"
 #include "parsec_vdd_custom_modes.hpp"
 #ifdef WIREVIEW_WEBVIEW_UI
@@ -231,6 +232,8 @@ struct ControlState {
     // 当前准备启动复制还是扩展，并驱动简易模式的大卡片入口。
     bool web_extend_mode{false};
     bool display_config_expanded{false};
+    // R2：指针跨屏边缘映射（LittleBigMouse）总开关，默认开启。
+    bool edge_mapping_enabled{true};
     bool diagnostics_page{false};
     bool session_input_enabled{false};
     bool start_after_vdd_ready{false};
@@ -611,6 +614,7 @@ void save_stream_settings(const StreamSettings& settings) {
         output << "vdd_mode=" << base_width << 'x' << base_height << '@'
                << settings.vdd_refresh_hz << '\n';
     }
+    output << "edge_mapping=" << (g_state.edge_mapping_enabled ? 1 : 0) << '\n';
     // 控制中心的日常路径固定使用 ADB；WinUSB 实验入口仍保留在命令行工具中。
     output << "transport=adb\n";
     if (!settings.display_device.empty()) {
@@ -1405,6 +1409,10 @@ void restore_stream_settings() {
                     populate_vdd_mode_selector(std::to_wstring(parsed->refresh_hz));
                 }
             }
+        } else if (line == "edge_mapping=0") {
+            g_state.edge_mapping_enabled = false;
+        } else if (line == "edge_mapping=1") {
+            g_state.edge_mapping_enabled = true;
         } else if (line.rfind("vdd_position=", 0U) == 0U) {
             const auto position =
                 wireview::host::parse_vdd_position(line.substr(13U));
@@ -3015,6 +3023,8 @@ void update_session_action_controls() {
 }
 
 void stop_session() {
+    // 会话结束即回收边缘映射守护进程（未运行时空操作）。
+    wireview::host::edge_mapping_shutdown();
     // 在关闭 Job 前读取会话启动器实时镜像的 Host 输出；关闭 Job 会同时终止
     // wireview_session 与 wireview_host，不能等到之后再向 status 文件索取最终结果。
     if (!g_state.host_diagnostics_file.empty()) {
@@ -3234,6 +3244,22 @@ bool start_session(
                 } else {
                     set_status(L"副屏模式与投屏分辨率不一致，且自定义模式槽不可用；"
                         L"画面比例可能不正确。");
+                }
+            }
+            // R2：扩展会话前应用指针跨屏边缘映射（默认开，设置面板可关）。
+            // 放在模式同步之后：布局必须按切换完成后的最终矩形生成。
+            if (g_state.edge_mapping_enabled) {
+                const auto edge_primary = std::find_if(
+                    g_state.display_choices.begin(), g_state.display_choices.end(),
+                    [](const DisplayChoice& choice) { return choice.primary; });
+                if (edge_primary != g_state.display_choices.end()) {
+                    std::wstring edge_error;
+                    if (!wireview::host::edge_mapping_apply(
+                            edge_primary->device_name.c_str(),
+                            target_choice->device_name.c_str(), edge_error)) {
+                        // 映射失败不阻断会话，只提示；触控坐标仍按显示器拓扑注入。
+                        set_status(L"指针跨屏边缘映射未生效：" + edge_error);
+                    }
                 }
             }
         }
@@ -4657,6 +4683,7 @@ void publish_web_state() {
     add_array(L"orientations", combo_options_as_json(g_state.vdd_orientation_selector));
     add_number(L"selectedPosition", static_cast<std::size_t>(combo_selected_index(g_state.vdd_position_selector)));
     add_number(L"selectedOrientation", static_cast<std::size_t>(combo_selected_index(g_state.vdd_orientation_selector)));
+    add_bool(L"edgeMapping", g_state.edge_mapping_enabled);
     add_string(L"diagnostics", web_diagnostics_text());
     json += L"}";
     g_webview_host->post_json(json);
@@ -4738,6 +4765,33 @@ void handle_web_message(std::wstring_view message) {
         request_vdd_removal();
     } else if (message == L"recover-vdd") {
         recover_stale_vdd_session(g_state.window);
+    } else if (message == L"edge-mapping-on" || message == L"edge-mapping-off") {
+        g_state.edge_mapping_enabled = message == L"edge-mapping-on";
+        if (!g_state.edge_mapping_enabled) {
+            // 立即关停：用户不想用就马上恢复系统默认鼠标行为。
+            wireview::host::edge_mapping_shutdown();
+            set_status(L"指针跨屏边缘映射已关闭。");
+        } else if (g_state.shell_process != nullptr) {
+            const auto mapped_vdd = std::find_if(
+                g_state.display_choices.begin(), g_state.display_choices.end(),
+                [](const DisplayChoice& choice) { return choice.parsec_vdd && !choice.primary; });
+            const auto mapped_primary = std::find_if(
+                g_state.display_choices.begin(), g_state.display_choices.end(),
+                [](const DisplayChoice& choice) { return choice.primary; });
+            if (mapped_vdd != g_state.display_choices.end() &&
+                mapped_primary != g_state.display_choices.end()) {
+                std::wstring apply_error;
+                if (wireview::host::edge_mapping_apply(
+                        mapped_primary->device_name.c_str(),
+                        mapped_vdd->device_name.c_str(), apply_error)) {
+                    set_status(L"指针跨屏边缘映射已开启并应用。");
+                } else {
+                    set_status(L"指针跨屏边缘映射开启失败：" + apply_error);
+                }
+            }
+        } else {
+            set_status(L"指针跨屏边缘映射已开启，将在下次会话生效。");
+        }
     } else {
         int index{};
         if (parse_web_selector_index(
