@@ -7,10 +7,15 @@ add_executable(wireview_host
     src/idd_frame_relay_pipe.cpp
     src/input_injector.cpp
     src/main.cpp
+    src/mdns_browser.cpp
     src/parsec_vdd.cpp
     src/reliable_byte_stream.cpp
+    src/socket_stream.cpp
     src/tablet_commands.cpp
     src/usb_accessory_discovery.cpp
+    src/wifi_crypto.cpp
+    src/wifi_link.cpp
+    src/wifi_whitelist.cpp
     src/winusb_byte_stream.cpp
     src/windows_video.cpp
 )
@@ -22,6 +27,11 @@ add_executable(wireview_control_legacy WIN32
     src/edge_mapping.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
+    src/reliable_byte_stream.cpp
+    src/socket_stream.cpp
+    src/wifi_crypto.cpp
+    src/wifi_link.cpp
+    src/wifi_whitelist.cpp
     src/wireview_control.rc
 )
 
@@ -33,6 +43,11 @@ add_executable(wireview_control WIN32
     src/edge_mapping.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
+    src/reliable_byte_stream.cpp
+    src/socket_stream.cpp
+    src/wifi_crypto.cpp
+    src/wifi_link.cpp
+    src/wifi_whitelist.cpp
     src/webview_host.cpp
     src/wireview_control.rc
 )
@@ -61,7 +76,9 @@ endif()
 
 foreach(control_target IN ITEMS wireview_control wireview_control_legacy)
     target_link_libraries(${control_target} PRIVATE
-        setupapi shell32 user32 advapi32 dwmapi uxtheme msimg32 comctl32 gdiplus dbghelp)
+        wireview_protocol
+        setupapi shell32 user32 advapi32 dwmapi uxtheme msimg32 comctl32 gdiplus dbghelp
+        ws2_32 bcrypt crypt32)
     target_compile_features(${control_target} PRIVATE cxx_std_20)
 endforeach()
 

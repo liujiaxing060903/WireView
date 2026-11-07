@@ -58,6 +58,22 @@ int run_winusb_desktop_stream_session(
     std::string_view status_file = {},
     std::uint64_t reconnect_count = 0U);
 
+// R3 WiFi session: the PC dials the tablet (ip:port), authenticates with the
+// long-term pairing credential, then runs the same desktop stream. The
+// credential is passed via the WIREVIEW_WIFI_KEY environment variable (hex).
+int run_wifi_desktop_stream_session(
+    std::string_view remote_ip,
+    std::uint16_t remote_port,
+    std::chrono::milliseconds connect_timeout,
+    std::chrono::seconds stream_duration,
+    bool inject_input = true,
+    std::uint16_t output_width = 0U,
+    std::uint16_t output_height = 0U,
+    std::uint16_t frame_rate = 60U,
+    std::string_view capture_display_device = {},
+    std::string_view status_file = {},
+    std::uint64_t reconnect_count = 0U);
+
 int run_development_reconnecting_desktop_stream_server(
     std::uint16_t port,
     std::chrono::milliseconds accept_timeout,

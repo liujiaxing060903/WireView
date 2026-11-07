@@ -7,8 +7,11 @@
 #include "annex_b_stream.hpp"
 #include "input_injector.hpp"
 #include "reliable_byte_stream.hpp"
+#include "socket_stream.hpp"
 #include "tablet_commands.hpp"
 #include "usb_accessory_discovery.hpp"
+#include "wifi_crypto.hpp"
+#include "wifi_link.hpp"
 #include "winusb_byte_stream.hpp"
 #include "windows_video.hpp"
 
@@ -40,71 +43,6 @@
 
 namespace wireview::host {
 namespace {
-
-class WinsockSession {
-public:
-    WinsockSession() {
-        WSADATA data{};
-        const int error = WSAStartup(MAKEWORD(2, 2), &data);
-        if (error != 0) {
-            throw std::runtime_error("WSAStartup failed: " + std::to_string(error));
-        }
-    }
-
-    ~WinsockSession() {
-        WSACleanup();
-    }
-
-    WinsockSession(const WinsockSession&) = delete;
-    WinsockSession& operator=(const WinsockSession&) = delete;
-};
-
-class SocketHandle {
-public:
-    explicit SocketHandle(SOCKET value = INVALID_SOCKET) noexcept : value_(value) {
-    }
-
-    ~SocketHandle() {
-        reset();
-    }
-
-    SocketHandle(SocketHandle&& other) noexcept : value_(other.release()) {
-    }
-
-    SocketHandle& operator=(SocketHandle&& other) noexcept {
-        if (this != &other) {
-            reset(other.release());
-        }
-        return *this;
-    }
-
-    SocketHandle(const SocketHandle&) = delete;
-    SocketHandle& operator=(const SocketHandle&) = delete;
-
-    [[nodiscard]] SOCKET get() const noexcept {
-        return value_;
-    }
-
-    [[nodiscard]] bool valid() const noexcept {
-        return value_ != INVALID_SOCKET;
-    }
-
-private:
-    [[nodiscard]] SOCKET release() noexcept {
-        const auto value = value_;
-        value_ = INVALID_SOCKET;
-        return value;
-    }
-
-    void reset(SOCKET value = INVALID_SOCKET) noexcept {
-        if (valid()) {
-            closesocket(value_);
-        }
-        value_ = value;
-    }
-
-    SOCKET value_{INVALID_SOCKET};
-};
 
 class DevelopmentStatusPublisher {
 public:
@@ -528,125 +466,6 @@ void write_device_preview(
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(now).count());
-}
-
-[[noreturn]] void throw_socket_error(const char* operation) {
-    throw std::runtime_error(
-        std::string(operation) + " failed: " + std::to_string(WSAGetLastError()));
-}
-
-class SocketByteStream final : public ReliableByteStream {
-public:
-    explicit SocketByteStream(SOCKET socket) noexcept : socket_(socket) {
-    }
-
-    std::size_t read(std::span<std::uint8_t> destination) override {
-        const int batch = static_cast<int>(
-            std::min<std::size_t>(destination.size(), 64U * 1024U));
-        const int received = recv(
-            socket_,
-            reinterpret_cast<char*>(destination.data()),
-            batch,
-            0);
-        if (received == SOCKET_ERROR) {
-            throw_socket_error("recv");
-        }
-        return static_cast<std::size_t>(received);
-    }
-
-    std::size_t write(std::span<const std::uint8_t> source) override {
-        const int batch = static_cast<int>(
-            std::min<std::size_t>(source.size(), 64U * 1024U));
-        const int written = send(
-            socket_,
-            reinterpret_cast<const char*>(source.data()),
-            batch,
-            0);
-        if (written == SOCKET_ERROR) {
-            throw_socket_error("send");
-        }
-        return static_cast<std::size_t>(written);
-    }
-
-    bool wait_readable(std::chrono::milliseconds timeout) override {
-        fd_set readable{};
-        FD_ZERO(&readable);
-        FD_SET(socket_, &readable);
-        timeval native_timeout{};
-        native_timeout.tv_sec = static_cast<long>(timeout.count() / 1'000);
-        native_timeout.tv_usec = static_cast<long>((timeout.count() % 1'000) * 1'000);
-        const int ready = select(0, &readable, nullptr, nullptr, &native_timeout);
-        if (ready == SOCKET_ERROR) {
-            throw_socket_error("select(byte stream)");
-        }
-        return ready != 0;
-    }
-
-private:
-    SOCKET socket_{INVALID_SOCKET};
-};
-
-SocketHandle create_tcp_socket() {
-    SocketHandle socket(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-    if (!socket.valid()) {
-        throw_socket_error("socket");
-    }
-    return socket;
-}
-
-void allow_listener_rebind(SOCKET socket) {
-    // A USB disconnect or a Ctrl+C can leave the previous TCP connection in
-    // Windows' closing state briefly. The development host is loopback-only,
-    // so permit its recovery loop to reclaim this fixed local port immediately.
-    const int enabled = 1;
-    if (setsockopt(
-            socket,
-            SOL_SOCKET,
-            SO_REUSEADDR,
-            reinterpret_cast<const char*>(&enabled),
-            sizeof(enabled)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(SO_REUSEADDR)");
-    }
-}
-
-void set_low_latency_socket_options(SOCKET socket) {
-    const int enabled = 1;
-    if (setsockopt(
-            socket,
-            IPPROTO_TCP,
-            TCP_NODELAY,
-            reinterpret_cast<const char*>(&enabled),
-            sizeof(enabled)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(TCP_NODELAY)");
-    }
-
-    constexpr DWORD timeout_millis = 10'000;
-    if (setsockopt(
-            socket,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&timeout_millis),
-            sizeof(timeout_millis)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(SO_RCVTIMEO)");
-    }
-    // Bound blocking sends as well: without this, a stalled adb/USB pipe
-    // would freeze the sender thread (and session shutdown) forever.
-    if (setsockopt(
-            socket,
-            SOL_SOCKET,
-            SO_SNDTIMEO,
-            reinterpret_cast<const char*>(&timeout_millis),
-            sizeof(timeout_millis)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(SO_SNDTIMEO)");
-    }
-}
-
-sockaddr_in loopback_address(std::uint16_t port) {
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    return address;
 }
 
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {
@@ -1782,6 +1601,108 @@ int run_winusb_desktop_stream_session(
     auto stream = WinUsbByteStream::open(accessory->path);
     return run_connected_stream_impl(
         *stream,
+        nullptr,
+        0U,
+        0U,
+        0U,
+        stream_duration,
+        inject_input,
+        output_width,
+        output_height,
+        frame_rate,
+        capture_display_device,
+        &status);
+}
+
+int run_wifi_desktop_stream_session(
+    std::string_view remote_ip,
+    std::uint16_t remote_port,
+    std::chrono::milliseconds connect_timeout,
+    std::chrono::seconds stream_duration,
+    bool inject_input,
+    std::uint16_t output_width,
+    std::uint16_t output_height,
+    std::uint16_t frame_rate,
+    std::string_view capture_display_device,
+    std::string_view status_file,
+    std::uint64_t reconnect_count) {
+    if (stream_duration <= std::chrono::seconds::zero()) {
+        throw std::invalid_argument("desktop stream duration must be positive");
+    }
+    if (frame_rate != 60U && frame_rate != 120U) {
+        throw std::invalid_argument("desktop stream frame rate must be 60 or 120");
+    }
+    // The pairing credential and PC identity arrive through the environment
+    // (injected by the control center): not visible on any command line.
+    const auto environment_hex = [](const char* name) -> std::string {
+        std::string value(129U, '\0');
+        const DWORD length = GetEnvironmentVariableA(
+            name, value.data(), static_cast<DWORD>(value.size()));
+        if (length == 0U || length >= value.size()) {
+            return {};
+        }
+        value.resize(length);
+        return value;
+    };
+    const std::string key_hex = environment_hex("WIREVIEW_WIFI_KEY");
+    const std::string uuid_hex = environment_hex("WIREVIEW_WIFI_UUID");
+    std::string host_name(256U, '\0');
+    const DWORD name_length = GetEnvironmentVariableA(
+        "WIREVIEW_WIFI_NAME", host_name.data(), static_cast<DWORD>(host_name.size()));
+    host_name.resize(name_length == 0U || name_length >= host_name.size()
+        ? 0U : name_length);
+    if (key_hex.empty() || uuid_hex.empty()) {
+        throw std::runtime_error(
+            "the WiFi session is missing WIREVIEW_WIFI_KEY / WIREVIEW_WIFI_UUID; "
+            "pair the tablet in the WireView control center first");
+    }
+    std::vector<std::uint8_t> key;
+    std::vector<std::uint8_t> pc_uuid;
+    try {
+        key = from_hex(key_hex);
+        pc_uuid = from_hex(uuid_hex);
+    } catch (const std::runtime_error& error) {
+        throw std::runtime_error(std::string("invalid WiFi credential environment: ") +
+            error.what());
+    }
+    if (key.size() != wireview::protocol::kAuthKeySize ||
+        pc_uuid.size() != wireview::protocol::kAuthUuidSize) {
+        throw std::runtime_error("the WiFi credential environment has the wrong size");
+    }
+
+    DevelopmentStatusPublisher status(status_file);
+    status.configure(
+        capture_display_device,
+        inject_input,
+        output_width,
+        output_height,
+        frame_rate,
+        reconnect_count,
+        "wifi");
+
+    WinsockSession winsock;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(remote_port);
+    if (inet_pton(AF_INET, std::string(remote_ip).c_str(), &address.sin_addr) != 1) {
+        throw std::runtime_error("the WiFi endpoint IP is not a valid IPv4 address");
+    }
+    std::cout << "WireView WiFi session dialing " << remote_ip << ':' << remote_port << '\n';
+    auto socket = connect_tcp_with_timeout(address, connect_timeout);
+    std::cout << "Connected; authenticating the WiFi link\n";
+    SocketByteStream stream(socket.get());
+
+    WifiLinkIdentity identity{pc_uuid, host_name.empty() ? "WireView PC" : host_name};
+    const WifiPeerInfo peer = perform_wifi_handshake(
+        stream, identity, wireview::protocol::AuthMode::authenticate, key, {},
+        false, nullptr);
+    std::cout << "WiFi authentication verified with " << peer.device_name
+              << " (android_id " << peer.android_id << ")\n";
+    if (status_file.empty() == false) {
+        status.connected(peer.device_name);
+    }
+    return run_connected_stream_impl(
+        stream,
         nullptr,
         0U,
         0U,

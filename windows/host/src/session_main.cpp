@@ -32,6 +32,8 @@ struct Options {
     bool enable_input{false};
     bool device_preview{false};
     bool device_profile_probe{false};
+    // R3 WiFi：非空即 WiFi 模式（格式 ip:port），跳过全部 ADB 编排。
+    std::wstring wifi_endpoint;
 };
 
 struct ProcessResult {
@@ -287,6 +289,15 @@ bool parse_arguments(int argc, wchar_t** argv, Options* options) {
             options->device_preview = true;
         } else if (argument == L"--device-profile-probe") {
             options->device_profile_probe = true;
+        } else if (argument == L"--transport" && require_value(&value)) {
+            if (value != L"wifi") {
+                return false;
+            }
+            // WiFi 端点随 --transport 之后传入（见下）。
+            if (index + 1 >= argc || argv[index + 1][0] == L'-') {
+                return false;
+            }
+            options->wifi_endpoint = argv[++index];
         } else {
             return false;
         }
@@ -313,7 +324,19 @@ ProcessResult run_host(const Options& options, const std::filesystem::path& host
         }
         arguments.insert(arguments.end(), {L"--frame-rate", std::to_wstring(options.frame_rate)});
         if (!options.device_preview) {
-            arguments.insert(arguments.end(), {L"--transport", L"adb"});
+            if (!options.wifi_endpoint.empty()) {
+                // R3 WiFi：PC 作为客户端直连平板；凭据经环境变量传递。
+                const auto colon = options.wifi_endpoint.rfind(L':');
+                if (colon == std::wstring::npos || colon == 0U ||
+                    colon + 1U >= options.wifi_endpoint.size()) {
+                    return ProcessResult{};
+                }
+                arguments.insert(arguments.end(), {L"--transport", L"wifi"});
+                arguments.insert(arguments.end(), {L"--remote-ip", options.wifi_endpoint.substr(0U, colon)});
+                arguments.insert(arguments.end(), {L"--remote-port", options.wifi_endpoint.substr(colon + 1U)});
+            } else {
+                arguments.insert(arguments.end(), {L"--transport", L"adb"});
+            }
         }
     }
     if (!options.enable_input && !options.device_preview && !options.device_profile_probe) {
@@ -393,6 +416,20 @@ int run(const Options& options) {
     if (!std::filesystem::is_regular_file(host)) {
         write_status(options, L"error", L"未找到 wireview_host.exe；请重新解压完整的 WireView 发布包。", 0U);
         return 2;
+    }
+    // R3 WiFi 模式：没有 ADB 设备编排（reverse/启动应用/设备检测都不适用），
+    // PC 直接作为客户端连接平板端点，凭据经环境变量传递。
+    if (!options.wifi_endpoint.empty()) {
+        write_status(options, L"starting", L"正在通过 WiFi 连接平板…", 0U);
+        const ProcessResult host_result = run_host(options, host, options.duration_seconds, 0U);
+        if (host_result.exit_code == 0U) {
+            write_status(options, L"stopped", L"WireView WiFi 会话已结束。", 0U,
+                compact_host_diagnostics(host_result.output));
+            return 0;
+        }
+        write_status(options, L"error", host_failure_message(host_result), 0U,
+            compact_host_diagnostics(host_result.output));
+        return static_cast<int>(host_result.exit_code);
     }
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(options.duration_seconds);

@@ -234,7 +234,10 @@ int main(int argument_count, char** arguments) {
             std::uint64_t reconnect_count = 0U;
             bool create_parsec_vdd = false;
             bool use_winusb = false;
+            bool use_wifi = false;
             bool transport_set = false;
+            std::string wifi_remote_ip;
+            std::uint16_t wifi_remote_port = 0U;
             for (int index = 3; index < argument_count; ++index) {
                 const std::string_view option(arguments[index]);
                 if (option == "--input-log-only" && !input_log_only) {
@@ -282,16 +285,39 @@ int main(int argument_count, char** arguments) {
                     reconnect_count = std::stoull(arguments[++index]);
                     continue;
                 }
+                if (option == "--remote-ip" && index + 1 < argument_count &&
+                    wifi_remote_ip.empty()) {
+                    wifi_remote_ip = arguments[++index];
+                    continue;
+                }
+                if (option == "--remote-port" && index + 1 < argument_count &&
+                    wifi_remote_port == 0U) {
+                    const unsigned long parsed = std::stoul(arguments[++index]);
+                    if (parsed == 0UL || parsed > 65535UL) {
+                        throw std::invalid_argument("remote port is out of range");
+                    }
+                    wifi_remote_port = static_cast<std::uint16_t>(parsed);
+                    continue;
+                }
                 if (option == "--transport" && index + 1 < argument_count &&
                     !transport_set) {
                     const std::string_view transport(arguments[++index]);
                     if (transport == "adb") {
                         use_winusb = false;
+                        use_wifi = false;
                     } else if (transport == "winusb") {
                         use_winusb = true;
+                        use_wifi = false;
+                    } else if (transport == "wifi") {
+                        use_winusb = false;
+                        use_wifi = true;
+                        if (wifi_remote_ip.empty() || wifi_remote_port == 0U) {
+                            throw std::invalid_argument(
+                                "--transport wifi requires --remote-ip and --remote-port");
+                        }
                     } else {
                         throw std::invalid_argument(
-                            "desktop stream transport must be adb or winusb");
+                            "desktop stream transport must be adb, winusb, or wifi");
                     }
                     transport_set = true;
                     continue;
@@ -299,7 +325,8 @@ int main(int argument_count, char** arguments) {
                 throw std::invalid_argument(
                     "--stream-desktop options are --input-log-only, --size WIDTHxHEIGHT, "
                     "--frame-rate 60|120, --display \\\\.\\DISPLAYn, --parsec-vdd, "
-                    "--status-file PATH, --reconnect-count N, and --transport adb|winusb");
+                    "--status-file PATH, --reconnect-count N, and --transport adb|winusb|wifi "
+                    "(wifi adds --remote-ip and --remote-port)");
             }
             const int seconds = std::stoi(arguments[2]);
             if (seconds < 0) {
@@ -321,6 +348,20 @@ int main(int argument_count, char** arguments) {
             if (use_winusb) {
                 return wireview::host::run_winusb_desktop_stream_session(
                     std::chrono::minutes(5),
+                    std::chrono::seconds(seconds),
+                    !input_log_only,
+                    output_width,
+                    output_height,
+                    frame_rate,
+                    capture_display_device,
+                    status_file,
+                    reconnect_count);
+            }
+            if (use_wifi) {
+                return wireview::host::run_wifi_desktop_stream_session(
+                    wifi_remote_ip,
+                    wifi_remote_port,
+                    std::chrono::seconds(2),
                     std::chrono::seconds(seconds),
                     !input_log_only,
                     output_width,
