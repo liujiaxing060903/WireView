@@ -35,9 +35,9 @@ enum class PacketType : std::uint8_t {
     control_command = 13,
     // PC -> Android: window list reply for the tablet application switcher.
     window_list = 14,
-    // PC -> Android: show/hide the Android IME input bar (UIA focus watcher
-    // detected an editable focused control, or the stream ended).
-    ime_control = 15,
+    // 15 was ime_control (PC -> Android auto show/hide of the tablet IME
+    // bar); the UIA auto-detect was removed at R2 close - the sidebar
+    // keyboard button is the only way to open the IME bar now.
 };
 
 enum class PacketFlag : std::uint8_t {

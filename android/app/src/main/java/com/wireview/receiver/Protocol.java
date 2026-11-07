@@ -36,9 +36,6 @@ final class Protocol {
     static final int TYPE_CONTROL_COMMAND = 13;
     // PC -> tablet reply: window list for the application switcher page.
     static final int TYPE_WINDOW_LIST = 14;
-    // PC -> tablet: show (payload 1) / hide (payload 0) the Android IME bar.
-    // Driven by the UIA focus watcher; the sidebar keyboard button is manual.
-    static final int TYPE_IME_CONTROL = 15;
 
     private Protocol() {
     }

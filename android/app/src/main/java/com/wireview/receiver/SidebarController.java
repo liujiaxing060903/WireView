@@ -746,16 +746,6 @@ final class SidebarController {
         }
     }
 
-    void handleImeControl(byte[] payload) {
-        handler.post(() -> {
-            if (payload != null && payload.length >= 1 && payload[0] == 1) {
-                showIme();
-            } else {
-                hideIme();
-            }
-        });
-    }
-
     private void toggleIme() {
         if (imeShowing) {
             hideIme();

@@ -5,7 +5,6 @@ add_executable(wireview_host
     src/display_layout.cpp
     src/idd_frame_relay.cpp
     src/idd_frame_relay_pipe.cpp
-    src/ime_focus_watcher.cpp
     src/input_injector.cpp
     src/main.cpp
     src/parsec_vdd.cpp

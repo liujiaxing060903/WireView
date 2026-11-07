@@ -1071,8 +1071,6 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             showDevicePreview(packet.payload);
         } else if (packet.header.type == Protocol.TYPE_WINDOW_LIST) {
             sidebar.handleWindowList(packet.payload);
-        } else if (packet.header.type == Protocol.TYPE_IME_CONTROL) {
-            sidebar.handleImeControl(packet.payload);
         }
     }
 }
