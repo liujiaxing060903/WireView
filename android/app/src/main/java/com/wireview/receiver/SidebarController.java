@@ -525,9 +525,11 @@ final class SidebarController {
                 // （组词，本地显示拼音）+ finishComposingText（上屏）——必须
                 // 追踪组词状态，上屏时把组词串发往电脑；直接 commitText 的
                 // 输入法走另一条分支。
-                // "隐形镜像"：上屏内容保留在框的缓冲区里但颜色全透明（视觉
-                // 上框是空的），输入法因此认为"光标前有字"——长按退格的连删
-                // 才会持续产生删除事件并被逐个转发；缓冲超过 200 字自动裁剪。
+                // "隐形弹药库"：框的缓冲区里常驻约 160 个隐形字符（视觉全透
+                // 明），微信输入法因此认为"光标前有字"——长按退格的连删才会
+                // 持续产生删除事件并被逐个转发到电脑（删的就是电脑上现有的
+                // 文档内容）。每删一个从尾部消耗一个，低于阈值自动补满；缓
+                // 冲超过 400 字时从头部裁掉最旧的已转发内容。
                 final String[] composing = {""};
                 return new InputConnectionWrapper(base, true) {
                     private Object invisibleSpan;
@@ -547,8 +549,8 @@ final class SidebarController {
                             editable.setSpan(invisibleSpan, 0, committedEnd,
                                     Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
                         }
-                        if (composing[0].isEmpty() && editable.length() > 200) {
-                            editable.delete(0, editable.length() - 100);
+                        if (composing[0].isEmpty() && editable.length() > 400) {
+                            editable.delete(0, editable.length() - 200);
                             applyInvisibleCommitted();
                         }
                     }
@@ -557,6 +559,7 @@ final class SidebarController {
                     public boolean setComposingText(CharSequence text,
                             int newCursorPosition) {
                         composing[0] = text == null ? "" : text.toString();
+                        composingActive = !composing[0].isEmpty();
                         boolean result = super.setComposingText(text, newCursorPosition);
                         applyInvisibleCommitted();
                         return result;
@@ -568,8 +571,10 @@ final class SidebarController {
                             sendImeText(composing[0]);
                             composing[0] = "";
                         }
+                        composingActive = false;
                         boolean result = super.finishComposingText();
                         applyInvisibleCommitted();
+                        handler.post(() -> topUpReserve());
                         return result;
                     }
 
@@ -577,13 +582,16 @@ final class SidebarController {
                     public boolean commitText(CharSequence text, int newCursorPosition) {
                         if (text != null && text.length() == 1 && text.charAt(0) == '\n') {
                             sendImeKey((byte) 13);  // VK_RETURN
+                            composingActive = false;
                             return true;
                         }
                         if (text != null && text.length() > 0) {
                             sendImeText(text.toString());
                             composing[0] = "";
+                            composingActive = false;
                             boolean result = super.commitText(text, newCursorPosition);
                             applyInvisibleCommitted();
+                            handler.post(() -> topUpReserve());
                             return result;
                         }
                         return true;
@@ -598,6 +606,7 @@ final class SidebarController {
                             for (int index = 0; index < afterLength; ++index) {
                                 sendImeKey((byte) 46);  // VK_DELETE
                             }
+                            handler.post(() -> topUpReserve());
                         }
                         boolean result = super.deleteSurroundingText(beforeLength, afterLength);
                         applyInvisibleCommitted();
@@ -616,6 +625,7 @@ final class SidebarController {
                             for (int index = 0; index < afterLength; ++index) {
                                 sendImeKey((byte) 46);  // VK_DELETE
                             }
+                            handler.post(() -> topUpReserve());
                         }
                         boolean result = super.deleteSurroundingTextInCodePoints(
                                 beforeLength, afterLength);
@@ -631,6 +641,7 @@ final class SidebarController {
                             Byte vk = imeKeyForAndroidKeycode(event.getKeyCode());
                             if (vk != null && composing[0].isEmpty()) {
                                 sendImeKey(vk);
+                                handler.post(() -> topUpReserve());
                             }
                         }
                         boolean result = super.sendKeyEvent(event);
@@ -690,6 +701,25 @@ final class SidebarController {
 
     private void sendImeKey(byte virtualKey) {
         callbacks.onImeKey(new byte[]{7, virtualKey});
+    }
+
+    // 弹药库补给：隐形字符低于阈值就补满（直接改缓冲，不产生 IC 事件、
+    // 不转发——它们只是给输入法长按连删"看的"删除额度）。组词期间禁止
+    // 补给（追加会落到拼音后面打乱缓冲）。
+    private boolean composingActive;
+
+    private void topUpReserve() {
+        Editable editable = imeInput.getText();
+        if (editable == null || composingActive) {
+            return;
+        }
+        if (editable.length() < 160) {
+            StringBuilder pad = new StringBuilder();
+            for (int count = editable.length(); count < 160; ++count) {
+                pad.append('\u00A0');  // 不换行空格，仅作删除额度
+            }
+            editable.append(pad);
+        }
     }
 
     private static Byte imeKeyForAndroidKeycode(int keycode) {
@@ -773,6 +803,7 @@ final class SidebarController {
             // 输入法可能被用户从输入法侧收起（最小化/切换），而输入条还在；
             // 定期确认 IME 是否仍在服务，不在了就同步收起输入条。
             handler.postDelayed(imeWatchdog, 1200L);
+            handler.post(this::topUpReserve);
         }
     }
 
