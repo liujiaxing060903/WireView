@@ -1001,17 +1001,30 @@ void receive_input_packets(
                 }
                 case wireview::host::TabletCommand::ime_text: {
                     std::wstring text;
-                    if (!wireview::host::decode_ime_text(payload, text) ||
-                        !wireview::host::inject_unicode_text(text)) {
-                        std::cerr << "Failed to inject the IME text\n";
+                    if (!wireview::host::decode_ime_text(payload, text)) {
+                        std::cerr << "Rejected WireView IME text payload\n";
+                        break;
+                    }
+                    if (!wireview::host::inject_unicode_text(text)) {
+                        std::cerr << "Failed to inject the IME text ("
+                                  << text.size() << " chars)\n";
+                    } else {
+                        std::cout << "Tablet IME text injected: " << text.size()
+                                  << " chars\n";
                     }
                     break;
                 }
                 case wireview::host::TabletCommand::ime_key: {
                     UINT virtual_key = 0U;
-                    if (!wireview::host::decode_ime_key(payload, virtual_key) ||
-                        !wireview::host::inject_virtual_key(virtual_key)) {
-                        std::cerr << "Failed to inject the IME key\n";
+                    if (!wireview::host::decode_ime_key(payload, virtual_key)) {
+                        std::cerr << "Rejected WireView IME key payload\n";
+                        break;
+                    }
+                    if (!wireview::host::inject_virtual_key(virtual_key)) {
+                        std::cerr << "Failed to inject the IME key "
+                                  << virtual_key << '\n';
+                    } else {
+                        std::cout << "Tablet IME key injected: " << virtual_key << '\n';
                     }
                     break;
                 }

@@ -3111,6 +3111,7 @@ void reapply_edge_mapping_for_topology() {
 void handle_tablet_rotate_request(HWND window) {
     if (g_state.shell_process == nullptr || g_state.preview_active ||
         g_state.profile_probe_active || g_state.vdd_orientation_selector == nullptr) {
+        log_control_event(L"rotate", L"平板换向请求被忽略（无会话/预览/探测中/选择器缺失）");
         return;
     }
     const LRESULT current = SendMessageW(

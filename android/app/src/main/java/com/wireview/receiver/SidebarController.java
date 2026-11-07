@@ -14,7 +14,9 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.animation.AccelerateInterpolator;
@@ -102,6 +104,13 @@ final class SidebarController {
     private EditText imeInput;
     private View keyboardRow;
     private boolean imeShowing;
+
+    // 把手拖动：垂直方向自由挪位，横向拖过屏幕中线即换边贴靠。
+    private boolean edgeOnRight;
+    private boolean draggingHandle;
+    private float dragStartRawX;
+    private float dragStartRawY;
+    private int dragStartWindowY;
 
     private final ArrayList<WindowEntry> windows = new ArrayList<>();
     private int listToken;
@@ -240,6 +249,7 @@ final class SidebarController {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
             setExpanded(!expanded, true);
         });
+        handle.setOnTouchListener(this::onHandleTouch);
 
         rootLayout.addView(panelShell, new LinearLayout.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -417,6 +427,63 @@ final class SidebarController {
                 WindowManager.LayoutParams.WRAP_CONTENT));
     }
 
+    // --- 把手拖动 -------------------------------------------------------------
+
+    private boolean onHandleTouch(View view, MotionEvent event) {
+        final int touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                dragStartRawX = event.getRawX();
+                dragStartRawY = event.getRawY();
+                dragStartWindowY = windowParams.y;
+                draggingHandle = false;
+                return true;
+            case MotionEvent.ACTION_MOVE: {
+                final float dx = event.getRawX() - dragStartRawX;
+                final float dy = event.getRawY() - dragStartRawY;
+                if (!draggingHandle
+                        && (Math.abs(dy) > touchSlop || Math.abs(dx) > touchSlop)) {
+                    draggingHandle = true;
+                    if (expanded) {
+                        setExpanded(false, true);
+                    }
+                }
+                if (!draggingHandle) {
+                    return true;
+                }
+                final int screenHalf =
+                        activity.getResources().getDisplayMetrics().heightPixels / 2;
+                final int maxOffset = screenHalf - dp(180f);
+                windowParams.y = Math.max(-maxOffset, Math.min(maxOffset,
+                        dragStartWindowY + Math.round(dy)));
+                final boolean wantRight = event.getRawX()
+                        > activity.getResources().getDisplayMetrics().widthPixels / 2f;
+                if (wantRight != edgeOnRight) {
+                    dockEdge(wantRight);
+                } else {
+                    windowManager.updateViewLayout(rootLayout, windowParams);
+                }
+                return true;
+            }
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (!draggingHandle) {
+                    view.performClick();
+                }
+                draggingHandle = false;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void dockEdge(boolean right) {
+        edgeOnRight = right;
+        windowParams.gravity = (right ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL;
+        windowParams.x = expanded ? 0 : -dp(4f);
+        windowManager.updateViewLayout(rootLayout, windowParams);
+    }
+
     // --- 输入法输入条 ----------------------------------------------------------
     // 独立的聚焦子窗口：拉起平板系统输入法（微信输入法等），提交的文本经
     // type13 ime_text 转发，退格/回车等经 ime_key。PC 端 UIA 焦点探测会经
@@ -457,7 +524,9 @@ final class SidebarController {
                         } else if (text != null && text.length() > 0) {
                             sendImeText(text.toString());
                         }
-                        return super.commitText(text, newCursorPosition);
+                        // 穿透模式：不写进本地框（文字直达电脑，输入条保持
+                        // 干净）；组词阶段的拼音仍由 setComposingText 走 super。
+                        return true;
                     }
 
                     @Override
@@ -530,6 +599,7 @@ final class SidebarController {
         payload.put((byte) 6);
         payload.putShort((short) utf8.length);
         payload.put(utf8);
+        PersistentDiagnosticLog.record("Sidebar", "IME text -> PC: " + value);
         callbacks.onImeText(payload.array());
     }
 
@@ -752,11 +822,18 @@ final class SidebarController {
                 WindowManager.LayoutParams.WRAP_CONTENT));
 
         // 点按即把窗口移到另一块屏：副屏↔主屏互切，其他屏一律移到主屏。
+        // host 端会对"窗口已在目标屏"的请求自校正为换边，这里再自动刷新
+        // 一次列表，保证徽标反映移动后的真实位置。
         final int targetArea = entry.area == 1 ? 0 : 1;
         row.setOnClickListener(view -> {
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
             callbacks.onMoveWindow(listToken, index, targetArea);
-            setExpanded(false, true);
+            listStatus.setText("正在移动窗口…");
+            handler.postDelayed(() -> {
+                if (expanded) {
+                    callbacks.onRequestWindowList();
+                }
+            }, 600L);
         });
         LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,

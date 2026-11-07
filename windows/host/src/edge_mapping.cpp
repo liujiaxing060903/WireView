@@ -108,40 +108,57 @@ bool write_frame(HANDLE pipe, const std::string& utf8_payload) {
 }
 
 // 读取一帧（u32 小端长度 + UTF-8）；deadline 毫秒内拿不到返回 false。
+// 注意 PeekNamedPipe 的 lpBytesRead 是"本次调用读到的字节数"而不是累计
+// 值，长度前缀与载荷一律用 ReadFile 循环补齐，否则分片到达时会读乱。
 bool read_frame(HANDLE pipe, std::string& utf8_payload, DWORD deadline_millis) {
     std::uint32_t length = 0U;
-    DWORD read_bytes = 0U;
+    std::uint32_t have = 0U;
     const auto start = GetTickCount64();
-    while (read_bytes < sizeof(length)) {
-        if (!PeekNamedPipe(pipe, reinterpret_cast<LPBYTE>(&length) + read_bytes,
-                sizeof(length) - read_bytes, &read_bytes, nullptr, nullptr)) {
+    auto* length_bytes = reinterpret_cast<char*>(&length);
+    while (have < sizeof(length)) {
+        DWORD available = 0U;
+        if (!PeekNamedPipe(pipe, nullptr, 0U, nullptr, &available, nullptr)) {
             return false;
         }
-        if (GetTickCount64() - start > deadline_millis) {
+        if (available == 0U) {
+            if (GetTickCount64() - start > deadline_millis) {
+                return false;
+            }
+            Sleep(20U);
+            continue;
+        }
+        const DWORD want = sizeof(length) - have;
+        DWORD chunk = 0U;
+        if (!ReadFile(pipe, length_bytes + have, want, &chunk, nullptr) ||
+            chunk == 0U) {
             return false;
         }
-        if (read_bytes < sizeof(length)) {
-            Sleep(25U);
-        }
+        have += chunk;
     }
     if (length == 0U || length > 1024U * 1024U) {
         return false;
     }
     utf8_payload.assign(length, '\0');
-    read_bytes = 0U;
-    while (read_bytes < length) {
-        DWORD chunk = 0U;
-        if (!PeekNamedPipe(pipe, utf8_payload.data() + read_bytes,
-                length - read_bytes, &chunk, nullptr, nullptr)) {
+    DWORD total = 0U;
+    while (total < length) {
+        DWORD available = 0U;
+        if (!PeekNamedPipe(pipe, nullptr, 0U, nullptr, &available, nullptr)) {
             return false;
         }
-        read_bytes += chunk;
-        if (read_bytes < length) {
+        if (available == 0U) {
             if (GetTickCount64() - start > deadline_millis) {
                 return false;
             }
-            Sleep(25U);
+            Sleep(20U);
+            continue;
         }
+        DWORD chunk = 0U;
+        if (!ReadFile(pipe, utf8_payload.data() + total, length - total, &chunk,
+                nullptr) ||
+            chunk == 0U) {
+            return false;
+        }
+        total += chunk;
     }
     return true;
 }
@@ -430,11 +447,6 @@ bool edge_mapping_apply(
         return false;
     }
 
-    std::wstring commands = L"<Messages>"
-        L"<CommandMessage Command=\"Load\"><Payload>" + layout + L"</Payload></CommandMessage>"
-        L"<CommandMessage Command=\"Run\" Payload=\"\"/>"
-        L"</Messages>";
-
     // 重复 apply（拓扑变化重挂）时释放上一条事件连接，避免句柄泄漏。
     if (g_edge_mapping_pipe != nullptr) {
         CancelIo(g_edge_mapping_pipe);
@@ -456,28 +468,26 @@ bool edge_mapping_apply(
         return false;
     }
 
-    // Listen 放在 Load/Run 之前：本连接成为事件接收者，LoadFailed/
-    // RunRefused/Running 都会推回同一连接——State 只反映"是否挂钩"，
-    // 无法发现 Load 被拒后 Run 继续跑旧布局的情况（验证必须听事件）。
+    // 致命协议细节（探针实测 v5.6.0 官方 Hook.exe）：客户端发出 Listen 后，
+    // 守护进程立即把该连接切到"纯事件接收"模式——同一连接上后续任何命令
+    // 帧会被读进即丢弃，连接随即被拆除，布局从未被加载（apply 永远超时）。
+    // 因此 Listen 必须与 Load/Run 打包在同一个帧里；成功后本连接只读事件。
     const std::string batched = narrow_utf8(
         L"<Messages>"
         L"<CommandMessage Command=\"Listen\" Payload=\"\"/>"
+        L"<CommandMessage Command=\"Load\"><Payload>" + layout + L"</Payload></CommandMessage>"
+        L"<CommandMessage Command=\"Run\" Payload=\"\"/>"
         L"</Messages>");
     if (!write_frame(pipe, batched)) {
-        CloseHandle(pipe);
-        error = L"向守护进程注册事件监听失败";
-        return false;
-    }
-    if (!write_frame(pipe, narrow_utf8(commands))) {
         CloseHandle(pipe);
         error = L"向守护进程发送布局失败";
         return false;
     }
     bool running = false;
     std::wstring failure;
-    for (int received = 0; received < 6 && !running && failure.empty(); ++received) {
+    for (int received = 0; received < 8 && !running && failure.empty(); ++received) {
         std::string reply;
-        if (!read_frame(pipe, reply, 2000U)) {
+        if (!read_frame(pipe, reply, 1500U)) {
             break;
         }
         const std::wstring reply_text = widen_utf8(reply);
@@ -501,13 +511,12 @@ bool edge_mapping_apply(
 }
 
 void edge_mapping_shutdown() {
-    HANDLE pipe = g_edge_mapping_pipe;
+    // 事件模式连接上的命令会被守护进程丢弃，Quit 必须走一条全新的
+    // 命令模式连接（探针实测）。
+    HANDLE pipe = try_open_pipe();
     g_edge_mapping_pipe = nullptr;
     if (pipe == nullptr) {
-        pipe = try_open_pipe();
-        if (pipe == nullptr) {
-            return;
-        }
+        return;
     }
     (void)write_frame(pipe, narrow_utf8(L"<CommandMessage Command=\"Quit\" Payload=\"\"/>"));
     // Hook 收到 Quit 后自行退出；不等待也不强杀（钩子随进程消失）。

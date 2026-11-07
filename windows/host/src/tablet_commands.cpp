@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cwchar>
+#include <iostream>
 #include <utility>
 
 #include <dwmapi.h>
@@ -250,9 +251,14 @@ bool inject_virtual_key(UINT virtual_key) {
 
 void request_control_center_rotation() {
     const HWND control = FindWindowW(L"WireViewControlWindow", nullptr);
-    if (control != nullptr) {
-        PostMessageW(
-            control, kControlCenterRotateMessage, kControlCenterRotateRequest, 0);
+    if (control == nullptr) {
+        std::cerr << "Rotation request dropped: control center window not found\n";
+        return;
+    }
+    if (PostMessageW(
+            control, kControlCenterRotateMessage, kControlCenterRotateRequest, 0) == FALSE) {
+        std::cerr << "Rotation request dropped: PostMessage failed with "
+                  << GetLastError() << '\n';
     }
 }
 
@@ -344,6 +350,23 @@ bool move_window_to_area(
     const std::wstring& vdd_device_name) {
     if (window == nullptr || IsWindow(window) == FALSE) {
         return false;
+    }
+    // The tablet's list is a snapshot: if the window already sits on the
+    // requested monitor, the user's intent is "switch sides", so flip to the
+    // other main monitor instead of re-centering it where it already is.
+    const HMONITOR current_monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFOEXW current_info{};
+    current_info.cbSize = sizeof(current_info);
+    if (GetMonitorInfoW(current_monitor, &current_info) != FALSE) {
+        std::uint8_t current_area = kWindowAreaOther;
+        if (_wcsicmp(current_info.szDevice, vdd_device_name.c_str()) == 0) {
+            current_area = kWindowAreaVdd;
+        } else if ((current_info.dwFlags & MONITORINFOF_PRIMARY) != 0U) {
+            current_area = kWindowAreaPrimary;
+        }
+        if (current_area == target_area && current_area != kWindowAreaOther) {
+            target_area = current_area == kWindowAreaPrimary ? kWindowAreaVdd : kWindowAreaPrimary;
+        }
     }
     RECT target{};
     if (!resolve_area_monitor(target_area, vdd_device_name, target)) {

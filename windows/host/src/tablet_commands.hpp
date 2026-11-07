@@ -87,8 +87,10 @@ std::vector<TabletWindowEntry> enumerate_streaming_windows(
     const std::wstring& vdd_device_name);
 
 // Center the window on the monitor identified by target_area (restoring and
-// re-maximizing maximized windows). Returns false when the window or the
-// target monitor cannot be resolved.
+// re-maximizing maximized windows). When the window already sits on the
+// requested monitor, it is sent to the other main monitor instead; the
+// tablet list may be stale, and the user's intent is always "switch sides".
+// Returns false when the window or the target monitor cannot be resolved.
 bool move_window_to_area(
     HWND window,
     std::uint8_t target_area,
