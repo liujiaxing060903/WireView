@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <Shellapi.h>
 #include <dwmapi.h>
+#include <dbghelp.h>
 #include <commctrl.h>
 #include <gdiplus.h>
 #include <uxtheme.h>
@@ -561,6 +562,46 @@ void begin_simple_extension(bool enable_input);
 void set_status(const std::wstring& text);
 std::string wide_to_utf8(std::wstring_view value);
 void log_control_event(std::wstring_view category, std::wstring detail);
+
+// CRT 断言（含 Debug 迭代器检查）触发时，把符号化调用栈写进控制日志：
+// 真机上没有调试器，这是崩溃后唯一能拿到现场的手段。
+int __cdecl assertion_stack_hook(int report_type, wchar_t* message, int* return_value) {
+    if (report_type != _CRT_ASSERT && report_type != _CRT_ERROR) {
+        return FALSE;
+    }
+    if (message != nullptr) {
+        log_control_event(L"assert", message);
+    }
+    void* frames[32]{};
+    const USHORT count = CaptureStackBackTrace(1U, 32U, frames, nullptr);
+    static bool symbols_ready = false;
+    if (!symbols_ready) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        symbols_ready = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
+    }
+    char symbol_buffer[sizeof(SYMBOL_INFOW) + 256 * sizeof(wchar_t)]{};
+    auto* symbol = reinterpret_cast<SYMBOL_INFOW*>(symbol_buffer);
+    for (USHORT index = 0; index < count; ++index) {
+        std::wstring frame_text = L"#" + std::to_wstring(index) + L" 0x" +
+            std::to_wstring(reinterpret_cast<unsigned long long>(frames[index]));
+        if (symbols_ready) {
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+            symbol->MaxNameLen = 255U;
+            DWORD64 displacement = 0U;
+            if (SymFromAddrW(GetCurrentProcess(),
+                    reinterpret_cast<DWORD64>(frames[index]), &displacement,
+                    reinterpret_cast<PSYMBOL_INFOW>(symbol)) != FALSE) {
+                frame_text += L" " + std::wstring(symbol->Name, symbol->NameLen) +
+                    L" +0x" + std::to_wstring(displacement);
+            }
+        }
+        log_control_event(L"assert-stack", frame_text);
+    }
+    if (return_value != nullptr) {
+        *return_value = 0;  // 继续默认弹窗流程
+    }
+    return FALSE;
+}
 std::wstring describe_display_choices_for_log();
 void update_recommendation();
 bool apply_custom_modes_with_elevation(HWND window);
@@ -1347,13 +1388,14 @@ bool apply_selected_mode_to_parsec_vdd() {
     current.dmPelsHeight = resolution.second;
     current.dmDisplayFrequency = refresh_hz;
     current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+    // CDS 泵消息期间嵌套 refresh 会使 first_parsec 失效，先拷出设备名。
+    const std::wstring device_name = first_parsec->device_name;
     const LONG result = ChangeDisplaySettingsExW(
-        first_parsec->device_name.c_str(), &current, nullptr, CDS_UPDATEREGISTRY, nullptr);
+        device_name.c_str(), &current, nullptr, CDS_UPDATEREGISTRY, nullptr);
     if (result != DISP_CHANGE_SUCCESSFUL) {
         set_status(L"Parsec VDD 显示模式切换失败（代码 " + std::to_wstring(result) + L"）。");
         return false;
     }
-    const std::wstring device_name = first_parsec->device_name;
     refresh_display_choices(device_name);
     set_status(L"已同步 Parsec VDD：" + std::to_wstring(resolution.first) + L"×" +
         std::to_wstring(resolution.second) + L" @ " + std::to_wstring(refresh_hz) + L" Hz。");
@@ -3247,10 +3289,13 @@ bool start_session(
             });
         if (target_choice != g_state.display_choices.end() && target_choice->parsec_vdd &&
             settings->vdd_width != 0U) {
+            // 后面的 ChangeDisplaySettingsExW 会泵消息，嵌套的 refresh 可能
+            // 重建 display_choices 使 target_choice 失效——先拷出设备名。
+            const std::wstring target_device = target_choice->device_name;
             DEVMODEW current{};
             current.dmSize = sizeof(current);
             if (EnumDisplaySettingsW(
-                    target_choice->device_name.c_str(), ENUM_CURRENT_SETTINGS, &current) != FALSE &&
+                    target_device.c_str(), ENUM_CURRENT_SETTINGS, &current) != FALSE &&
                 (current.dmPelsWidth != settings->vdd_width ||
                  current.dmPelsHeight != settings->vdd_height ||
                  current.dmDisplayFrequency != settings->vdd_refresh_hz)) {
@@ -3265,7 +3310,7 @@ bool start_session(
                         DEVMODEW candidate{};
                         candidate.dmSize = sizeof(candidate);
                         if (EnumDisplaySettingsW(
-                                target_choice->device_name.c_str(), mode_index, &candidate) == FALSE) {
+                                target_device.c_str(), mode_index, &candidate) == FALSE) {
                             break;
                         }
                         if (candidate.dmPelsWidth == settings->vdd_width &&
@@ -3282,12 +3327,8 @@ bool start_session(
                             std::to_wstring(settings->vdd_refresh_hz) +
                             L" Hz，画面比例可能不正确。");
                     } else if (EnumDisplaySettingsW(
-                                   target_choice->device_name.c_str(),
+                                   target_device.c_str(),
                                    ENUM_CURRENT_SETTINGS, &updated) != FALSE) {
-                        // ChangeDisplaySettingsExW 会同步泵消息（计时器/显示器
-                        // 变化可能嵌套触发 refresh_display_choices 重建向量），
-                        // target_choice 迭代器会失效——先把设备名拷贝出来。
-                        const std::wstring target_device = target_choice->device_name;
                         updated.dmPelsWidth = settings->vdd_width;
                         updated.dmPelsHeight = settings->vdd_height;
                         updated.dmDisplayFrequency = settings->vdd_refresh_hz;
@@ -3323,7 +3364,7 @@ bool start_session(
                     std::wstring edge_error;
                     if (!wireview::host::edge_mapping_apply(
                             edge_primary->device_name.c_str(),
-                            target_choice->device_name.c_str(), edge_error)) {
+                            target_device.c_str(), edge_error)) {
                         // 映射失败不阻断会话，只提示；触控坐标仍按显示器拓扑注入。
                         set_status(L"指针跨屏边缘映射未生效：" + edge_error);
                     }
@@ -6054,6 +6095,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+    _CrtSetReportHookW2(_CRT_RPTHOOK_INSTALL, assertion_stack_hook);
     int argument_count = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
     if (arguments != nullptr && argument_count == 2 &&

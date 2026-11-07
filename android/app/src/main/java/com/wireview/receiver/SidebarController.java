@@ -9,8 +9,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.text.InputType;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
@@ -105,10 +105,6 @@ final class SidebarController {
     private EditText imeInput;
     private View keyboardRow;
     private boolean imeShowing;
-    // show() 的延迟重试只对"当前想要可见"有效；hide() 置否取消重试。
-    private boolean wantVisible;
-    // hideIme 会触发 IME 的 finishComposingText，短时间内不再发送组词串。
-    private long imeSuppressUntilMillis;
 
     // 把手拖动：垂直方向自由挪位，横向拖过屏幕中线即换边贴靠。
     private boolean edgeOnRight;
@@ -129,7 +125,6 @@ final class SidebarController {
     // --- 生命周期 ------------------------------------------------------------
 
     void show() {
-        wantVisible = true;
         if (attached) {
             rootLayout.setVisibility(View.VISIBLE);
             return;
@@ -140,11 +135,7 @@ final class SidebarController {
         windowParams.token = activity.getWindow().getDecorView().getWindowToken();
         if (windowParams.token == null) {
             // 装饰视图尚未挂到窗口管理器；等下一帧再试。
-            handler.postDelayed(() -> {
-                if (wantVisible) {
-                    show();
-                }
-            }, 100L);
+            handler.postDelayed(this::show, 100L);
             return;
         }
         setExpanded(false, false);
@@ -153,7 +144,6 @@ final class SidebarController {
     }
 
     void hide() {
-        wantVisible = false;
         if (!attached) {
             return;
         }
@@ -545,9 +535,8 @@ final class SidebarController {
                         if (!composing[0].isEmpty()) {
                             sendImeText(composing[0]);
                             composing[0] = "";
-                            // 不能在 InputConnection 回调内直接 setText：
-                            // 会触发 restartInput 重绑 wrapper，组词可能被
-                            // 拆到两个 wrapper 上。延迟到下一轮主循环。
+                            // IC 回调内直接 setText 会触发 restartInput 重绑
+                            // wrapper（组词可能被拆到两个 wrapper 上），延迟处理。
                             handler.post(() -> imeInput.setText(""));
                         }
                         return super.finishComposingText();
@@ -557,8 +546,6 @@ final class SidebarController {
                     public boolean commitText(CharSequence text, int newCursorPosition) {
                         if (text != null && text.length() == 1 && text.charAt(0) == '\n') {
                             sendImeKey((byte) 13);  // VK_RETURN
-                            composing[0] = "";
-                            handler.post(() -> imeInput.setText(""));
                         } else if (text != null && text.length() > 0) {
                             sendImeText(text.toString());
                             composing[0] = "";
@@ -580,6 +567,38 @@ final class SidebarController {
                             sendImeKey((byte) 46);  // VK_DELETE
                         }
                         return super.deleteSurroundingText(beforeLength, afterLength);
+                    }
+
+                    @Override
+                    public boolean deleteSurroundingTextInCodePoints(int beforeLength,
+                            int afterLength) {
+                        // 部分输入法（含长按连删路径）用 code point 变体删除，
+                        // 不拦截会漏转发。BMP 内 code point 数等于字符数。
+                        if (!composing[0].isEmpty()) {
+                            return super.deleteSurroundingTextInCodePoints(
+                                    beforeLength, afterLength);
+                        }
+                        for (int index = 0; index < beforeLength; ++index) {
+                            sendImeKey((byte) 8);   // VK_BACK
+                        }
+                        for (int index = 0; index < afterLength; ++index) {
+                            sendImeKey((byte) 46);  // VK_DELETE
+                        }
+                        return super.deleteSurroundingTextInCodePoints(
+                                beforeLength, afterLength);
+                    }
+
+                    @Override
+                    public CharSequence getTextBeforeCursor(int length, int flags) {
+                        CharSequence real = super.getTextBeforeCursor(length, flags);
+                        // 穿透模式下本地框为空：部分输入法长按连删前会先确认
+                        // 光标前有文本，为空则不产生任何删除事件。回一个占位
+                        // 空格让长按连删持续触发；电脑端以这些删除事件为准，
+                        // 占位字符本身不参与输入。
+                        if ((real == null || real.length() == 0) && length > 0) {
+                            return " ";
+                        }
+                        return real;
                     }
 
                     @Override
@@ -633,9 +652,6 @@ final class SidebarController {
     }
 
     private void sendImeText(String value) {
-        if (SystemClock.uptimeMillis() < imeSuppressUntilMillis) {
-            return;  // 收起输入条引发的 finishComposingText，不算正文。
-        }
         byte[] utf8 = value.getBytes(StandardCharsets.UTF_8);
         if (utf8.length == 0 || utf8.length > 0xffff) {
             return;
@@ -694,24 +710,6 @@ final class SidebarController {
         }
     }
 
-    // 输入法可能被用户从输入法侧收起（最小化/切换），而我们的输入条还在。
-    // 定期检查 IME 是否仍在服务；不在了就同步收起输入条。
-    private final Runnable imeWatchdog = new Runnable() {
-        @Override
-        public void run() {
-            if (!imeShowing) {
-                return;
-            }
-            InputMethodManager manager = (InputMethodManager)
-                    activity.getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (manager == null || !manager.isAcceptingText()) {
-                hideIme();
-                return;
-            }
-            handler.postDelayed(this, 500L);
-        }
-    };
-
     private void showIme() {
         if (!attached || rootLayout.getVisibility() != View.VISIBLE) {
             return;
@@ -748,23 +746,48 @@ final class SidebarController {
         if (!imeShowing) {
             imeShowing = true;
             keyboardRow.setAlpha(1f);
+            // 输入法可能被用户从输入法侧收起（最小化/切换），而输入条还在；
+            // 定期确认 IME 是否仍在服务，不在了就同步收起输入条。
             handler.postDelayed(imeWatchdog, 1200L);
         }
     }
 
-    /** 视频（侧边栏外）被点按：展开的面板应自动收回。 */
+    private final Runnable imeWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (!imeShowing) {
+                return;
+            }
+            InputMethodManager manager = (InputMethodManager)
+                    activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (manager == null || !manager.isAcceptingText()) {
+                hideIme();
+                return;
+            }
+            handler.postDelayed(this, 500L);
+        }
+    };
+
+    /** 视频（侧边栏外）被点按：面板收回，输入法与输入条一并消失。 */
     void onOutsideTouch() {
-        if (attached && expanded) {
+        Log.d("WireViewSidebar", "onOutsideTouch attached=" + attached
+                + " imeShowing=" + imeShowing + " expanded=" + expanded);
+        if (!attached) {
+            return;
+        }
+        if (expanded) {
             setExpanded(false, true);
+        }
+        if (imeShowing) {
+            hideIme();
         }
     }
 
     private void hideIme() {
+        Log.d("WireViewSidebar", "hideIme parent=" + (imeBar != null && imeBar.getParent() != null));
         boolean wasShowing = imeShowing;
         imeShowing = false;
         if (imeBar != null && imeBar.getParent() != null) {
-            // 收起会让 IME 对组词做 finishComposingText，半截拼音不该上屏。
-            imeSuppressUntilMillis = SystemClock.uptimeMillis() + 500L;
             InputMethodManager manager = (InputMethodManager)
                     activity.getSystemService(Context.INPUT_METHOD_SERVICE);
             if (manager != null && imeInput.getWindowToken() != null) {

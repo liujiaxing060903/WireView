@@ -62,13 +62,15 @@ endif()
 
 foreach(control_target IN ITEMS wireview_control wireview_control_legacy)
     target_link_libraries(${control_target} PRIVATE
-        setupapi shell32 user32 advapi32 dwmapi uxtheme msimg32 comctl32 gdiplus)
+        setupapi shell32 user32 advapi32 dwmapi uxtheme msimg32 comctl32 gdiplus dbghelp)
     target_compile_features(${control_target} PRIVATE cxx_std_20)
 endforeach()
 
 target_compile_definitions(wireview_control PRIVATE WIREVIEW_WEBVIEW_UI=1)
 target_include_directories(wireview_control PRIVATE ${WIREVIEW2_INCLUDE_DIR})
 target_link_libraries(wireview_control PRIVATE ${WIREVIEW2_LOADER_LIB} ole32)
+# 断言崩溃栈自诊断（assertion_stack_hook）需要 dbghelp 的符号解析。
+target_link_libraries(wireview_control PRIVATE dbghelp)
 
 # 控制中心使用的主视觉与输入模式图标。保留为独立 PNG，既能避免 16px 图标失真，
 # 也方便后续替换为用户提供的设备素材。
