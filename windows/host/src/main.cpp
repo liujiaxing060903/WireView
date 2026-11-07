@@ -311,10 +311,6 @@ int main(int argument_count, char** arguments) {
                     } else if (transport == "wifi") {
                         use_winusb = false;
                         use_wifi = true;
-                        if (wifi_remote_ip.empty() || wifi_remote_port == 0U) {
-                            throw std::invalid_argument(
-                                "--transport wifi requires --remote-ip and --remote-port");
-                        }
                     } else {
                         throw std::invalid_argument(
                             "desktop stream transport must be adb, winusb, or wifi");
@@ -327,6 +323,10 @@ int main(int argument_count, char** arguments) {
                     "--frame-rate 60|120, --display \\\\.\\DISPLAYn, --parsec-vdd, "
                     "--status-file PATH, --reconnect-count N, and --transport adb|winusb|wifi "
                     "(wifi adds --remote-ip and --remote-port)");
+            }
+            if (use_wifi && (wifi_remote_ip.empty() || wifi_remote_port == 0U)) {
+                throw std::invalid_argument(
+                    "--transport wifi requires --remote-ip and --remote-port");
             }
             const int seconds = std::stoi(arguments[2]);
             if (seconds < 0) {
