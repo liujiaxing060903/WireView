@@ -9,7 +9,10 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -17,6 +20,7 @@ import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowInsets;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -520,14 +524,42 @@ final class SidebarController {
                 // 微信等中文输入法不走 commitText，而是 setComposingText
                 // （组词，本地显示拼音）+ finishComposingText（上屏）——必须
                 // 追踪组词状态，上屏时把组词串发往电脑；直接 commitText 的
-                // 输入法走另一条分支。穿透模式：上屏内容不留在本地框里。
+                // 输入法走另一条分支。
+                // "隐形镜像"：上屏内容保留在框的缓冲区里但颜色全透明（视觉
+                // 上框是空的），输入法因此认为"光标前有字"——长按退格的连删
+                // 才会持续产生删除事件并被逐个转发；缓冲超过 200 字自动裁剪。
                 final String[] composing = {""};
                 return new InputConnectionWrapper(base, true) {
+                    private Object invisibleSpan;
+
+                    private void applyInvisibleCommitted() {
+                        Editable editable = imeInput.getText();
+                        if (editable == null) {
+                            return;
+                        }
+                        if (invisibleSpan != null) {
+                            editable.removeSpan(invisibleSpan);
+                            invisibleSpan = null;
+                        }
+                        int committedEnd = editable.length() - composing[0].length();
+                        if (committedEnd > 0) {
+                            invisibleSpan = new ForegroundColorSpan(0x00000000);
+                            editable.setSpan(invisibleSpan, 0, committedEnd,
+                                    Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
+                        }
+                        if (composing[0].isEmpty() && editable.length() > 200) {
+                            editable.delete(0, editable.length() - 100);
+                            applyInvisibleCommitted();
+                        }
+                    }
+
                     @Override
                     public boolean setComposingText(CharSequence text,
                             int newCursorPosition) {
                         composing[0] = text == null ? "" : text.toString();
-                        return super.setComposingText(text, newCursorPosition);
+                        boolean result = super.setComposingText(text, newCursorPosition);
+                        applyInvisibleCommitted();
+                        return result;
                     }
 
                     @Override
@@ -535,38 +567,41 @@ final class SidebarController {
                         if (!composing[0].isEmpty()) {
                             sendImeText(composing[0]);
                             composing[0] = "";
-                            // IC 回调内直接 setText 会触发 restartInput 重绑
-                            // wrapper（组词可能被拆到两个 wrapper 上），延迟处理。
-                            handler.post(() -> imeInput.setText(""));
                         }
-                        return super.finishComposingText();
+                        boolean result = super.finishComposingText();
+                        applyInvisibleCommitted();
+                        return result;
                     }
 
                     @Override
                     public boolean commitText(CharSequence text, int newCursorPosition) {
                         if (text != null && text.length() == 1 && text.charAt(0) == '\n') {
                             sendImeKey((byte) 13);  // VK_RETURN
-                        } else if (text != null && text.length() > 0) {
+                            return true;
+                        }
+                        if (text != null && text.length() > 0) {
                             sendImeText(text.toString());
                             composing[0] = "";
-                            handler.post(() -> imeInput.setText(""));
+                            boolean result = super.commitText(text, newCursorPosition);
+                            applyInvisibleCommitted();
+                            return result;
                         }
                         return true;
                     }
 
                     @Override
                     public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                        if (!composing[0].isEmpty()) {
-                            // 组词中的删改只作用于本地拼音，电脑还没收到字。
-                            return super.deleteSurroundingText(beforeLength, afterLength);
+                        if (composing[0].isEmpty()) {
+                            for (int index = 0; index < beforeLength; ++index) {
+                                sendImeKey((byte) 8);   // VK_BACK
+                            }
+                            for (int index = 0; index < afterLength; ++index) {
+                                sendImeKey((byte) 46);  // VK_DELETE
+                            }
                         }
-                        for (int index = 0; index < beforeLength; ++index) {
-                            sendImeKey((byte) 8);   // VK_BACK
-                        }
-                        for (int index = 0; index < afterLength; ++index) {
-                            sendImeKey((byte) 46);  // VK_DELETE
-                        }
-                        return super.deleteSurroundingText(beforeLength, afterLength);
+                        boolean result = super.deleteSurroundingText(beforeLength, afterLength);
+                        applyInvisibleCommitted();
+                        return result;
                     }
 
                     @Override
@@ -574,31 +609,18 @@ final class SidebarController {
                             int afterLength) {
                         // 部分输入法（含长按连删路径）用 code point 变体删除，
                         // 不拦截会漏转发。BMP 内 code point 数等于字符数。
-                        if (!composing[0].isEmpty()) {
-                            return super.deleteSurroundingTextInCodePoints(
-                                    beforeLength, afterLength);
+                        if (composing[0].isEmpty()) {
+                            for (int index = 0; index < beforeLength; ++index) {
+                                sendImeKey((byte) 8);   // VK_BACK
+                            }
+                            for (int index = 0; index < afterLength; ++index) {
+                                sendImeKey((byte) 46);  // VK_DELETE
+                            }
                         }
-                        for (int index = 0; index < beforeLength; ++index) {
-                            sendImeKey((byte) 8);   // VK_BACK
-                        }
-                        for (int index = 0; index < afterLength; ++index) {
-                            sendImeKey((byte) 46);  // VK_DELETE
-                        }
-                        return super.deleteSurroundingTextInCodePoints(
+                        boolean result = super.deleteSurroundingTextInCodePoints(
                                 beforeLength, afterLength);
-                    }
-
-                    @Override
-                    public CharSequence getTextBeforeCursor(int length, int flags) {
-                        CharSequence real = super.getTextBeforeCursor(length, flags);
-                        // 穿透模式下本地框为空：部分输入法长按连删前会先确认
-                        // 光标前有文本，为空则不产生任何删除事件。回一个占位
-                        // 空格让长按连删持续触发；电脑端以这些删除事件为准，
-                        // 占位字符本身不参与输入。
-                        if ((real == null || real.length() == 0) && length > 0) {
-                            return " ";
-                        }
-                        return real;
+                        applyInvisibleCommitted();
+                        return result;
                     }
 
                     @Override
@@ -611,7 +633,9 @@ final class SidebarController {
                                 sendImeKey(vk);
                             }
                         }
-                        return super.sendKeyEvent(event);
+                        boolean result = super.sendKeyEvent(event);
+                        applyInvisibleCommitted();
+                        return result;
                     }
                 };
             }
@@ -758,13 +782,18 @@ final class SidebarController {
             if (!imeShowing) {
                 return;
             }
-            InputMethodManager manager = (InputMethodManager)
-                    activity.getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (manager == null || !manager.isAcceptingText()) {
+            // isAcceptingText 在 IME 关闭后仍可能返回 true（视图焦点未清）；
+            // 窗口 insets 的 ime 可见性才是输入法窗口的真实状态。
+            boolean imeVisible = false;
+            WindowInsets insets = imeInput.getRootWindowInsets();
+            if (insets != null) {
+                imeVisible = insets.isVisible(WindowInsets.Type.ime());
+            }
+            if (!imeVisible) {
                 hideIme();
                 return;
             }
-            handler.postDelayed(this, 500L);
+            handler.postDelayed(this, 400L);
         }
     };
 
