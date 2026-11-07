@@ -313,6 +313,7 @@ body.theme-light .toggle.is-on { background: #315ed0; border-color: #587eff; }
 .config-value label { color: var(--subtle); font-size: 10px; }
 .config-value span, .config-value select { width: 100%; min-width: 0; font-size: 11px; color: var(--text-secondary); background: transparent; border: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .config-value select option { color: var(--text); background: #111c2d; }
+.config-value--wide { grid-column: span 2; }
 .vdd-summary { min-height: 82px; border: 1px solid var(--border-default); border-radius: 8px; padding: 8px 12px; gap: 16px; }
 .vdd-display-icon { width: 68px; height: 68px; flex: none; object-fit: contain; }
 .vdd-metric { display: grid; gap: 6px; }

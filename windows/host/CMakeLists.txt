@@ -2,6 +2,7 @@ add_executable(wireview_host
     src/annex_b_stream.cpp
     src/desktop_encoder.cpp
     src/development_transport.cpp
+    src/display_layout.cpp
     src/idd_frame_relay.cpp
     src/idd_frame_relay_pipe.cpp
     src/input_injector.cpp
@@ -16,6 +17,7 @@ add_executable(wireview_host
 # 保留原生 GDI 控制中心，供未安装 Evergreen Runtime 的旧系统回退使用。
 add_executable(wireview_control_legacy WIN32
     src/control_main.cpp
+    src/display_layout.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
     src/wireview_control.rc
@@ -25,6 +27,7 @@ add_executable(wireview_control_legacy WIN32
 # control_main.cpp 持有；WEBVIEW 宏只替换其可见的控制中心表面。
 add_executable(wireview_control WIN32
     src/control_main.cpp
+    src/display_layout.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
     src/webview_host.cpp
@@ -220,6 +223,23 @@ if(BUILD_TESTING)
     add_test(
         NAME wireview_reliable_byte_stream_tests
         COMMAND wireview_reliable_byte_stream_tests)
+
+    add_executable(wireview_display_layout_tests
+        src/display_layout.cpp
+        tests/display_layout_tests.cpp
+    )
+    target_include_directories(wireview_display_layout_tests PRIVATE src)
+    target_compile_features(wireview_display_layout_tests PRIVATE cxx_std_20)
+    # 纯逻辑测试，但 display_layout.cpp 里的 apply_vdd_position 引用
+    # user32 的 DisplayConfig API，链接 user32 即可。
+    target_link_libraries(wireview_display_layout_tests PRIVATE user32)
+    if(MSVC)
+        target_compile_options(
+            wireview_display_layout_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(
+        NAME wireview_display_layout_tests
+        COMMAND wireview_display_layout_tests)
 
     add_executable(wireview_winusb_byte_stream_tests
         src/winusb_byte_stream.cpp

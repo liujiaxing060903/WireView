@@ -8,6 +8,7 @@
 #include <gdiplus.h>
 #include <uxtheme.h>
 
+#include "display_layout.hpp"
 #include "parsec_vdd.hpp"
 #include "parsec_vdd_custom_modes.hpp"
 #ifdef WIREVIEW_WEBVIEW_UI
@@ -67,6 +68,8 @@ constexpr int kDiagnosticsButton = 1032;
 constexpr int kDiagnosticsBackButton = 1033;
 constexpr int kCheckUpdateButton = 1034;
 constexpr int kDiagnosticsOutput = 1035;
+constexpr int kVddPositionSelector = 1036;
+constexpr int kVddOrientationSelector = 1037;
 constexpr int kCustomModeSaveButton = 1100;
 constexpr int kCustomModeEditBase = 1110;
 constexpr int kWireViewAppIcon = 200;
@@ -169,6 +172,8 @@ struct ControlState {
     HWND resolution_selector{nullptr};
     HWND frame_rate_selector{nullptr};
     HWND vdd_mode_selector{nullptr};
+    HWND vdd_position_selector{nullptr};
+    HWND vdd_orientation_selector{nullptr};
     HWND recommendation{nullptr};
     HWND start_mirror_button{nullptr};
     HWND start_input_button{nullptr};
@@ -549,6 +554,9 @@ std::string wide_to_utf8(std::wstring_view value);
 void log_control_event(std::wstring_view category, std::wstring detail);
 std::wstring describe_display_choices_for_log();
 void update_recommendation();
+bool apply_custom_modes_with_elevation(HWND window);
+bool vdd_portrait_selected();
+std::optional<wireview::host::VddPosition> selected_vdd_position();
 void show_custom_mode_editor(HWND owner);
 void show_diagnostics_window(HWND owner);
 void notify_android_of_vdd_created(const StreamSettings& settings);
@@ -560,6 +568,10 @@ struct StreamSettings {
     std::uint16_t vdd_refresh_hz{60U};
     std::uint16_t vdd_width{};
     std::uint16_t vdd_height{};
+    // R1 扩展布局：vdd_portrait=true 时 width/height/vdd_width/vdd_height 均为
+    // 交换后的有效值；vdd_position 是规范名（right/left/top/bottom）。
+    bool vdd_portrait{false};
+    std::wstring vdd_position{L"right"};
     std::wstring display_device;
 };
 
@@ -582,11 +594,23 @@ void save_stream_settings(const StreamSettings& settings) {
     if (settings.width == 0U) {
         output << "resolution=auto\n";
     } else {
-        output << "resolution=" << settings.width << 'x' << settings.height << '\n';
+        // 持久化始终保存基础（横屏）分辨率；竖屏只体现在 vdd_orientation。
+        // vdd_orientation 写在 vdd_mode 之前，保证恢复时先知道方向再联动刷新率。
+        const auto [base_width, base_height] = settings.vdd_portrait
+            ? std::pair{settings.height, settings.width}
+            : std::pair{settings.width, settings.height};
+        output << "resolution=" << base_width << 'x' << base_height << '\n';
+        output << "vdd_orientation="
+               << (settings.vdd_portrait ? "portrait" : "landscape") << '\n';
+        output << "vdd_position=";
+        for (const wchar_t character : settings.vdd_position) {
+            output << static_cast<char>(character);
+        }
+        output << '\n';
+        output << "frame_rate=" << settings.frame_rate << '\n';
+        output << "vdd_mode=" << base_width << 'x' << base_height << '@'
+               << settings.vdd_refresh_hz << '\n';
     }
-    output << "frame_rate=" << settings.frame_rate << '\n';
-    output << "vdd_mode=" << settings.vdd_width << 'x' << settings.vdd_height << '@'
-           << settings.vdd_refresh_hz << '\n';
     // 控制中心的日常路径固定使用 ADB；WinUSB 实验入口仍保留在命令行工具中。
     output << "transport=adb\n";
     if (!settings.display_device.empty()) {
@@ -784,17 +808,21 @@ void populate_vdd_mode_selector(std::wstring preferred = {}) {
     if (!resolution) {
         return;
     }
+    // 竖屏方向下，副屏刷新率候选按交换后的有效宽高（WxH→HxW）匹配。
+    const auto effective_resolution = vdd_portrait_selected()
+        ? std::pair{resolution->second, resolution->first}
+        : *resolution;
     std::vector<std::uint16_t> refresh_rates;
     for (const StandardModeGroup& group : kStandardModeGroups) {
         const auto standard_resolution = parse_resolution(group.resolution);
-        if (standard_resolution && *standard_resolution == *resolution) {
+        if (standard_resolution && *standard_resolution == effective_resolution) {
             refresh_rates.insert(refresh_rates.end(), group.refresh_rates.begin(), group.refresh_rates.end());
             break;
         }
     }
     for (const auto& custom_mode : g_custom_modes) {
-        if (custom_mode && custom_mode->width == resolution->first &&
-            custom_mode->height == resolution->second) {
+        if (custom_mode && custom_mode->width == effective_resolution.first &&
+            custom_mode->height == effective_resolution.second) {
             refresh_rates.push_back(custom_mode->refresh_hz);
         }
     }
@@ -826,6 +854,66 @@ void populate_vdd_mode_selector(std::wstring preferred = {}) {
             reinterpret_cast<LPARAM>(selected_label.c_str())) == CB_ERR) {
         SendMessageW(g_state.vdd_mode_selector, CB_SETCURSEL, 0U, 0);
     }
+}
+
+int vdd_position_combo_index(wireview::host::VddPosition position) {
+    switch (position) {
+        case wireview::host::VddPosition::Right:
+            return 0;
+        case wireview::host::VddPosition::Left:
+            return 1;
+        case wireview::host::VddPosition::Top:
+            return 2;
+        case wireview::host::VddPosition::Bottom:
+            return 3;
+        default:
+            return 0;
+    }
+}
+
+std::optional<wireview::host::VddPosition> selected_vdd_position() {
+    if (g_state.vdd_position_selector == nullptr) {
+        return std::nullopt;
+    }
+    switch (SendMessageW(g_state.vdd_position_selector, CB_GETCURSEL, 0U, 0)) {
+        case 0:
+            return wireview::host::VddPosition::Right;
+        case 1:
+            return wireview::host::VddPosition::Left;
+        case 2:
+            return wireview::host::VddPosition::Top;
+        case 3:
+            return wireview::host::VddPosition::Bottom;
+        default:
+            return std::nullopt;
+    }
+}
+
+bool vdd_portrait_selected() {
+    return g_state.vdd_orientation_selector != nullptr &&
+        SendMessageW(g_state.vdd_orientation_selector, CB_GETCURSEL, 0U, 0) == 1;
+}
+
+void populate_vdd_position_selector() {
+    if (g_state.vdd_position_selector == nullptr) {
+        return;
+    }
+    for (const wchar_t* const label : {L"右侧", L"左侧", L"上方", L"下方"}) {
+        SendMessageW(g_state.vdd_position_selector, CB_ADDSTRING, 0U,
+            reinterpret_cast<LPARAM>(label));
+    }
+    SendMessageW(g_state.vdd_position_selector, CB_SETCURSEL, 0U, 0);
+}
+
+void populate_vdd_orientation_selector() {
+    if (g_state.vdd_orientation_selector == nullptr) {
+        return;
+    }
+    for (const wchar_t* const label : {L"横向", L"纵向"}) {
+        SendMessageW(g_state.vdd_orientation_selector, CB_ADDSTRING, 0U,
+            reinterpret_cast<LPARAM>(label));
+    }
+    SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, 0U, 0);
 }
 
 void sync_custom_modes_from_parsec_vdd() {
@@ -1114,20 +1202,73 @@ void refresh_display_choices(std::wstring preferred_device = {}) {
     update_vdd_controls();
 }
 
+bool standard_mode_exists(std::uint16_t width, std::uint16_t height, std::uint16_t refresh_hz) {
+    for (const StandardModeGroup& group : kStandardModeGroups) {
+        const auto standard_resolution = parse_resolution(group.resolution);
+        if (standard_resolution && standard_resolution->first == width &&
+            standard_resolution->second == height) {
+            return std::find(group.refresh_rates.begin(), group.refresh_rates.end(),
+                       refresh_hz) != group.refresh_rates.end();
+        }
+    }
+    return false;
+}
+
+bool custom_mode_exists(std::uint16_t width, std::uint16_t height, std::uint16_t refresh_hz) {
+    return std::any_of(g_custom_modes.begin(), g_custom_modes.end(),
+        [&](const std::optional<CustomMode>& mode) {
+            return mode && mode->width == width && mode->height == height &&
+                mode->refresh_hz == refresh_hz;
+        });
+}
+
+// 竖屏的交换分辨率通常不在驱动标准模式表里；确认一个自定义槽可用，必要时
+// 提权写入（一次管理员授权）。失败时返回 false 并给出用户可读原因。
+bool ensure_custom_mode_available(
+    std::uint16_t width, std::uint16_t height, std::uint16_t refresh_hz) {
+    if (standard_mode_exists(width, height, refresh_hz) ||
+        custom_mode_exists(width, height, refresh_hz)) {
+        return true;
+    }
+    const auto empty_slot = std::find_if(
+        g_custom_modes.begin(), g_custom_modes.end(),
+        [](const std::optional<CustomMode>& mode) { return !mode.has_value(); });
+    if (empty_slot == g_custom_modes.end()) {
+        set_status(L"竖屏模式 " + std::to_wstring(width) + L"×" + std::to_wstring(height) +
+            L" @ " + std::to_wstring(refresh_hz) +
+            L" Hz 需要一个自定义模式槽，但 5 个槽均已占用；请先释放一个槽。");
+        return false;
+    }
+    *empty_slot = CustomMode{.width = width, .height = height, .refresh_hz = refresh_hz};
+    save_custom_modes();
+    if (!apply_custom_modes_with_elevation(g_state.window)) {
+        *empty_slot = std::nullopt;
+        save_custom_modes();
+        set_status(L"写入竖屏自定义模式需要管理员授权，已取消；副屏方向保持不变。");
+        return false;
+    }
+    sync_custom_modes_from_parsec_vdd();
+    return custom_mode_exists(width, height, refresh_hz);
+}
+
 bool apply_selected_mode_to_parsec_vdd() {
     if (g_state.shell_process != nullptr) {
         set_status(L"WireView 正在运行，无法切换 Parsec VDD 的显示模式。请先停止会话。");
         return false;
     }
-    const auto resolution = parse_resolution(selector_text(g_state.resolution_selector));
+    const auto base_resolution = parse_resolution(selector_text(g_state.resolution_selector));
     std::uint16_t refresh_hz{};
     try {
         refresh_hz = static_cast<std::uint16_t>(std::stoul(selector_text(g_state.vdd_mode_selector)));
     } catch (const std::exception&) {
     }
-    if (!resolution || refresh_hz == 0U) {
+    if (!base_resolution || refresh_hz == 0U) {
         return false;
     }
+    // 竖屏方向下应用到驱动的是交换后的有效宽高（WxH→HxW）。
+    const auto resolution = vdd_portrait_selected()
+        ? std::pair{base_resolution->second, base_resolution->first}
+        : *base_resolution;
 
     const auto first_parsec = std::find_if(
         g_state.display_choices.begin(), g_state.display_choices.end(),
@@ -1150,7 +1291,7 @@ bool apply_selected_mode_to_parsec_vdd() {
         set_status(L"无法读取当前 Parsec VDD 显示模式。");
         return false;
     }
-    if (current.dmPelsWidth == resolution->first && current.dmPelsHeight == resolution->second &&
+    if (current.dmPelsWidth == resolution.first && current.dmPelsHeight == resolution.second &&
         current.dmDisplayFrequency == refresh_hz) {
         return true;
     }
@@ -1162,21 +1303,38 @@ bool apply_selected_mode_to_parsec_vdd() {
         if (EnumDisplaySettingsW(first_parsec->device_name.c_str(), index, &candidate) == FALSE) {
             break;
         }
-        if (candidate.dmPelsWidth == resolution->first && candidate.dmPelsHeight == resolution->second &&
+        if (candidate.dmPelsWidth == resolution.first && candidate.dmPelsHeight == resolution.second &&
             candidate.dmDisplayFrequency == refresh_hz) {
             mode_supported = true;
             break;
         }
     }
+    if (!mode_supported && vdd_portrait_selected() &&
+        ensure_custom_mode_available(resolution.first, resolution.second, refresh_hz)) {
+        // 竖屏模式已写入自定义槽，重新枚举驱动模式表做二次验证。
+        for (DWORD index = 0U;; ++index) {
+            DEVMODEW candidate{};
+            candidate.dmSize = sizeof(candidate);
+            if (EnumDisplaySettingsW(first_parsec->device_name.c_str(), index, &candidate) == FALSE) {
+                break;
+            }
+            if (candidate.dmPelsWidth == resolution.first &&
+                candidate.dmPelsHeight == resolution.second &&
+                candidate.dmDisplayFrequency == refresh_hz) {
+                mode_supported = true;
+                break;
+            }
+        }
+    }
     if (!mode_supported) {
-        set_status(L"Parsec VDD 不支持 " + std::to_wstring(resolution->first) + L"×" +
-            std::to_wstring(resolution->second) + L" @ " + std::to_wstring(refresh_hz) +
+        set_status(L"Parsec VDD 不支持 " + std::to_wstring(resolution.first) + L"×" +
+            std::to_wstring(resolution.second) + L" @ " + std::to_wstring(refresh_hz) +
             L" Hz。请先在“编辑自定义分辨率”中写入对应模式。");
         return false;
     }
 
-    current.dmPelsWidth = resolution->first;
-    current.dmPelsHeight = resolution->second;
+    current.dmPelsWidth = resolution.first;
+    current.dmPelsHeight = resolution.second;
     current.dmDisplayFrequency = refresh_hz;
     current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
     const LONG result = ChangeDisplaySettingsExW(
@@ -1187,16 +1345,42 @@ bool apply_selected_mode_to_parsec_vdd() {
     }
     const std::wstring device_name = first_parsec->device_name;
     refresh_display_choices(device_name);
-    set_status(L"已同步 Parsec VDD：" + std::to_wstring(resolution->first) + L"×" +
-        std::to_wstring(resolution->second) + L" @ " + std::to_wstring(refresh_hz) + L" Hz。");
+    set_status(L"已同步 Parsec VDD：" + std::to_wstring(resolution.first) + L"×" +
+        std::to_wstring(resolution.second) + L" @ " + std::to_wstring(refresh_hz) + L" Hz。");
     return true;
+}
+
+// R1：把当前持有的 WireView 副屏摆放到"副屏位置"选择的方位。尚未持有副屏时
+// 不动作，等 broker 创建完成后（poll_vdd_broker ready 分支）静默应用一次。
+void apply_selected_vdd_position(bool announce) {
+    if (g_state.owned_display_device.empty()) {
+        return;
+    }
+    const auto position = selected_vdd_position();
+    if (!position) {
+        return;
+    }
+    std::wstring error;
+    if (!wireview::host::apply_vdd_position(
+            g_state.owned_display_device.c_str(), *position, error)) {
+        set_status(L"副屏摆放失败：" + error);
+        return;
+    }
+    if (announce) {
+        set_status(L"已将 WireView 副屏摆放到" +
+            selector_text(g_state.vdd_position_selector) +
+            L"；建议停止并重新开始会话，让画面与触控按新位置刷新。");
+    }
+    refresh_display_choices(g_state.owned_display_device);
 }
 
 void restore_stream_settings() {
     if (g_state.settings_file.empty() || g_state.resolution_selector == nullptr ||
         g_state.frame_rate_selector == nullptr ||
         g_state.vdd_mode_selector == nullptr ||
-        g_state.display_selector == nullptr) {
+        g_state.display_selector == nullptr ||
+        g_state.vdd_position_selector == nullptr ||
+        g_state.vdd_orientation_selector == nullptr) {
         return;
     }
     std::ifstream input(g_state.settings_file);
@@ -1221,6 +1405,17 @@ void restore_stream_settings() {
                     populate_vdd_mode_selector(std::to_wstring(parsed->refresh_hz));
                 }
             }
+        } else if (line.rfind("vdd_position=", 0U) == 0U) {
+            const auto position =
+                wireview::host::parse_vdd_position(line.substr(13U));
+            if (position) {
+                SendMessageW(g_state.vdd_position_selector, CB_SETCURSEL,
+                    static_cast<WPARAM>(vdd_position_combo_index(*position)), 0);
+            }
+        } else if (line == "vdd_orientation=portrait") {
+            SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, 1U, 0);
+        } else if (line == "vdd_orientation=landscape") {
+            SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, 0U, 0);
         } else if (line.rfind("display=", 0U) == 0U) {
             const std::string value = line.substr(8U);
             preferred_display.assign(value.begin(), value.end());
@@ -2476,9 +2671,13 @@ bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
     if (!requested_stream) {
         return false;
     }
-    g_state.pending_vdd_width = requested_stream->width;
-    g_state.pending_vdd_height = requested_stream->height;
+    g_state.pending_vdd_width = requested_stream->vdd_width;
+    g_state.pending_vdd_height = requested_stream->vdd_height;
     g_state.pending_vdd_refresh_hz = requested_stream->vdd_refresh_hz;
+    if (!ensure_custom_mode_available(requested_stream->vdd_width,
+            requested_stream->vdd_height, requested_stream->vdd_refresh_hz)) {
+        return false;
+    }
     const bool has_custom_mode = std::any_of(
         g_custom_modes.begin(), g_custom_modes.end(),
         [](const std::optional<CustomMode>& mode) { return mode.has_value(); });
@@ -2678,6 +2877,7 @@ void poll_vdd_broker(HWND window) {
         g_state.owned_display_device = broker_status->display_device;
         g_state.owned_display_index = broker_status->display_index;
         refresh_display_choices(g_state.owned_display_device);
+        apply_selected_vdd_position(false);
         update_vdd_configuration_controls();
         if (g_state.pending_vdd_width != 0U && g_state.pending_vdd_height != 0U &&
             g_state.pending_vdd_refresh_hz != 0U) {
@@ -2891,8 +3091,19 @@ std::optional<StreamSettings> selected_stream_settings() {
     }
     settings.width = resolution->first;
     settings.height = resolution->second;
-    settings.vdd_width = resolution->first;
-    settings.vdd_height = resolution->second;
+    if (vdd_portrait_selected()) {
+        // 竖屏：交换宽高作为有效投屏分辨率与 VDD 显示模式。
+        settings.width = resolution->second;
+        settings.height = resolution->first;
+    }
+    settings.vdd_width = settings.width;
+    settings.vdd_height = settings.height;
+    settings.vdd_portrait = vdd_portrait_selected();
+    if (const auto position = selected_vdd_position()) {
+        const char* position_name = wireview::host::vdd_position_name(*position);
+        settings.vdd_position.assign(
+            position_name, position_name + std::char_traits<char>::length(position_name));
+    }
     const LRESULT display_index = SendMessageW(
         g_state.display_selector, CB_GETCURSEL, 0U, 0);
     if (display_index < 0 ||
@@ -4368,6 +4579,10 @@ void publish_web_state() {
     add_number(L"selectedDisplay", static_cast<std::size_t>(combo_selected_index(g_state.display_selector)));
     add_number(L"selectedResolution", static_cast<std::size_t>(combo_selected_index(g_state.resolution_selector)));
     add_number(L"selectedVddMode", static_cast<std::size_t>(combo_selected_index(g_state.vdd_mode_selector)));
+    add_array(L"positions", combo_options_as_json(g_state.vdd_position_selector));
+    add_array(L"orientations", combo_options_as_json(g_state.vdd_orientation_selector));
+    add_number(L"selectedPosition", static_cast<std::size_t>(combo_selected_index(g_state.vdd_position_selector)));
+    add_number(L"selectedOrientation", static_cast<std::size_t>(combo_selected_index(g_state.vdd_orientation_selector)));
     add_string(L"diagnostics", web_diagnostics_text());
     json += L"}";
     g_webview_host->post_json(json);
@@ -4451,7 +4666,17 @@ void handle_web_message(std::wstring_view message) {
         recover_stale_vdd_session(g_state.window);
     } else {
         int index{};
-        if (parse_web_selector_index(message, L"select-display|", g_state.display_selector, index)) {
+        if (parse_web_selector_index(
+                message, L"select-position|", g_state.vdd_position_selector, index)) {
+            SendMessageW(g_state.vdd_position_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+            apply_selected_vdd_position(true);
+        } else if (parse_web_selector_index(
+                       message, L"select-orientation|", g_state.vdd_orientation_selector, index)) {
+            SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+            populate_vdd_mode_selector();
+            (void)apply_selected_mode_to_parsec_vdd();
+            update_recommendation();
+        } else if (parse_web_selector_index(message, L"select-display|", g_state.display_selector, index)) {
             SendMessageW(g_state.display_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
             update_vdd_controls();
             update_recommendation();
@@ -4484,6 +4709,7 @@ void hide_native_controls_for_web() {
              g_state.simple_stop_button, g_state.simple_display_settings_button,
              g_state.display_selector, g_state.refresh_displays_button,
              g_state.resolution_selector, g_state.vdd_mode_selector,
+             g_state.vdd_position_selector, g_state.vdd_orientation_selector,
              g_state.frame_rate_selector, g_state.start_mirror_button,
              g_state.start_input_button, g_state.full_display_only_button,
              g_state.stop_button, g_state.display_settings_button,
@@ -5068,6 +5294,26 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 g_state.frame_rate_selector, CB_ADDSTRING, 0U,
                 reinterpret_cast<LPARAM>(L"120（实验）"));
             SendMessageW(g_state.frame_rate_selector, CB_SETCURSEL, 0U, 0);
+            g_state.vdd_position_selector = CreateWindowW(
+                L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
+                    CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                838, 210, 168, 180,
+                window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVddPositionSelector)),
+                nullptr,
+                nullptr);
+            populate_vdd_position_selector();
+            g_state.vdd_orientation_selector = CreateWindowW(
+                L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
+                    CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                1018, 210, 108, 180,
+                window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVddOrientationSelector)),
+                nullptr,
+                nullptr);
+            populate_vdd_orientation_selector();
             CreateWindowW(
                 L"BUTTON", L"刷新设备",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
@@ -5333,6 +5579,18 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 return 0;
             }
             if (LOWORD(wparam) == kDisplaySelector && HIWORD(wparam) == CBN_SELCHANGE) {
+                update_recommendation();
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
+            if (LOWORD(wparam) == kVddPositionSelector && HIWORD(wparam) == CBN_SELCHANGE) {
+                apply_selected_vdd_position(true);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
+            if (LOWORD(wparam) == kVddOrientationSelector && HIWORD(wparam) == CBN_SELCHANGE) {
+                populate_vdd_mode_selector();
+                (void)apply_selected_mode_to_parsec_vdd();
                 update_recommendation();
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
