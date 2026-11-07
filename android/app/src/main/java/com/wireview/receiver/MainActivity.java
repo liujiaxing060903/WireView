@@ -973,6 +973,10 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     }
 
     private boolean dispatchCapturedInput(MotionEvent event, View viewport) {
+        if (sidebar != null) {
+            // 点按视频区域 = 点在侧边栏外：展开的面板自动收回。
+            sidebar.onOutsideTouch();
+        }
         byte[] input = InputBatch.fromMotionEvent(event, viewport);
         if (input == null) {
             return false;

@@ -225,6 +225,8 @@ struct ControlState {
     std::uint16_t pending_vdd_refresh_hz{};
     bool preview_active{false};
     bool profile_probe_active{false};
+    // 防止 ChangeDisplaySettingsExW 泵消息导致的 start_session 重入。
+    bool start_session_in_progress{false};
     bool auto_device_profile_completed{false};
     bool auto_device_profile_attempted{false};
     // 用户点击“刷新”时，即使同一条 USB 连接此前已经自动识别过，也重新向
@@ -3178,6 +3180,17 @@ std::optional<StreamSettings> selected_stream_settings() {
 
 bool start_session(
     HWND window, bool enable_input, bool device_preview = false, bool device_profile_probe = false) {
+    // ChangeDisplaySettingsExW / ComboBox 操作会泵消息，计时器与 poll 可能
+    // 把 start_session 重入进来；重入会重建 display_choices 并使外层迭代
+    // 器失效（真机崩溃实证）。同一时间只允许一个 start_session。
+    if (g_state.start_session_in_progress) {
+        return false;
+    }
+    struct StartSessionGuard {
+        bool& flag;
+        ~StartSessionGuard() { flag = false; }
+    } start_guard{g_state.start_session_in_progress};
+    g_state.start_session_in_progress = true;
     if (!device_profile_probe && g_state.device_profile_requires_custom_mode) {
         set_status(L"请先在“编辑自定义分辨率”中替换或释放一个自定义槽，再开始 WireView。");
         show_custom_mode_editor(window);
@@ -3271,15 +3284,19 @@ bool start_session(
                     } else if (EnumDisplaySettingsW(
                                    target_choice->device_name.c_str(),
                                    ENUM_CURRENT_SETTINGS, &updated) != FALSE) {
+                        // ChangeDisplaySettingsExW 会同步泵消息（计时器/显示器
+                        // 变化可能嵌套触发 refresh_display_choices 重建向量），
+                        // target_choice 迭代器会失效——先把设备名拷贝出来。
+                        const std::wstring target_device = target_choice->device_name;
                         updated.dmPelsWidth = settings->vdd_width;
                         updated.dmPelsHeight = settings->vdd_height;
                         updated.dmDisplayFrequency = settings->vdd_refresh_hz;
                         updated.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
                         const LONG switch_result = ChangeDisplaySettingsExW(
-                            target_choice->device_name.c_str(), &updated, nullptr,
+                            target_device.c_str(), &updated, nullptr,
                             CDS_UPDATEREGISTRY, nullptr);
                         if (switch_result == DISP_CHANGE_SUCCESSFUL) {
-                            refresh_display_choices(target_choice->device_name);
+                            refresh_display_choices(target_device);
                             set_status(L"已将副屏显示模式同步为 " +
                                 std::to_wstring(settings->vdd_width) + L"×" +
                                 std::to_wstring(settings->vdd_height) + L" @ " +

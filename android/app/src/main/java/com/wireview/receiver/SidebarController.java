@@ -694,6 +694,24 @@ final class SidebarController {
         }
     }
 
+    // 输入法可能被用户从输入法侧收起（最小化/切换），而我们的输入条还在。
+    // 定期检查 IME 是否仍在服务；不在了就同步收起输入条。
+    private final Runnable imeWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (!imeShowing) {
+                return;
+            }
+            InputMethodManager manager = (InputMethodManager)
+                    activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (manager == null || !manager.isAcceptingText()) {
+                hideIme();
+                return;
+            }
+            handler.postDelayed(this, 500L);
+        }
+    };
+
     private void showIme() {
         if (!attached || rootLayout.getVisibility() != View.VISIBLE) {
             return;
@@ -730,6 +748,14 @@ final class SidebarController {
         if (!imeShowing) {
             imeShowing = true;
             keyboardRow.setAlpha(1f);
+            handler.postDelayed(imeWatchdog, 1200L);
+        }
+    }
+
+    /** 视频（侧边栏外）被点按：展开的面板应自动收回。 */
+    void onOutsideTouch() {
+        if (attached && expanded) {
+            setExpanded(false, true);
         }
     }
 
