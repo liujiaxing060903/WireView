@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -645,6 +646,15 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             explicitStopNoticeActive = false;
             requestedStreamFrameRate = frameRate;
             applyPreferredDisplayRefreshRate();
+            // 窗口方向跟随流方向：横竖屏切换后 Windows 端显示模式已变，
+            // 但 fullSensor 在平板平放时不会跟随传感器翻转，窗口与显示
+            // 坐标系错位会让触摸映射全部失效（真机实测）。
+            int wanted = width > height
+                    ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    : ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+            if (getRequestedOrientation() != wanted) {
+                setRequestedOrientation(wanted);
+            }
             refreshDeviceInfo();
             previewView.setVisibility(View.GONE);
             configuredVideoWidth = width;
@@ -924,6 +934,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         if (!streaming) {
             requestedStreamFrameRate = 60;
             applyPreferredDisplayRefreshRate();
+            // 会话结束恢复传感器跟随（fullSensor 是清单声明的常态）。
+            if (getRequestedOrientation()
+                    != ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR) {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+            }
             if (previewView != null) {
                 previewView.setVisibility(View.GONE);
             }
