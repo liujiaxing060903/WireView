@@ -5,6 +5,7 @@
 #include <WS2tcpip.h>
 
 #include "annex_b_stream.hpp"
+#include "bitrate_governor.hpp"
 #include "input_injector.hpp"
 #include "reliable_byte_stream.hpp"
 #include "socket_stream.hpp"
@@ -42,6 +43,14 @@
 #include <vector>
 
 namespace wireview::host {
+
+// R3 adaptive bitrate bounds for the WiFi transport (framerate first):
+// the ceiling is the measured 2026-11-06 WiFi budget (<= 60 Mbps); the
+// floor keeps H.264 at 1080p legible. USB keeps the fixed 24 Mbps start.
+constexpr std::uint32_t kAdaptiveMinBitrateBps = 6'000'000U;
+constexpr std::uint32_t kAdaptiveMaxBitrateBps = 60'000'000U;
+constexpr std::uint32_t kAdaptiveInitialBitrateBps = 24'000'000U;
+
 namespace {
 
 class DevelopmentStatusPublisher {
@@ -535,6 +544,60 @@ void send_test_stream(
     std::cout << "Synthetic H.264 stream completed\n";
 }
 
+// R3 adaptive bitrate: shared between the receive thread (which diffs the
+// decoder health telemetry) and the encoder thread (which consumes the
+// target). The parent keeps this object alive for both threads' lifetimes.
+struct AdaptiveBitrateState {
+    BitrateGovernor governor;
+    std::atomic_bool active{false};
+    std::atomic_uint32_t target{0};
+    std::uint64_t base_received = 0;
+    std::uint64_t base_dropped = 0;
+    std::uint32_t base_errors = 0;
+    bool base_valid = false;
+    std::mutex base_mutex;
+
+    explicit AdaptiveBitrateState(std::uint32_t initial_bps)
+        : governor(kAdaptiveMinBitrateBps, kAdaptiveMaxBitrateBps, initial_bps) {
+    }
+
+    void on_health(
+        std::uint64_t received_frames,
+        std::uint64_t queued_frames,
+        std::uint64_t dropped_frames,
+        std::uint32_t decoder_errors) {
+        if (!active.load(std::memory_order_relaxed)) {
+            return;
+        }
+        std::uint32_t command = 0;
+        {
+            std::lock_guard lock(base_mutex);
+            if (base_valid) {
+                const std::uint32_t delivered_delta = static_cast<std::uint32_t>(
+                    received_frames >= base_received ? received_frames - base_received : 0U);
+                const std::uint32_t dropped_delta = static_cast<std::uint32_t>(
+                    dropped_frames >= base_dropped ? dropped_frames - base_dropped : 0U);
+                const std::uint32_t errors_delta =
+                    decoder_errors >= base_errors ? decoder_errors - base_errors : 0U;
+                command = governor.on_sample(
+                    delivered_delta, dropped_delta,
+                    static_cast<std::uint32_t>(queued_frames), errors_delta);
+            }
+            base_received = received_frames;
+            base_dropped = dropped_frames;
+            base_errors = decoder_errors;
+            base_valid = true;
+        }
+        if (command != 0U) {
+            target.store(command, std::memory_order_relaxed);
+        }
+    }
+
+    [[nodiscard]] std::uint32_t consume() {
+        return active.load(std::memory_order_relaxed) ? target.exchange(0U) : 0U;
+    }
+};
+
 struct InputReceiveStats {
     struct ClockSyncSample {
         double round_trip_millis;
@@ -597,7 +660,8 @@ void receive_input_packets(
     DevelopmentStatusPublisher* status,
     const std::function<void(
         wireview::protocol::PacketType, std::vector<std::uint8_t>&&)>& send_reply,
-    const std::wstring& vdd_device_name) {
+    const std::wstring& vdd_device_name,
+    AdaptiveBitrateState* adaptive) {
     wireview::protocol::PacketStreamParser parser;
     std::vector<wireview::host::TabletWindowEntry> window_entries;
     std::uint32_t window_list_token = 0U;
@@ -737,6 +801,10 @@ void receive_input_packets(
                             decoder_errors,
                             (flags & 1U) != 0U,
                             (flags & 2U) != 0U);
+                    }
+                    if (adaptive != nullptr) {
+                        adaptive->on_health(
+                            received_frames, queued_frames, dropped_frames, decoder_errors);
                     }
                 } else {
                     std::cerr << "Rejected WireView telemetry payload\n";
@@ -879,9 +947,17 @@ void send_desktop_stream(
     std::uint16_t output_height,
     std::uint16_t frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    bool adaptive_bitrate) {
     std::uint64_t sequence = 2U;
     std::atomic_bool keyframe_requested{false};
+    // R3 adaptive bitrate (WiFi only): the receive thread diffs the decoder
+    // health telemetry once per second; the encoder thread consumes the
+    // governor's target before each frame. Lives on this frame: the input
+    // thread is joined before this function returns.
+    AdaptiveBitrateState adaptive_state(
+        kAdaptiveInitialBitrateBps * frame_rate / 60U);
+    adaptive_state.active.store(adaptive_bitrate, std::memory_order_relaxed);
     constexpr std::uint64_t kClockSyncPingSequenceBase = 0x5756520000000000ULL;
     std::uint64_t clock_sync_sequence = kClockSyncPingSequenceBase;
     // Windows headers define a max macro, so use min() here to schedule the
@@ -1029,6 +1105,9 @@ void send_desktop_stream(
         .consume_keyframe_request = [&] {
             return keyframe_requested.exchange(false);
         },
+        .consume_bitrate_command = [&] {
+            return adaptive_state.consume();
+        },
     };
 
     auto stop_sender = [&] {
@@ -1098,7 +1177,8 @@ void send_desktop_stream(
                 input_stats,
                 status,
                 send_reply,
-                vdd_device_name_wide);
+                vdd_device_name_wide,
+                &adaptive_state);
         } catch (...) {
             input_error = std::current_exception();
             input_running.store(false);
@@ -1263,7 +1343,8 @@ int run_connected_stream_impl(
     std::uint16_t output_height,
     std::uint16_t desktop_frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    bool adaptive_bitrate = false) {
     const std::string hello_text = "WireView Windows phase-0";
     const std::vector<std::uint8_t> hello_payload(hello_text.begin(), hello_text.end());
     const wireview::protocol::PacketHeader hello_header{
@@ -1306,7 +1387,8 @@ int run_connected_stream_impl(
             output_height,
             desktop_frame_rate,
             capture_display_device,
-            status);
+            status,
+            adaptive_bitrate);
     }
     return 0;
 }
@@ -1796,7 +1878,8 @@ int run_reconnecting_desktop_stream_session(
                     output_height,
                     frame_rate,
                     capture_display_device,
-                    &status);
+                    &status,
+                    true);
             } else {
                 result = run_server_impl(
                     endpoint.port,

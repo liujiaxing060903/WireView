@@ -1,5 +1,6 @@
 add_executable(wireview_host
     src/annex_b_stream.cpp
+    src/bitrate_governor.cpp
     src/desktop_encoder.cpp
     src/development_transport.cpp
     src/display_layout.cpp
@@ -199,6 +200,19 @@ if(MSVC)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(wireview_bitrate_governor_tests
+        src/bitrate_governor.cpp
+        tests/bitrate_governor_tests.cpp
+    )
+    target_include_directories(wireview_bitrate_governor_tests PRIVATE src)
+    target_compile_features(wireview_bitrate_governor_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(wireview_bitrate_governor_tests PRIVATE /W4 /WX /permissive-)
+    endif()
+    add_test(
+        NAME wireview_bitrate_governor_tests
+        COMMAND wireview_bitrate_governor_tests)
+
     # R3 WiFi 鉴权原语（CNG 封装）与 RFC 测试向量。wifi_crypto.cpp 为纯
     # ASCII 源文件，供 wireview_host / wireview_control 与本测试共用。
     add_executable(wireview_wifi_crypto_tests

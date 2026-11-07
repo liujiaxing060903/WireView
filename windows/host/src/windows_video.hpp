@@ -21,6 +21,10 @@ struct DesktopStreamCallbacks {
     // true asks for an IDR frame immediately, for example after the Android
     // decoder reports it had to discard a dependent H.264 frame.
     std::function<bool()> consume_keyframe_request;
+    // Called by the encoder thread every frame. Returning a non-zero bitrate
+    // retargets the hardware encoder (adaptive WiFi transport); zero keeps
+    // the current target.
+    std::function<std::uint32_t()> consume_bitrate_command;
 };
 
 struct DesktopCaptureArea {

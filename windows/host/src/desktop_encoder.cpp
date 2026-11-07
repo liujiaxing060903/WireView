@@ -1681,6 +1681,25 @@ public:
                       "IMFTransform::ProcessInput");
     }
 
+    // Runtime bitrate retarget for the adaptive WiFi transport. Some MFTs
+    // only apply CODECAPI changes at stream start; a rejection is logged
+    // once and the governor keeps running (its target simply has no effect).
+    void set_bitrate(UINT32 bits_per_second) {
+        if (!set_codec_uint32(
+                codec_api_.Get(),
+                CODECAPI_AVEncCommonMeanBitRate,
+                bits_per_second,
+                "adaptiveBitrate")) {
+            if (!bitrate_retarget_failed_) {
+                bitrate_retarget_failed_ = true;
+                std::cout << "Encoder rejected a runtime bitrate change; "
+                             "the stream keeps the initial bitrate\n";
+            }
+        } else {
+            bit_rate_ = bits_per_second;
+        }
+    }
+
     void force_keyframe() {
         // A decoder that discarded any inter frame must not continue from its
         // old reference picture. Request an IDR on the encoder thread before
@@ -1847,6 +1866,7 @@ private:
     UINT32 height_{};
     UINT32 frame_rate_{};
     UINT32 bit_rate_{};
+    bool bitrate_retarget_failed_{false};
     bool asynchronous_{false};
     bool direct3d_aware_{false};
     bool low_latency_enabled_{false};
