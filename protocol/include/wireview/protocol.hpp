@@ -30,6 +30,11 @@ enum class PacketType : std::uint8_t {
     pong = 10,
     error = 11,
     device_preview = 12,
+    // Android -> PC: tablet sidebar control commands (ESC / touch keyboard /
+    // orientation rotation / window list request / move window).
+    control_command = 13,
+    // PC -> Android: window list reply for the tablet application switcher.
+    window_list = 14,
 };
 
 enum class PacketFlag : std::uint8_t {

@@ -9,6 +9,7 @@ add_executable(wireview_host
     src/main.cpp
     src/parsec_vdd.cpp
     src/reliable_byte_stream.cpp
+    src/tablet_commands.cpp
     src/usb_accessory_discovery.cpp
     src/winusb_byte_stream.cpp
     src/windows_video.cpp
@@ -151,10 +152,12 @@ target_link_libraries(wireview_host PRIVATE
     d3d10_1
     d3dcompiler
     dxgi
+    dwmapi
     mf
     mfplat
     mfuuid
     ole32
+    shell32
     shcore
     user32
     ws2_32
@@ -242,6 +245,23 @@ if(BUILD_TESTING)
     add_test(
         NAME wireview_display_layout_tests
         COMMAND wireview_display_layout_tests)
+
+    add_executable(wireview_edge_mapping_tests
+        src/edge_mapping.cpp
+        tests/edge_mapping_tests.cpp
+    )
+    target_include_directories(wireview_edge_mapping_tests PRIVATE src)
+    target_compile_features(wireview_edge_mapping_tests PRIVATE cxx_std_20)
+    # build_zones_layout_xml 是纯函数；edge_mapping.cpp 其余部分引用
+    # user32/kernel32 的显示器与管道 API，链接 user32 即可。
+    target_link_libraries(wireview_edge_mapping_tests PRIVATE user32)
+    if(MSVC)
+        target_compile_options(
+            wireview_edge_mapping_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(
+        NAME wireview_edge_mapping_tests
+        COMMAND wireview_edge_mapping_tests)
 
     add_executable(wireview_winusb_byte_stream_tests
         src/winusb_byte_stream.cpp

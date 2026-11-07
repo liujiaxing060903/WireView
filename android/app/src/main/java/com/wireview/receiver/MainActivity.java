@@ -154,6 +154,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         }
     };
     private VideoDecoder videoDecoder;
+    private SidebarController sidebar;
     private CodecProbe.Result selectedDecoder;
     private int requestedStreamFrameRate = 60;
     // Once the app has reached the host, keep the user-facing state stable while
@@ -374,6 +375,40 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 videoDecoder.setSurface(null);
             }
         });
+
+        // 平板贴边侧边栏：子窗口悬浮于视频 Surface 之上，按钮经协议 type13
+        // 发送控制命令（返回/键盘/横竖屏/应用切换），窗口列表由 type14 驱动。
+        sidebar = new SidebarController(this, new SidebarController.Callbacks() {
+            @Override
+            public void onEscape() {
+                connection.sendControlCommand(new byte[]{1});
+            }
+
+            @Override
+            public void onTouchKeyboard() {
+                connection.sendControlCommand(new byte[]{2});
+            }
+
+            @Override
+            public void onRotateOrientation() {
+                connection.sendControlCommand(new byte[]{3});
+            }
+
+            @Override
+            public void onRequestWindowList() {
+                connection.sendControlCommand(new byte[]{4});
+            }
+
+            @Override
+            public void onMoveWindow(int token, int index, int targetArea) {
+                ByteBuffer payload = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN);
+                payload.put((byte) 5);
+                payload.putInt(token);
+                payload.putInt(index);
+                payload.put((byte) targetArea);
+                connection.sendControlCommand(payload.array());
+            }
+        });
     }
 
     @Override
@@ -413,6 +448,10 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         if (usbReceiverRegistered) {
             unregisterReceiver(usbPermissionReceiver);
             usbReceiverRegistered = false;
+        }
+        if (sidebar != null) {
+            sidebar.detach();
+            sidebar = null;
         }
         videoDecoder.close();
         super.onDestroy();
@@ -849,6 +888,14 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         statusView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         deviceInfoView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         versionView.setVisibility(streaming ? View.GONE : View.VISIBLE);
+        if (sidebar != null) {
+            // 侧边栏只在视频会话期间出现；断流即整窗隐藏。
+            if (streaming) {
+                sidebar.show();
+            } else {
+                sidebar.hide();
+            }
+        }
         getWindow().getDecorView().setSystemUiVisibility(streaming
                 ? View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -989,6 +1036,8 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             videoDecoder.stopStream();
         } else if (packet.header.type == Protocol.TYPE_DEVICE_PREVIEW) {
             showDevicePreview(packet.payload);
+        } else if (packet.header.type == Protocol.TYPE_WINDOW_LIST) {
+            sidebar.handleWindowList(packet.payload);
         }
     }
 }

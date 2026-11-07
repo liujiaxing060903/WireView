@@ -154,6 +154,10 @@ final class ConnectionClient implements AutoCloseable {
         sendPacket(Protocol.TYPE_TELEMETRY, payload);
     }
 
+    void sendControlCommand(byte[] payload) {
+        sendPacket(Protocol.TYPE_CONTROL_COMMAND, payload);
+    }
+
     void requestKeyframe() {
         sendPacket(Protocol.TYPE_KEYFRAME_REQUEST, new byte[0]);
     }

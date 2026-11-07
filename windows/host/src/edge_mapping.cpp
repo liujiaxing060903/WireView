@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -175,15 +176,44 @@ void spawn_hook(const std::string& hook_path_narrow) {
     CloseHandle(process.hProcess);
 }
 
-std::wstring rect_to_mm_attributes(const RECT& rect) {
-    // golden 基准：1920x1080 -> 480x270（4 px/mm）。虚拟桌面坐标按同一
-    // 比例缩放，保证两屏边界的 mm 对齐关系与像素一致。
-    const auto to_mm = [](LONG value) -> std::wstring {
-        return std::to_wstring(static_cast<long long>(value) * 1000LL / 4000LL);
-    };
-    return L"Left=\"" + to_mm(rect.left) + L"\" Top=\"" + to_mm(rect.top) +
-        L"\" Width=\"" + to_mm(rect.right - rect.left) + L"\" Height=\"" +
-        to_mm(rect.bottom - rect.top) + L"\"";
+// --- 毫米几何 --------------------------------------------------------------
+// Cross 算法（本布局 Algorithm="Cross"）的跨界映射是纯几何的：指针轨迹
+// 换算到全局毫米坐标系，落点 = 轨迹与目标屏毫米矩形的交点；ZoneLink 只
+// 提供阻力与越界门卫。因此"比例正确"的关键在于两屏共享边在毫米空间里
+// 等长对齐：主屏按 golden 4 px/mm，副屏共享轴毫米区间直接取主屏的值。
+
+constexpr double kMillimetersPerPixel = 0.25;  // golden 基准：4 px/mm。
+
+struct MmRect {
+    double left;
+    double top;
+    double right;
+    double bottom;
+};
+
+MmRect to_mm_uniform(const EdgeMappingRect& rect) {
+    return {rect.left * kMillimetersPerPixel, rect.top * kMillimetersPerPixel,
+            rect.right * kMillimetersPerPixel, rect.bottom * kMillimetersPerPixel};
+}
+
+// 双精度毫米 → XML 数字（守护进程按 invariant culture 解析，去尾零）。
+std::wstring mm_text(double value) {
+    wchar_t buffer[32]{};
+    std::swprintf(buffer, 32U, L"%.3f", value);
+    std::wstring text(buffer);
+    const std::size_t dot = text.find(L'.');
+    if (dot != std::wstring::npos) {
+        std::size_t last = text.find_last_not_of(L"0");
+        if (last != std::wstring::npos && last > dot) {
+            text.erase(last + 1U);
+        } else if (last == dot) {
+            text.erase(dot);
+        }
+    }
+    if (text == L"-0") {
+        text = L"0";
+    }
+    return text;
 }
 
 std::wstring disconnected_link_xml() {
@@ -196,13 +226,13 @@ std::wstring disconnected_link_xml() {
         L" DragBlock=\"False\" TargetId=\"-1\"></ZoneLink>";
 }
 
-// 连通边：显式范围（golden 连通段样式）。两端比例区间决定跨屏时的
-// 位置映射；长度不同（如 1600 vs 1920）按全边对全边线性映射。
-std::wstring link_xml(LONG target_id, LONG source_length_px, LONG target_length_px) {
-    const auto to_mm = [](LONG px) -> std::wstring {
-        return std::to_wstring(static_cast<long long>(px) * 1000LL / 4000LL);
-    };
-    std::wstring xml = L"<ZoneLink From=\"0\" To=\"" + to_mm(source_length_px) + L"\""
+// 连通边：显式范围（golden 连通段样式）。From/To 为共享边的全局毫米区间；
+// 源/目标像素区间各取自己那条边的全长（Strait 算法按此做全边线性映射，
+// Cross 算法只用毫米区间）。
+std::wstring link_xml(LONG target_id, double from_mm, double to_mm,
+    LONG source_length_px, LONG target_length_px) {
+    std::wstring xml = L"<ZoneLink From=\"" + mm_text(from_mm) + L"\" To=\"" +
+        mm_text(to_mm) + L"\""
         L" SourceFromPixel=\"0\" SourceToPixel=\"" + std::to_wstring(source_length_px) + L"\""
         L" TargetFromPixel=\"0\" TargetToPixel=\"" + std::to_wstring(target_length_px) + L"\""
         L" BorderResistance=\"0\" MoveBlock=\"False\" DragResistance=\"0\""
@@ -211,43 +241,122 @@ std::wstring link_xml(LONG target_id, LONG source_length_px, LONG target_length_
     return xml;
 }
 
-std::wstring zone_xml(int id, const std::wstring& gdi_device_name, const RECT& rect,
+std::wstring zone_xml(int id, const std::wstring& gdi_device_name,
+    const EdgeMappingRect& pixels, const MmRect& mm,
     int left_target, int top_target, int right_target, int bottom_target,
-    LONG peer_length_px) {
+    bool shared_axis_vertical, LONG peer_shared_px,
+    double shared_from_mm, double shared_to_mm) {
     // golden 里 DeviceId 无 "\\.\\" 前缀（"DISPLAY1" 样式）。
     std::wstring device_name = gdi_device_name;
     const std::wstring prefix = L"\\\\.\\";
     if (device_name.rfind(prefix, 0U) == 0U) {
         device_name = device_name.substr(prefix.size());
     }
-    const LONG width = rect.right - rect.left;
-    const LONG height = rect.bottom - rect.top;
-    // 相邻边：垂直邻接时共享边是高度，水平邻接时是宽度；对端长度用于
-    // Target 像素区间（高度不等时线性映射）。-1 表示该边不连通。
-    const auto edge = [&](int target, bool horizontal_edge) -> std::wstring {
+    const auto edge = [&](int target) -> std::wstring {
         if (target < 0) {
             return disconnected_link_xml();
         }
-        const LONG own_length = horizontal_edge ? width : height;
-        return link_xml(target, own_length, peer_length_px);
+        // 连通边即共享边：像素区间取自己这条边的全长。
+        const LONG own_shared_px = shared_axis_vertical
+            ? pixels.bottom - pixels.top
+            : pixels.right - pixels.left;
+        return link_xml(target, shared_from_mm, shared_to_mm, own_shared_px, peer_shared_px);
     };
     std::wstring xml = L"<Zone Id=\"" + std::to_wstring(id) + L"\" Name=\"Zone" +
         std::to_wstring(id) + L"\" DeviceId=\"" + device_name + L"\">";
-    xml += L"<PixelsBounds><Rect Left=\"" + std::to_wstring(rect.left) +
-        L"\" Top=\"" + std::to_wstring(rect.top) + L"\" Width=\"" +
-        std::to_wstring(width) + L"\" Height=\"" + std::to_wstring(height) +
+    xml += L"<PixelsBounds><Rect Left=\"" + std::to_wstring(pixels.left) +
+        L"\" Top=\"" + std::to_wstring(pixels.top) + L"\" Width=\"" +
+        std::to_wstring(pixels.right - pixels.left) + L"\" Height=\"" +
+        std::to_wstring(pixels.bottom - pixels.top) +
         L"\"></Rect></PixelsBounds>";
-    xml += L"<PhysicalBounds><Rect " + rect_to_mm_attributes(rect) +
-        L"></Rect></PhysicalBounds>";
-    xml += L"<LeftLinks>" + edge(left_target, false) + L"</LeftLinks>";
-    xml += L"<TopLinks>" + edge(top_target, true) + L"</TopLinks>";
-    xml += L"<RightLinks>" + edge(right_target, false) + L"</RightLinks>";
-    xml += L"<BottomLinks>" + edge(bottom_target, true) + L"</BottomLinks>";
+    xml += L"<PhysicalBounds><Rect Left=\"" + mm_text(mm.left) +
+        L"\" Top=\"" + mm_text(mm.top) + L"\" Width=\"" +
+        mm_text(mm.right - mm.left) + L"\" Height=\"" +
+        mm_text(mm.bottom - mm.top) + L"\"></Rect></PhysicalBounds>";
+    xml += L"<LeftLinks>" + edge(left_target) + L"</LeftLinks>";
+    xml += L"<TopLinks>" + edge(top_target) + L"</TopLinks>";
+    xml += L"<RightLinks>" + edge(right_target) + L"</RightLinks>";
+    xml += L"<BottomLinks>" + edge(bottom_target) + L"</BottomLinks>";
     xml += L"</Zone>";
     return xml;
 }
 
 }  // namespace
+
+std::wstring build_zones_layout_xml(EdgeMappingRect primary, EdgeMappingRect vdd,
+    const std::wstring& primary_device_name, const std::wstring& vdd_device_name) {
+    // 拼布局：Zone0=主屏，Zone1=副屏，两屏相邻边互写连通 ZoneLink。
+    // 根据两屏相对位置判定相邻边（与副屏摆放选择一致）。
+    int horizontal = 0;  // -1 副屏在左，+1 副屏在右
+    int vertical = 0;    // -1 副屏在上，+1 副屏在下
+    if (vdd.left >= primary.right) {
+        horizontal = 1;
+    } else if (vdd.right <= primary.left) {
+        horizontal = -1;
+    } else if (vdd.top >= primary.bottom) {
+        vertical = 1;
+    } else if (vdd.bottom <= primary.top) {
+        vertical = -1;
+    } else {
+        return {};  // 边界不邻接
+    }
+
+    const MmRect primary_mm = to_mm_uniform(primary);
+    MmRect vdd_mm = to_mm_uniform(vdd);
+    int primary_left = -1, primary_top = -1, primary_right = -1, primary_bottom = -1;
+    int vdd_left = -1, vdd_top = -1, vdd_right = -1, vdd_bottom = -1;
+    bool shared_axis_vertical = false;
+    double shared_from_mm = 0.0;
+    double shared_to_mm = 0.0;
+    if (horizontal != 0) {
+        // 共享边为竖直边：长度 = 各自像素高度；毫米区间对齐主屏毫米高度。
+        if (horizontal > 0) {
+            primary_right = 1;
+            vdd_left = 0;
+        } else {
+            primary_left = 1;
+            vdd_right = 0;
+        }
+        shared_axis_vertical = true;
+        vdd_mm.top = primary_mm.top;
+        vdd_mm.bottom = primary_mm.bottom;
+        shared_from_mm = primary_mm.top;
+        shared_to_mm = primary_mm.bottom;
+    } else {
+        // 共享边为水平边：长度 = 各自像素宽度；毫米区间对齐主屏毫米宽度。
+        if (vertical > 0) {
+            primary_bottom = 1;
+            vdd_top = 0;
+        } else {
+            primary_top = 1;
+            vdd_bottom = 0;
+        }
+        vdd_mm.left = primary_mm.left;
+        vdd_mm.right = primary_mm.right;
+        shared_from_mm = primary_mm.left;
+        shared_to_mm = primary_mm.right;
+    }
+
+    std::wstring layout = L"<ZonesLayout AdjustPointer=\"True\" AdjustSpeed=\"False\""
+        L" LoopX=\"False\" LoopY=\"False\" Virtual=\"False\""
+        L" RescueShortcut=\"Ctrl+Alt+Shift+M\" Priority=\"High\""
+        L" PriorityUnhooked=\"Idle\" Algorithm=\"Cross\" MaxTravelDistance=\"150\""
+        L" FreelookCheckInterval=\"100\" FreelookEnabled=\"True\"><MainZones>";
+    const LONG primary_shared_px = shared_axis_vertical
+        ? primary.bottom - primary.top
+        : primary.right - primary.left;
+    const LONG vdd_shared_px = shared_axis_vertical
+        ? vdd.bottom - vdd.top
+        : vdd.right - vdd.left;
+    layout += zone_xml(0, primary_device_name, primary, primary_mm,
+        primary_left, primary_top, primary_right, primary_bottom,
+        shared_axis_vertical, vdd_shared_px, shared_from_mm, shared_to_mm);
+    layout += zone_xml(1, vdd_device_name, vdd, vdd_mm,
+        vdd_left, vdd_top, vdd_right, vdd_bottom,
+        shared_axis_vertical, primary_shared_px, shared_from_mm, shared_to_mm);
+    layout += L"</MainZones></ZonesLayout>";
+    return layout;
+}
 
 std::string edge_mapping_hook_path() {
     char module_path[MAX_PATH]{};
@@ -310,61 +419,28 @@ bool edge_mapping_apply(
         return false;
     }
 
-    // 拼布局：Zone0=主屏，Zone1=副屏，两屏相邻边互写连通 ZoneLink。
-    // 根据两屏相对位置判定相邻边（与副屏摆放选择一致）。
-    int horizontal = 0;  // -1 副屏在左，+1 副屏在右
-    int vertical = 0;    // -1 副屏在上，+1 副屏在下
-    if (vdd_rect->left >= primary_rect->right) {
-        horizontal = 1;
-    } else if (vdd_rect->right <= primary_rect->left) {
-        horizontal = -1;
-    } else if (vdd_rect->top >= primary_rect->bottom) {
-        vertical = 1;
-    } else if (vdd_rect->bottom <= primary_rect->top) {
-        vertical = -1;
-    } else {
+    const EdgeMappingRect primary_pixels{
+        primary_rect->left, primary_rect->top, primary_rect->right, primary_rect->bottom};
+    const EdgeMappingRect vdd_pixels{
+        vdd_rect->left, vdd_rect->top, vdd_rect->right, vdd_rect->bottom};
+    std::wstring layout = build_zones_layout_xml(
+        primary_pixels, vdd_pixels, primary_device_name, vdd_device_name);
+    if (layout.empty()) {
         error = L"副屏与主屏边界不邻接，无法建立指针映射";
         return false;
     }
-    int primary_left = -1, primary_top = -1, primary_right = -1, primary_bottom = -1;
-    int vdd_left = -1, vdd_top = -1, vdd_right = -1, vdd_bottom = -1;
-    if (horizontal == 1) {
-        primary_right = 1;
-        vdd_left = 0;
-    } else if (horizontal == -1) {
-        primary_left = 1;
-        vdd_right = 0;
-    } else if (vertical == 1) {
-        primary_bottom = 1;
-        vdd_top = 0;
-    } else {
-        primary_top = 1;
-        vdd_bottom = 0;
-    }
 
-    std::wstring layout = L"<ZonesLayout AdjustPointer=\"True\" AdjustSpeed=\"False\""
-        L" LoopX=\"False\" LoopY=\"False\" Virtual=\"False\""
-        L" RescueShortcut=\"Ctrl+Alt+Shift+M\" Priority=\"High\""
-        L" PriorityUnhooked=\"Idle\" Algorithm=\"Cross\" MaxTravelDistance=\"150\""
-        L" FreelookCheckInterval=\"100\" FreelookEnabled=\"True\"><MainZones>";
-    const LONG primary_height = primary_rect->bottom - primary_rect->top;
-    const LONG primary_width = primary_rect->right - primary_rect->left;
-    const LONG vdd_height = vdd_rect->bottom - vdd_rect->top;
-    const LONG vdd_width = vdd_rect->right - vdd_rect->left;
-    // 垂直邻接共享高度（对端=对侧屏高度），水平邻接共享宽度。
-    const bool vertical_adjacency = primary_left != -1 || primary_right != -1;
-    const LONG main_peer = vertical_adjacency ? vdd_height : vdd_width;
-    const LONG vdd_peer = vertical_adjacency ? primary_height : primary_width;
-    layout += zone_xml(0, primary_device_name, *primary_rect,
-        primary_left, primary_top, primary_right, primary_bottom, main_peer);
-    layout += zone_xml(1, vdd_device_name, *vdd_rect,
-        vdd_left, vdd_top, vdd_right, vdd_bottom, vdd_peer);
-    layout += L"</MainZones></ZonesLayout>";
-
-    const std::wstring commands = L"<Messages>"
+    std::wstring commands = L"<Messages>"
         L"<CommandMessage Command=\"Load\"><Payload>" + layout + L"</Payload></CommandMessage>"
         L"<CommandMessage Command=\"Run\" Payload=\"\"/>"
         L"</Messages>";
+
+    // 重复 apply（拓扑变化重挂）时释放上一条事件连接，避免句柄泄漏。
+    if (g_edge_mapping_pipe != nullptr) {
+        CancelIo(g_edge_mapping_pipe);
+        CloseHandle(g_edge_mapping_pipe);
+        g_edge_mapping_pipe = nullptr;
+    }
 
     // 优先复用已运行的守护进程（单实例：第二个实例会 panic 退出）。
     HANDLE pipe = try_open_pipe();

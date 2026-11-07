@@ -30,6 +30,12 @@ final class Protocol {
     // Sent by the Windows control center before a desktop stream. The Android
     // receiver uses it to show the selected output aspect ratio as a frame.
     static final int TYPE_DEVICE_PREVIEW = 12;
+    // Tablet edge sidebar -> PC control commands (ESC / touch keyboard /
+    // orientation rotation / window list request / move window). Older hosts
+    // silently ignore unknown packet types, so this stays backward compatible.
+    static final int TYPE_CONTROL_COMMAND = 13;
+    // PC -> tablet reply: window list for the application switcher page.
+    static final int TYPE_WINDOW_LIST = 14;
 
     private Protocol() {
     }

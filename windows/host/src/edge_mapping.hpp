@@ -4,9 +4,30 @@
 // 任意位置进入副屏时按物理比例重映射"。进程隔离调用，无 GPL 传染。
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
 #include <string>
 
 namespace wireview::host {
+
+// 测试友好的像素矩形（虚拟桌面坐标）。
+struct EdgeMappingRect {
+    LONG left;
+    LONG top;
+    LONG right;
+    LONG bottom;
+};
+
+// 按两屏像素矩形生成 ZonesLayout XML（与守护进程 Load 载荷逐字一致）。
+// 纯函数、不触碰系统；返回空串表示两屏边界不邻接。
+// 毫米几何：主屏按 golden 基准 4 px/mm；副屏在共享轴上对齐主屏的毫米
+// 区间（等长），Cross 引擎的几何跨界映射因此成为双向"全边比例映射"，
+// 修复副屏高于主屏时反向跨界被钳制/失效的问题。
+std::wstring build_zones_layout_xml(EdgeMappingRect primary, EdgeMappingRect vdd,
+    const std::wstring& primary_device_name, const std::wstring& vdd_device_name);
 
 // Hook.exe 的候选路径：优先 WireView 程序目录，其次官方安装目录。
 std::string edge_mapping_hook_path();

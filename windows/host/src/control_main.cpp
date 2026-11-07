@@ -10,6 +10,7 @@
 
 #include "display_layout.hpp"
 #include "edge_mapping.hpp"
+#include "tablet_commands.hpp"
 #include "parsec_vdd.hpp"
 #include "parsec_vdd_custom_modes.hpp"
 #ifdef WIREVIEW_WEBVIEW_UI
@@ -79,6 +80,9 @@ constexpr int kCustomModeFieldStep = 45;
 constexpr UINT_PTR kProcessTimer = 1;
 constexpr UINT_PTR kVddTimer = 2;
 constexpr UINT_PTR kDeviceDetectTimer = 3;
+// 平板侧边栏请求换向后的延迟重启；显示器拓扑变化后边缘映射重挂的防抖。
+constexpr UINT_PTR kRotateRestartTimer = 4;
+constexpr UINT_PTR kEdgeRemapTimer = 5;
 constexpr UINT kTrayMessage = WM_APP + 1U;
 constexpr UINT kFinalizeControlExit = WM_APP + 2U;
 constexpr UINT kTrayRestore = 2001U;
@@ -3074,6 +3078,51 @@ void stop_session() {
     update_vdd_controls();
 }
 
+// 会话运行中按当前显示器拓扑重挂指针边缘映射（WM_DISPLAYCHANGE 防抖后调
+// 用）：守护进程在拓扑变化后会自行解挂并等待客户端重新发布局。
+void reapply_edge_mapping_for_topology() {
+    if (g_state.shell_process == nullptr || !g_state.edge_mapping_enabled ||
+        g_state.preview_active || g_state.profile_probe_active) {
+        return;
+    }
+    const auto mapped_vdd = std::find_if(
+        g_state.display_choices.begin(), g_state.display_choices.end(),
+        [](const DisplayChoice& choice) { return choice.parsec_vdd && !choice.primary; });
+    const auto mapped_primary = std::find_if(
+        g_state.display_choices.begin(), g_state.display_choices.end(),
+        [](const DisplayChoice& choice) { return choice.primary; });
+    if (mapped_vdd == g_state.display_choices.end() ||
+        mapped_primary == g_state.display_choices.end()) {
+        return;
+    }
+    std::wstring apply_error;
+    if (!wireview::host::edge_mapping_apply(
+            mapped_primary->device_name.c_str(),
+            mapped_vdd->device_name.c_str(), apply_error)) {
+        log_control_event(L"edge-mapping", L"重挂失败：" + apply_error);
+    } else {
+        log_control_event(L"edge-mapping", L"已按新显示器拓扑重挂指针映射");
+    }
+}
+
+// 平板侧边栏请求横竖屏切换（协议 type13 → host PostMessage 转达）：翻转
+// 方向选择器并按既有安全路径重启会话。会话中直接切 VDD 模式会让运行中
+// 的 DXGI/编码链路失效（R1 起禁止），重启虽多花一两秒但复用全部已验证逻辑。
+void handle_tablet_rotate_request(HWND window) {
+    if (g_state.shell_process == nullptr || g_state.preview_active ||
+        g_state.profile_probe_active || g_state.vdd_orientation_selector == nullptr) {
+        return;
+    }
+    const LRESULT current = SendMessageW(
+        g_state.vdd_orientation_selector, CB_GETCURSEL, 0U, 0);
+    const WPARAM flipped = current == 1 ? 0U : 1U;
+    SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, flipped, 0);
+    populate_vdd_mode_selector();
+    set_status(L"平板请求切换横竖屏：正在以新方向重启会话…");
+    stop_session();
+    SetTimer(window, kRotateRestartTimer, 800U, nullptr);
+}
+
 std::optional<StreamSettings> selected_stream_settings() {
     if (g_state.resolution_selector == nullptr || g_state.frame_rate_selector == nullptr ||
         g_state.vdd_mode_selector == nullptr ||
@@ -5826,6 +5875,18 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     std::to_wstring(GetLastError()));
             }
             return 0;
+        case WM_DISPLAYCHANGE:
+            // 显示拓扑变化（模式切换 / VDD 重建 / 唤醒）：防抖后重挂边缘映射。
+            if (g_state.shell_process != nullptr && g_state.edge_mapping_enabled) {
+                SetTimer(window, kEdgeRemapTimer, 1'200U, nullptr);
+            }
+            return 0;
+        case WM_APP:
+            if (wparam == wireview::host::kControlCenterRotateRequest) {
+                handle_tablet_rotate_request(window);
+                return 0;
+            }
+            break;
         case WM_POWERBROADCAST:
             update_recommendation();
             return TRUE;
@@ -5843,6 +5904,18 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
 #ifdef WIREVIEW_WEBVIEW_UI
                 publish_web_state();
 #endif
+                return 0;
+            }
+            if (wparam == kRotateRestartTimer) {
+                KillTimer(window, kRotateRestartTimer);
+                if (g_state.shell_process == nullptr) {
+                    (void)start_session(window, true);
+                }
+                return 0;
+            }
+            if (wparam == kEdgeRemapTimer) {
+                KillTimer(window, kEdgeRemapTimer);
+                reapply_edge_mapping_for_topology();
                 return 0;
             }
             if (wparam == kProcessTimer && g_state.shell_process != nullptr) {

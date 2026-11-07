@@ -1,26 +1,31 @@
 #include "development_transport.hpp"
 
+// WinSock2 must precede any header that pulls in <Windows.h>.
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+
 #include "annex_b_stream.hpp"
 #include "input_injector.hpp"
 #include "reliable_byte_stream.hpp"
+#include "tablet_commands.hpp"
 #include "usb_accessory_discovery.hpp"
 #include "winusb_byte_stream.hpp"
 #include "windows_video.hpp"
 
 #include "wireview/protocol.hpp"
 
-#include <WinSock2.h>
-#include <WS2tcpip.h>
-
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -105,6 +110,23 @@ class DevelopmentStatusPublisher {
 public:
     explicit DevelopmentStatusPublisher(std::string_view path)
         : path_(path.empty() ? std::filesystem::path{} : std::filesystem::path(path)) {
+        // The status file is rewritten from a dedicated thread: the encoder
+        // thread used to pay a synchronous WRITE_THROUGH flush once per second
+        // (audit item P4), turning disk stalls into dropped beats.
+        if (!path_.empty()) {
+            publisher_ = std::thread([this] { publish_worker(); });
+        }
+    }
+
+    ~DevelopmentStatusPublisher() {
+        {
+            std::lock_guard lock(mutex_);
+            publish_stopped_ = true;
+        }
+        publish_cv_.notify_all();
+        if (publisher_.joinable()) {
+            publisher_.join();
+        }
     }
 
     void configure(
@@ -282,10 +304,81 @@ private:
         publish_locked();
     }
 
-    void publish_locked() const {
+    void publish_locked() {
         if (path_.empty()) {
             return;
         }
+        // Serialize the report under the state mutex and hand it to the
+        // publisher thread; the file I/O itself never runs on the caller
+        // (encoder) thread.
+        std::ostringstream report;
+        report << "version=1\n"
+               << "state=" << state_ << '\n'
+               << "message=" << single_line(message_) << '\n'
+               << "display=" << single_line(display_) << '\n'
+               << "input_mode=" << input_mode_ << '\n'
+               << "requested_width=" << requested_width_ << '\n'
+               << "requested_height=" << requested_height_ << '\n'
+               << "requested_fps=" << requested_frame_rate_ << '\n'
+               << "transport=" << single_line(transport_) << '\n'
+               << "actual_width=" << actual_width_ << '\n'
+               << "actual_height=" << actual_height_ << '\n'
+               << "actual_fps=" << actual_frame_rate_ << '\n'
+               << "client=" << single_line(client_) << '\n'
+               << "reconnects=" << reconnect_count_ << '\n'
+               << "first_frame_ms=" << first_frame_millis_ << '\n'
+               << "surface_samples=" << surface_samples_.size() << '\n'
+               << std::fixed << std::setprecision(2)
+               << "surface_p50_ms=" << surface_p50_millis_ << '\n'
+               << "surface_p95_ms=" << surface_p95_millis_ << '\n'
+               << "delivered_frames=" << delivered_frames_ << '\n'
+               << "output_fps=" << output_frame_rate_ << '\n'
+               << "bitrate_mbps=" << bitrate_mbps_ << '\n'
+               << "decoder_name=" << single_line(decoder_name_) << '\n'
+               << "decoder_hardware=" << (decoder_hardware_ ? 1 : 0) << '\n'
+               << "decoder_software=" << (decoder_software_ ? 1 : 0) << '\n'
+               << "decoder_low_latency=" << (decoder_low_latency_ ? 1 : 0) << '\n'
+               << "decoder_1080p60=" << (decoder_1080p60_ ? 1 : 0) << '\n'
+               << "android_width=" << android_width_ << '\n'
+               << "android_height=" << android_height_ << '\n'
+               << "android_refresh_hz=" << android_refresh_hz_ << '\n'
+               << "android_max_refresh_hz=" << android_max_refresh_hz_ << '\n'
+               << "android_manufacturer=" << single_line(android_manufacturer_) << '\n'
+               << "android_device_type=" << android_device_type_ << '\n'
+               << "decoder_health_seen=" << (decoder_health_seen_ ? 1 : 0) << '\n'
+               << "decoder_active=" << (decoder_active_ ? 1 : 0) << '\n'
+               << "decoder_first_frame=" << (decoder_first_frame_ ? 1 : 0) << '\n'
+               << "decoder_received_frames=" << decoder_received_frames_ << '\n'
+               << "decoder_queued_frames=" << decoder_queued_frames_ << '\n'
+               << "decoder_dropped_frames=" << decoder_dropped_frames_ << '\n'
+               << "decoder_errors=" << decoder_errors_ << '\n';
+        pending_publish_ = report.str();
+        publish_dirty_ = true;
+        publish_cv_.notify_one();
+    }
+
+    void publish_worker() {
+        std::unique_lock lock(mutex_);
+        while (true) {
+            publish_cv_.wait(lock, [this] {
+                return publish_dirty_ || publish_stopped_;
+            });
+            const bool dirty = publish_dirty_;
+            publish_dirty_ = false;
+            if (publish_stopped_) {
+                if (dirty && !pending_publish_.empty()) {
+                    write_status_file(pending_publish_);
+                }
+                return;
+            }
+            std::string content = std::move(pending_publish_);
+            lock.unlock();
+            write_status_file(content);
+            lock.lock();
+        }
+    }
+
+    void write_status_file(const std::string& content) const {
         std::error_code error;
         if (!path_.parent_path().empty()) {
             std::filesystem::create_directories(path_.parent_path(), error);
@@ -296,50 +389,12 @@ private:
         auto temporary = path_;
         temporary += L".host.tmp";
         {
-            std::ofstream output(temporary, std::ios::trunc);
+            std::ofstream output(temporary, std::ios::trunc | std::ios::binary);
             if (!output) {
                 return;
             }
-            output << "version=1\n"
-                   << "state=" << state_ << '\n'
-                   << "message=" << single_line(message_) << '\n'
-                   << "display=" << single_line(display_) << '\n'
-                   << "input_mode=" << input_mode_ << '\n'
-                   << "requested_width=" << requested_width_ << '\n'
-                   << "requested_height=" << requested_height_ << '\n'
-                   << "requested_fps=" << requested_frame_rate_ << '\n'
-                   << "transport=" << single_line(transport_) << '\n'
-                   << "actual_width=" << actual_width_ << '\n'
-                   << "actual_height=" << actual_height_ << '\n'
-                   << "actual_fps=" << actual_frame_rate_ << '\n'
-                   << "client=" << single_line(client_) << '\n'
-                   << "reconnects=" << reconnect_count_ << '\n'
-                   << "first_frame_ms=" << first_frame_millis_ << '\n'
-                   << "surface_samples=" << surface_samples_.size() << '\n'
-                   << std::fixed << std::setprecision(2)
-                   << "surface_p50_ms=" << surface_p50_millis_ << '\n'
-                   << "surface_p95_ms=" << surface_p95_millis_ << '\n'
-                   << "delivered_frames=" << delivered_frames_ << '\n'
-                   << "output_fps=" << output_frame_rate_ << '\n'
-                   << "bitrate_mbps=" << bitrate_mbps_ << '\n'
-                   << "decoder_name=" << single_line(decoder_name_) << '\n'
-                   << "decoder_hardware=" << (decoder_hardware_ ? 1 : 0) << '\n'
-                   << "decoder_software=" << (decoder_software_ ? 1 : 0) << '\n'
-                   << "decoder_low_latency=" << (decoder_low_latency_ ? 1 : 0) << '\n'
-                   << "decoder_1080p60=" << (decoder_1080p60_ ? 1 : 0) << '\n'
-                   << "android_width=" << android_width_ << '\n'
-                   << "android_height=" << android_height_ << '\n'
-                   << "android_refresh_hz=" << android_refresh_hz_ << '\n'
-                   << "android_max_refresh_hz=" << android_max_refresh_hz_ << '\n'
-                   << "android_manufacturer=" << single_line(android_manufacturer_) << '\n'
-                   << "android_device_type=" << android_device_type_ << '\n'
-                   << "decoder_health_seen=" << (decoder_health_seen_ ? 1 : 0) << '\n'
-                   << "decoder_active=" << (decoder_active_ ? 1 : 0) << '\n'
-                   << "decoder_first_frame=" << (decoder_first_frame_ ? 1 : 0) << '\n'
-                   << "decoder_received_frames=" << decoder_received_frames_ << '\n'
-                   << "decoder_queued_frames=" << decoder_queued_frames_ << '\n'
-                   << "decoder_dropped_frames=" << decoder_dropped_frames_ << '\n'
-                   << "decoder_errors=" << decoder_errors_ << '\n';
+            output << content;
+            output.flush();
         }
         if (MoveFileExW(
                 temporary.c_str(),
@@ -391,6 +446,11 @@ private:
     double android_refresh_hz_{};
     double android_max_refresh_hz_{};
     std::chrono::steady_clock::time_point stream_started_at_{};
+    std::thread publisher_;
+    std::condition_variable publish_cv_;
+    bool publish_dirty_{false};
+    bool publish_stopped_{false};
+    std::string pending_publish_;
 };
 
 struct AndroidDeviceProfile {
@@ -705,8 +765,12 @@ void receive_input_packets(
     WindowsInputInjector& injector,
     bool inject_input,
     InputReceiveStats& stats,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    const std::function<void(std::vector<std::uint8_t>&&)>& send_reply,
+    const std::wstring& vdd_device_name) {
     wireview::protocol::PacketStreamParser parser;
+    std::vector<wireview::host::TabletWindowEntry> window_entries;
+    std::uint32_t window_list_token = 0U;
     std::array<std::uint8_t, 4U * 1024U> buffer{};
     while (running.load()) {
         if (!stream.wait_readable(std::chrono::milliseconds(200))) {
@@ -884,9 +948,65 @@ void receive_input_packets(
                     sample.round_trip_millis < stats.best_clock_sync->round_trip_millis) {
                     stats.best_clock_sync = sample;
                 }
+            } else if (parsed.packet->header.type ==
+                       wireview::protocol::PacketType::control_command) {
+            // Tablet sidebar control commands (type 13). Handled inline on the
+            // receive thread; replies go through send_reply, which shares the
+            // send-side write mutex with the frame sender thread.
+            const auto payload = std::span(parsed.packet->payload);
+            wireview::host::TabletCommand command{};
+            if (!wireview::host::decode_control_command(payload, command)) {
+                std::cerr << "Rejected WireView control command payload\n";
+                continue;
+            }
+            switch (command) {
+                case wireview::host::TabletCommand::escape:
+                    if (!wireview::host::inject_escape_key()) {
+                        std::cerr << "Failed to inject the ESC key\n";
+                    }
+                    break;
+                case wireview::host::TabletCommand::touch_keyboard:
+                    if (!wireview::host::launch_touch_keyboard()) {
+                        std::cerr << "Failed to launch the touch keyboard\n";
+                    }
+                    break;
+                case wireview::host::TabletCommand::rotate_orientation:
+                    wireview::host::request_control_center_rotation();
+                    break;
+                case wireview::host::TabletCommand::request_window_list: {
+                    window_list_token += 1U;
+                    window_entries = wireview::host::enumerate_streaming_windows(
+                        vdd_device_name);
+                    std::cout << "Tablet window list: " << window_entries.size()
+                              << " windows | token " << window_list_token << '\n';
+                    send_reply(wireview::host::encode_window_list(
+                        window_list_token, window_entries));
+                    break;
+                }
+                case wireview::host::TabletCommand::move_window: {
+                    std::uint32_t token = 0U;
+                    std::uint32_t index = 0U;
+                    std::uint8_t target_area = 0U;
+                    if (!wireview::host::decode_window_move(
+                            payload, token, index, target_area)) {
+                        std::cerr << "Rejected WireView window move payload\n";
+                        break;
+                    }
+                    if (token != window_list_token || index >= window_entries.size()) {
+                        std::cerr << "Rejected stale WireView window move request\n";
+                        break;
+                    }
+                    const bool moved = wireview::host::move_window_to_area(
+                        window_entries[index].window, target_area, vdd_device_name);
+                    std::cout << "Tablet window move: index=" << index
+                              << " area=" << static_cast<int>(target_area)
+                              << " -> " << (moved ? "moved" : "failed") << '\n';
+                    break;
+                }
             }
         }
     }
+}
 }
 
 void send_desktop_stream(
@@ -905,10 +1025,86 @@ void send_desktop_stream(
     // Windows headers define a max macro, so use min() here to schedule the
     // first in-stream calibration immediately without invoking that macro.
     auto next_clock_sync = (std::chrono::steady_clock::time_point::min)();
+
+    // Dedicated send thread (audit item P3): the encoder thread used to block
+    // in write_all on every frame, so an adb/USB stall translated directly
+    // into missed beats. Frames now flow through a bounded queue; overflow
+    // drops the oldest frame and the Android pipeline resyncs (drain-to-
+    // latest + watchdog). All stream writes share write_mutex because the
+    // receive thread answers window-list requests on the same socket.
+    std::mutex write_mutex;
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
+    std::deque<std::vector<std::uint8_t>> outbound;
+    bool sender_running{true};
+    std::exception_ptr sender_error;
+    std::uint64_t dropped_frames{0};
+    std::uint64_t slow_writes{0};
+    constexpr std::size_t kMaxQueuedFrames = 4;
+
+    std::thread sender_thread([&] {
+        auto last_slow_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        for (;;) {
+            std::vector<std::uint8_t> bytes;
+            {
+                std::unique_lock lock(queue_mutex);
+                queue_cv.wait(lock, [&] {
+                    return !outbound.empty() || !sender_running;
+                });
+                if (outbound.empty()) {
+                    return;
+                }
+                bytes = std::move(outbound.front());
+                outbound.pop_front();
+            }
+            const auto write_started = std::chrono::steady_clock::now();
+            try {
+                std::lock_guard lock(write_mutex);
+                write_all(stream, bytes);
+            } catch (...) {
+                std::lock_guard lock(queue_mutex);
+                sender_error = std::current_exception();
+                sender_running = false;
+                queue_cv.notify_all();
+                return;
+            }
+            const auto write_elapsed = std::chrono::steady_clock::now() - write_started;
+            if (write_elapsed > std::chrono::milliseconds(5)) {
+                ++slow_writes;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_slow_log > std::chrono::seconds(5)) {
+                    last_slow_log = now;
+                    std::cerr << "WireView frame send stalled for "
+                              << std::chrono::duration<double, std::milli>(
+                                  write_elapsed)
+                                  .count()
+                              << " ms\n";
+                }
+            }
+        }
+    });
+
+    // Enqueue an encoded packet on the wire. Called from the encoder thread
+    // (clock-sync pings, stream config, video frames).
+    auto enqueue_outbound = [&](std::vector<std::uint8_t>&& bytes) {
+        std::lock_guard lock(queue_mutex);
+        if (!sender_running) {
+            if (sender_error) {
+                std::rethrow_exception(sender_error);
+            }
+            throw std::runtime_error("wireview send thread stopped");
+        }
+        if (outbound.size() >= kMaxQueuedFrames) {
+            outbound.pop_front();
+            ++dropped_frames;
+        }
+        outbound.push_back(std::move(bytes));
+        queue_cv.notify_one();
+    };
+
     const auto send_clock_sync_ping = [&] {
         const std::uint64_t sent_at_host = monotonic_micros();
-        write_all(
-            stream,
+        enqueue_outbound(
             wireview::protocol::encode_packet(
                 wireview::protocol::PacketHeader{
                     .type = wireview::protocol::PacketType::ping,
@@ -923,8 +1119,7 @@ void send_desktop_stream(
                           std::uint16_t height,
                           std::uint16_t frame_rate) {
             const auto config = make_avc_stream_config(width, height, frame_rate, 1U);
-            write_all(
-                stream,
+            enqueue_outbound(
                 wireview::protocol::encode_packet(
                     wireview::protocol::PacketHeader{
                         .type = wireview::protocol::PacketType::start_stream,
@@ -956,8 +1151,7 @@ void send_desktop_stream(
             if (keyframe) {
                 flags = flags | wireview::protocol::PacketFlag::keyframe;
             }
-            write_all(
-                stream,
+            enqueue_outbound(
                 wireview::protocol::encode_packet(
                     wireview::protocol::PacketHeader{
                         .type = wireview::protocol::PacketType::video_chunk,
@@ -975,6 +1169,17 @@ void send_desktop_stream(
         },
     };
 
+    auto stop_sender = [&] {
+        {
+            std::lock_guard lock(queue_mutex);
+            sender_running = false;
+        }
+        queue_cv.notify_all();
+        if (sender_thread.joinable()) {
+            sender_thread.join();
+        }
+    };
+
     std::cout << "Capture target: "
               << (capture_display_device.empty()
                       ? std::string("primary display")
@@ -989,10 +1194,37 @@ void send_desktop_stream(
     std::atomic_bool input_running{true};
     std::exception_ptr input_error;
     InputReceiveStats input_stats;
+    // The VDD device name classifies window-list entries (primary vs. the
+    // WireView display vs. other monitors).
+    std::wstring vdd_device_name_wide;
+    if (!capture_display_device.empty()) {
+        const int wide_length = MultiByteToWideChar(
+            CP_UTF8, 0, capture_display_device.data(),
+            static_cast<int>(capture_display_device.size()), nullptr, 0);
+        if (wide_length > 0) {
+            vdd_device_name_wide.resize(static_cast<std::size_t>(wide_length));
+            MultiByteToWideChar(
+                CP_UTF8, 0, capture_display_device.data(),
+                static_cast<int>(capture_display_device.size()),
+                vdd_device_name_wide.data(), wide_length);
+        }
+    }
+    const auto send_reply = [&](std::vector<std::uint8_t>&& bytes) {
+        std::lock_guard lock(write_mutex);
+        write_all(stream, bytes);
+    };
     std::thread input_thread([&] {
         try {
             receive_input_packets(
-                stream, input_running, keyframe_requested, injector, inject_input, input_stats, status);
+                stream,
+                input_running,
+                keyframe_requested,
+                injector,
+                inject_input,
+                input_stats,
+                status,
+                send_reply,
+                vdd_device_name_wide);
         } catch (...) {
             input_error = std::current_exception();
             input_running.store(false);
@@ -1016,10 +1248,12 @@ void send_desktop_stream(
             frame_rate,
             capture_display_device);
     } catch (...) {
+        stop_sender();
         input_running.store(false);
         input_thread.join();
         throw;
     }
+    stop_sender();
     input_running.store(false);
     input_thread.join();
     if (input_error) {
@@ -1029,15 +1263,20 @@ void send_desktop_stream(
         throw std::runtime_error(
             "desktop encoder session failed: " + std::to_string(encoder_result));
     }
-    write_all(
-        stream,
-        wireview::protocol::encode_packet(
-            wireview::protocol::PacketHeader{
-                .type = wireview::protocol::PacketType::stop_stream,
-                .sequence = sequence,
-                .timestamp_micros = monotonic_micros(),
-            },
-            {}));
+    {
+        std::lock_guard lock(write_mutex);
+        write_all(
+            stream,
+            wireview::protocol::encode_packet(
+                wireview::protocol::PacketHeader{
+                    .type = wireview::protocol::PacketType::stop_stream,
+                    .sequence = sequence,
+                    .timestamp_micros = monotonic_micros(),
+                },
+                {}));
+    }
+    std::cout << "Send queue: drops=" << dropped_frames
+              << " | slowWrites=" << slow_writes << '\n';
     std::cout << "Real desktop stream completed\n";
     if (status != nullptr) {
         status->completed();
