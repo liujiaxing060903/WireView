@@ -51,7 +51,7 @@ final class VideoDecoder implements AutoCloseable {
     // A 60 FPS frame budget is 16.67 ms. Two short dequeue attempts made
     // some Qualcomm decoders discard an inter frame just before an output
     // buffer became reusable, which corrupts the reference chain until GOP.
-    private static final long INPUT_RETRY_TIMEOUT_US = 12_000L;
+    private static final long INPUT_RETRY_TIMEOUT_US = 200_000L;
     private static final long OUTPUT_DRAIN_TIMEOUT_US = 0L;
     private static final long OUTPUT_POLL_INTERVAL_MILLIS = 2L;
 
