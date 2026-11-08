@@ -2302,7 +2302,9 @@ std::optional<std::wstring> read_script_status() {
 
     std::wstring formatted = L"状态：" + state_label + L" · " + input_label + L"\n" +
         L"目标：" + (display.empty() ? L"未知" : display) + L" · " + mode;
-    const std::wstring transport_label = transport == L"winusb" ? L"WinUSB" : L"ADB/TCP";
+    const std::wstring transport_label = transport == L"wifi"
+        ? L"WiFi 局域网"
+        : (transport == L"winusb" ? L"WinUSB" : L"ADB/TCP");
     formatted += L"\n连接：" + transport_label + L" · " +
         (client.empty() ? L"未握手" : client) +
         L" · 重连 " + (reconnects.empty() ? L"0" : reconnects) + L" 次";
