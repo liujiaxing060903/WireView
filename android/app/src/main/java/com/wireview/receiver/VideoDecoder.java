@@ -13,7 +13,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -21,6 +22,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 final class VideoDecoder implements AutoCloseable {
     interface Listener {
@@ -63,11 +65,20 @@ final class VideoDecoder implements AutoCloseable {
     private static final long PIPELINE_FLUSH_THRESHOLD_US = 600_000L;
     private static final long OUTPUT_DRAIN_TIMEOUT_US = 0L;
     private static final long OUTPUT_POLL_INTERVAL_MILLIS = 2L;
+    // 自愈重建退避（A8 主张6）：连续重建失败达到阈值后，下次重建需距上次
+    // 至少 2^n·100ms（n 为连续失败计数，指数封顶防溢出）；退避期内到达的
+    // 帧直接丢弃，只保留挂起标记，到期后由下一帧触发重建。
+    private static final int REBUILD_BACKOFF_THRESHOLD = 3;
+    private static final long REBUILD_BACKOFF_BASE_MILLIS = 100L;
+    private static final int REBUILD_BACKOFF_MAX_EXPONENT = 10;
+    // surfaceDestroyed 同步排空等待上限（A8 N4）。
+    private static final long SURFACE_TEARDOWN_TIMEOUT_SECONDS = 2L;
 
     private final CodecProbe.Result selectedDecoder;
     private final boolean forceLowLatency;
     private final Listener listener;
-    private final ExecutorService worker;
+    // 声明为具体类型：queueFrame 需要在提交前预检队列深度（A8 主张1）。
+    private final ThreadPoolExecutor worker;
     private final ScheduledExecutorService outputPoller;
 
     private Surface surface;
@@ -83,6 +94,10 @@ final class VideoDecoder implements AutoCloseable {
     private boolean awaitingRecoveryKeyframe;
     private int decoderErrors;
     private long lastHealthReportNanos;
+    // 以下三个自愈退避状态仅在 worker 线程读写。
+    private int consecutiveRebuildFailures;
+    private long lastRebuildAttemptNanos;
+    private boolean selfHealRebuildPending;
     private final AtomicLong backlogDrops = new AtomicLong();
     private final AtomicLong lastBacklogKeyframeRequestNanos = new AtomicLong();
     private final AtomicLong lastPipelineFlushNanos = new AtomicLong();
@@ -122,10 +137,37 @@ final class VideoDecoder implements AutoCloseable {
     }
 
     void setSurface(Surface newSurface) {
+        // surfaceDestroyed 契约要求返回后不得再使用旧 Surface。移除 Surface
+        // 时（唯一调用方是主线程的 surfaceDestroyed 回调）提交任务并同步
+        // 等待 worker 排空，保证返回后不再有积压帧任务向已销毁的 Surface
+        // 提交（A8 N4）。worker 自身从不调用 setSurface，主线程等待不会
+        // 自锁；worker 里的帧任务最坏阻塞约 80ms，2s 上限绰绰有余。
+        if (newSurface == null) {
+            FutureTask<Void> teardown = new FutureTask<Void>(() -> {
+                releaseCodec();
+                surface = null;
+            }, null);
+            worker.execute(teardown);
+            if (worker.isShutdown()) {
+                // close() 已执行：releaseCodec 已由 close 排入，codec 必然
+                // 已释放，等待只会白等 2s（shutdown 后任务可能被静默拒绝）。
+                return;
+            }
+            try {
+                teardown.get(SURFACE_TEARDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                Log.w(TAG, "Interrupted while waiting for surface teardown");
+            } catch (ExecutionException | TimeoutException error) {
+                Log.w(TAG, "Surface teardown did not complete in time", error);
+            }
+            return;
+        }
         worker.execute(() -> {
+            resetRebuildBackoff();
             releaseCodec();
             surface = newSurface;
-            if (surface != null && surface.isValid() && streamConfig != null) {
+            if (surface.isValid() && streamConfig != null) {
                 configureCodec();
             }
         });
@@ -141,6 +183,8 @@ final class VideoDecoder implements AutoCloseable {
         }
 
         worker.execute(() -> {
+            // 会话级（重新）配置：自愈退避状态一并复位。
+            resetRebuildBackoff();
             // 通道重连（PC 端断线恢复）会重发同一份 start_stream：解码器
             // 仍在位且配置未变时只清状态、等待恢复关键帧，省掉一整套
             // configure+start（参数阶梯探测）。编码器换代（安全桌面重建等）
@@ -177,6 +221,16 @@ final class VideoDecoder implements AutoCloseable {
     }
 
     void queueFrame(Protocol.Packet packet) {
+        // 到达侧预检（A8 主张1 推荐修法）：待解帧积压已满时直接丢弃本帧
+        // （低延迟接收端的标准丢帧位置），使有界队列的拒绝策略退化为兜底
+        // ——控制任务（stop/setSurface/startStream）从此不与帧任务争抢
+        // 队头，不会被拒绝策略的无差别 poll() 丢弃。丢弃计数沿用拒绝路径
+        // 的 backlogDrops 语义，遥测中与 droppedFrames 合并上报。
+        if (worker.getQueue().size() >= MAX_PENDING_FRAMES) {
+            backlogDrops.incrementAndGet();
+            requestBacklogKeyframe();
+            return;
+        }
         long arrivalMicros = System.nanoTime() / 1_000L;
         worker.execute(() -> queueFrameOnWorker(packet, arrivalMicros));
     }
@@ -185,6 +239,7 @@ final class VideoDecoder implements AutoCloseable {
         worker.execute(() -> {
             releaseCodec();
             streamConfig = null;
+            resetRebuildBackoff();
             listener.onDecoderStatus("视频流已停止");
         });
     }
@@ -256,6 +311,11 @@ final class VideoDecoder implements AutoCloseable {
 
     private void queueFrameOnWorker(Protocol.Packet packet, long arrivalMicros) {
         if (codec == null) {
+            if (selfHealRebuildPending) {
+                // 上次失败后的重建被退避推迟：由新到的帧检查退避是否到期，
+                // 到期即重建（不到期则本帧按退避语义丢弃）。
+                attemptSelfHealingRebuild();
+            }
             return;
         }
         maybeFlushPipeline(arrivalMicros);
@@ -310,6 +370,10 @@ final class VideoDecoder implements AutoCloseable {
                 Log.i(TAG, "Recovery keyframe queued: " + packet.header.sequence);
             }
             ++queuedFrames;
+            if (consecutiveRebuildFailures > 0) {
+                // 重建后的 codec 成功排入一帧：证明自愈有效，退避计数清零。
+                consecutiveRebuildFailures = 0;
+            }
             reportDecoderHealth(false);
             // Drain any output that became ready while this input was submitted.
             drainOutput(OUTPUT_DRAIN_TIMEOUT_US);
@@ -318,14 +382,63 @@ final class VideoDecoder implements AutoCloseable {
             Log.e(TAG, "Decoder failed while queuing a frame", error);
             ++decoderErrors;
             releaseCodec();
-            // 自愈：surface 与流配置仍有效时立即重建解码器，而不是停在
-            // "解码失败" 直到用户手动停止会话。
-            if (surface != null && surface.isValid() && streamConfig != null) {
-                configureCodec();
-            }
-            reportDecoderHealth(true);
+            // 先报失败再重建：若重建成功，configureCodec 的"解码器已启动"
+            // 会覆盖这条状态，避免终态停留在误导性的"解码失败"。
             listener.onDecoderStatus("解码失败：" + error.getMessage());
+            attemptSelfHealingRebuild();
+            reportDecoderHealth(true);
         }
+    }
+
+    /**
+     * 解码器异常后的自愈重建（A8 主张6+N2）：surface 与流配置仍有效时重建
+     * 解码器；连续失败达到 {@link #REBUILD_BACKOFF_THRESHOLD} 后按
+     * 2^n·100ms 指数退避，退避期内到达的帧直接丢弃、只保留挂起标记，由
+     * 后续帧在到期后重试——避免坏状态的 codec 在 60fps 帧驱动下每帧触发
+     * 一次完整的 5 档参数阶梯重建。configureCodec 成功后与 startStream
+     * 重连路径对齐：置 awaitingRecoveryKeyframe 并请求关键帧，避免孤 P 帧
+     * 喂给全新 codec 花屏到下一个 GOP。全档失败（codec 仍为 null）维持
+     * 既有的"等下一次 startStream"终态，退避不改变它。
+     */
+    private void attemptSelfHealingRebuild() {
+        if (surface == null || !surface.isValid() || streamConfig == null) {
+            // 没有可用渲染目标或流配置：不自愈，交给 setSurface/startStream。
+            selfHealRebuildPending = false;
+            return;
+        }
+        long now = System.nanoTime();
+        if (consecutiveRebuildFailures >= REBUILD_BACKOFF_THRESHOLD) {
+            long backoffNanos = TimeUnit.MILLISECONDS.toNanos(
+                    REBUILD_BACKOFF_BASE_MILLIS
+                            * (1L << Math.min(
+                                    consecutiveRebuildFailures,
+                                    REBUILD_BACKOFF_MAX_EXPONENT)));
+            if (now - lastRebuildAttemptNanos < backoffNanos) {
+                // 退避期内：跳过重建仅丢帧。
+                selfHealRebuildPending = true;
+                ++droppedFrames;
+                reportDecoderHealth(true);
+                return;
+            }
+        }
+        selfHealRebuildPending = false;
+        ++consecutiveRebuildFailures;
+        lastRebuildAttemptNanos = now;
+        configureCodec();
+        if (codec != null) {
+            // configureCodec 内部的 resetDecoderHealth 会清掉该标志，必须在
+            // 成功返回后重新置位（对齐 startStream 重连路径的做法）。
+            awaitingRecoveryKeyframe = true;
+            listener.onKeyframeRequired(
+                    droppedFrames + backlogDrops.get(),
+                    "解码器自愈重建，等待关键帧");
+        }
+    }
+
+    private void resetRebuildBackoff() {
+        consecutiveRebuildFailures = 0;
+        lastRebuildAttemptNanos = 0L;
+        selfHealRebuildPending = false;
     }
 
     private void requestBacklogKeyframe() {
@@ -405,11 +518,9 @@ final class VideoDecoder implements AutoCloseable {
                         Log.e(TAG, "Decoder failed while polling output", error);
                         ++decoderErrors;
                         releaseCodec();
-                        if (surface != null && surface.isValid() && streamConfig != null) {
-                            configureCodec();
-                        }
-                        reportDecoderHealth(true);
                         listener.onDecoderStatus("解码失败：" + error.getMessage());
+                        attemptSelfHealingRebuild();
+                        reportDecoderHealth(true);
                         return;
                     }
                     if (!pendingFrameTimings.isEmpty()) {

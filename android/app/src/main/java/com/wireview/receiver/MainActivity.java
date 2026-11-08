@@ -70,7 +70,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     private FrameLayout videoContainer;
     private SurfaceView displaySurface;
     private AspectPreviewView previewView;
-    private ConnectionClient connection;
+    // volatile：主线程写（重插/换 transport），连接线程与解码 worker 读
+    // （sendPong/遥测/requestKeyframe），避免读到 stale 引用错发旧会话（A8 N7）。
+    private volatile ConnectionClient connection;
     private boolean activityStarted;
     private boolean usbPermissionRequested;
     private boolean usbReceiverRegistered;
@@ -666,6 +668,10 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     public String requestPairingPin(String pcName) {
         final CountDownLatch latch = new CountDownLatch(1);
         final String[] submitted = new String[1];
+        // 超时/中断后由连接线程主动撤下对话框，并丢弃迟到的提交输入，
+        // 防止对话框泄漏、叠框和 PIN 静默写入已失效的 latch（A8 N5）。
+        final AlertDialog[] dialogHolder = new AlertDialog[1];
+        final boolean[] pairingExpired = new boolean[1];
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) {
                 latch.countDown();
@@ -675,12 +681,16 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
             pinInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
             pinInput.setHint("6 位数字");
-            new AlertDialog.Builder(this)
+            dialogHolder[0] = new AlertDialog.Builder(this)
                     .setTitle("WireView 配对")
                     .setMessage("电脑 " + (pcName == null ? "" : pcName)
                             + " 请求配对。\n请输入电脑上显示的 6 位 PIN。")
                     .setView(pinInput)
                     .setPositiveButton("配对", (dialog, which) -> {
+                        if (pairingExpired[0]) {
+                            // 迟到输入：连接线程已按超时返回，丢弃。
+                            return;
+                        }
                         submitted[0] = pinInput.getText().toString().trim();
                         latch.countDown();
                     })
@@ -688,13 +698,32 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                     .setOnCancelListener(dialog -> latch.countDown())
                     .show();
         });
+        boolean expired = false;
         try {
             // Generous ceiling: the PC side times its own AUTH read at
             // 130 s during pairing, so this only bounds the dialog leak if
             // the user walks away.
-            latch.await(120, TimeUnit.SECONDS);
-        } catch (InterruptedException ignored) {
+            expired = !latch.await(120, TimeUnit.SECONDS);
+        } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
+            expired = true;
+        }
+        if (expired) {
+            pairingExpired[0] = true;
+            final AlertDialog dialog = dialogHolder[0];
+            if (dialog != null) {
+                runOnUiThread(() -> {
+                    try {
+                        dialog.dismiss();
+                    } catch (RuntimeException dismissError) {
+                        // Activity 已销毁等极端场景下 dismiss 失败可接受。
+                        PersistentDiagnosticLog.record(
+                                "MainActivity",
+                                "pairing dialog dismiss failed",
+                                dismissError);
+                    }
+                });
+            }
         }
         return submitted[0];
     }
@@ -845,13 +874,17 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         }
         runOnUiThread(() -> {
             if (status.startsWith("已连接") || status.startsWith("握手成功")) {
+                // 心跳类：维持既有折叠行为——高频心跳统一落定为"已连接"，
+                // 且不覆盖显式通知（idleNoticeActive）。
                 awaitingHostReconnect = false;
                 inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
                 hasSeenHostConnection = true;
                 if (idleNoticeActive) {
                     return;
                 }
+                statusView.setText("已连接");
             } else if (status.startsWith("等待电脑端") && hasSeenHostConnection) {
+                // 短暂断线宽限：3 秒内保持"已连接"，到期仍未恢复才如实提示。
                 if (idleNoticeActive) {
                     return;
                 }
@@ -861,12 +894,15 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
                 inputHandler.postDelayed(showWaitingAfterReconnectGrace, 3_000L);
                 statusView.setText("已连接");
-                refreshDeviceInfo();
+            } else if (idleNoticeActive) {
+                // 显式通知（停止/已创建副屏/主机退出等）不被任何非心跳状态
+                // 覆盖——保护移到 setText 之前，对所有非心跳前缀生效（A8 主张3）。
                 return;
+            } else {
+                // 其余状态原文显示：WiFi 开关反馈、解码失败、配对结果、
+                // 授权提示等，不再被兜底折叠成"已连接"而静默丢失。
+                statusView.setText(status);
             }
-            statusView.setText(hasSeenHostConnection
-                    ? "已连接"
-                    : "等待电脑端\n请连接 USB 并在电脑打开 WireView 控制中心。");
             refreshDeviceInfo();
         });
     }
@@ -1130,6 +1166,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         int height = Short.toUnsignedInt(input.getShort());
         int frameRate = Short.toUnsignedInt(input.getShort());
         runOnUiThread(() -> {
+            // 预览同样整面板隐藏（含 wifiRow），触摸截获问题与视频会话一致；
+            // 退出预览由 setStreamingPresentation(false) 恢复面板可见。
+            connectionPanel.setVisibility(View.GONE);
             statusView.setVisibility(View.GONE);
             deviceInfoView.setVisibility(View.GONE);
             versionView.setVisibility(View.GONE);
@@ -1150,6 +1189,12 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     }
 
     private void setStreamingPresentation(boolean streaming) {
+        // 会话中隐藏整个连接面板（含 wifiRow，不只三行）：面板壳会被
+        // zOrderOnTop 的视频 Surface 视觉盖住，但 view 树的触摸命中不受
+        // Surface 层级影响，残留的 WiFi 开关行会停在屏幕中央截获触摸并
+        // 误切传输开关（A8 主张7/N1）。三行的可见性同步维护，退出会话
+        // 时面板与三行一并恢复 VISIBLE。
+        connectionPanel.setVisibility(streaming ? View.GONE : View.VISIBLE);
         statusView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         deviceInfoView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         versionView.setVisibility(streaming ? View.GONE : View.VISIBLE);
@@ -1310,8 +1355,10 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         } else if (packet.header.type == Protocol.TYPE_VIDEO_CHUNK) {
             videoDecoder.queueFrame(packet);
         } else if (packet.header.type == Protocol.TYPE_STOP_STREAM) {
+            // showExplicitStopNotice 内部已调用 videoDecoder.stopStream()；
+            // 连接线程不再直调第二次（幂等但多余，还会多一次状态回调，
+            // A8 主张2）。
             runOnUiThread(this::showExplicitStopNotice);
-            videoDecoder.stopStream();
         } else if (packet.header.type == Protocol.TYPE_DEVICE_PREVIEW) {
             showDevicePreview(packet.payload);
         } else if (packet.header.type == Protocol.TYPE_WINDOW_LIST) {

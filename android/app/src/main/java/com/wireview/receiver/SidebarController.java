@@ -126,6 +126,54 @@ final class SidebarController {
         this.windowManager = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
     }
 
+    // --- 窗口管理安全封装（A8 主张5+N3）-------------------------------------
+    // Activity 窗口销毁时 WMS 会随父 token 自动移除 TYPE_APPLICATION_PANEL
+    // 子窗口且没有任何回调通知，attached 标志因此可能与真实状态脱节；此后
+    // 的 add/update/remove 会抛 BadTokenException 或 IllegalArgumentException
+    // （View not attached to window manager），主线程未捕获即崩溃。统一封装：
+    // 吞异常、记 PersistentDiagnosticLog；rootLayout 的失败把 attached 复位
+    // （下次 show() 可重新挂载），imeBar 的失败只记日志（由 hideIme/detach
+    // 自行清理，不影响 attached 语义）。
+
+    private boolean safelyAddView(View view, WindowManager.LayoutParams params) {
+        try {
+            windowManager.addView(view, params);
+            return true;
+        } catch (WindowManager.BadTokenException | IllegalArgumentException error) {
+            PersistentDiagnosticLog.record("Sidebar", "window addView failed", error);
+            if (view == rootLayout) {
+                attached = false;
+            }
+            return false;
+        }
+    }
+
+    private boolean safelyUpdateViewLayout(View view, WindowManager.LayoutParams params) {
+        try {
+            windowManager.updateViewLayout(view, params);
+            return true;
+        } catch (WindowManager.BadTokenException | IllegalArgumentException error) {
+            PersistentDiagnosticLog.record("Sidebar", "window updateViewLayout failed", error);
+            if (view == rootLayout) {
+                attached = false;
+            }
+            return false;
+        }
+    }
+
+    private boolean safelyRemoveView(View view) {
+        try {
+            windowManager.removeView(view);
+            return true;
+        } catch (WindowManager.BadTokenException | IllegalArgumentException error) {
+            PersistentDiagnosticLog.record("Sidebar", "window removeView failed", error);
+            if (view == rootLayout) {
+                attached = false;
+            }
+            return false;
+        }
+    }
+
     // --- 生命周期 ------------------------------------------------------------
 
     void show() {
@@ -143,8 +191,7 @@ final class SidebarController {
             return;
         }
         setExpanded(false, false);
-        windowManager.addView(rootLayout, windowParams);
-        attached = true;
+        attached = safelyAddView(rootLayout, windowParams);
     }
 
     void hide() {
@@ -159,12 +206,12 @@ final class SidebarController {
 
     void detach() {
         if (attached) {
-            windowManager.removeView(rootLayout);
+            safelyRemoveView(rootLayout);
             attached = false;
         }
         imeShowing = false;
         if (imeBar != null && imeBar.getParent() != null) {
-            windowManager.removeView(imeBar);
+            safelyRemoveView(imeBar);
         }
         if (keyboardRow != null) {
             keyboardRow.setAlpha(1f);
@@ -466,7 +513,7 @@ final class SidebarController {
                 if (wantRight != edgeOnRight) {
                     dockEdge(wantRight);
                 } else {
-                    windowManager.updateViewLayout(rootLayout, windowParams);
+                    safelyUpdateViewLayout(rootLayout, windowParams);
                 }
                 return true;
             }
@@ -486,7 +533,7 @@ final class SidebarController {
         edgeOnRight = right;
         windowParams.gravity = (right ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL;
         windowParams.x = expanded ? 0 : -dp(4f);
-        windowManager.updateViewLayout(rootLayout, windowParams);
+        safelyUpdateViewLayout(rootLayout, windowParams);
     }
 
     // --- 输入法输入条 ----------------------------------------------------------
@@ -766,10 +813,7 @@ final class SidebarController {
             if (imeParams.token == null) {
                 return;
             }
-            try {
-                windowManager.addView(imeBar, imeParams);
-            } catch (WindowManager.BadTokenException error) {
-                PersistentDiagnosticLog.record("Sidebar", "IME bar attach failed", error);
+            if (!safelyAddView(imeBar, imeParams)) {
                 return;
             }
         }
@@ -845,7 +889,7 @@ final class SidebarController {
             }
             imeInput.clearFocus();
             imeInput.setText("");
-            windowManager.removeView(imeBar);
+            safelyRemoveView(imeBar);
         }
         if (wasShowing && keyboardRow != null) {
             keyboardRow.setAlpha(0.75f);
@@ -873,7 +917,7 @@ final class SidebarController {
         }
         windowParams.x = target ? 0 : -dp(4f);
         if (attached) {
-            windowManager.updateViewLayout(rootLayout, windowParams);
+            safelyUpdateViewLayout(rootLayout, windowParams);
         }
         if (target) {
             panel.setVisibility(View.VISIBLE);
@@ -911,34 +955,48 @@ final class SidebarController {
     }
 
     private void applyWindowList(byte[] payload) {
-        windows.clear();
         if (payload == null || payload.length < 6) {
             listStatus.setText("窗口列表无效");
             return;
         }
+        // 先完整解析到局部列表与局部 token，全部成功后一次性提交
+        // windows/listToken/listRows（A8 主张4+A9 N6）：半解析失败时旧行
+        // 配新 token 的错位组合会让点按把错误的窗口移到错误的屏幕。
+        final ArrayList<WindowEntry> parsed = new ArrayList<>();
+        final int parsedToken;
         ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
-        listToken = input.getInt();
-        int count = input.getShort() & 0xffff;
         try {
+            parsedToken = input.getInt();
+            int count = input.getShort() & 0xffff;
             for (int index = 0; index < count; ++index) {
                 long handle = input.getLong();
                 int area = input.get() & 0xff;
                 int titleBytes = input.getShort() & 0xffff;
                 byte[] titleBytesBuffer = new byte[titleBytes];
                 input.get(titleBytesBuffer);
-                windows.add(new WindowEntry(handle, area, new String(titleBytesBuffer,
-                        java.nio.charset.StandardCharsets.UTF_8)));
+                parsed.add(new WindowEntry(handle, area,
+                        new String(titleBytesBuffer, StandardCharsets.UTF_8)));
             }
         } catch (java.nio.BufferUnderflowException error) {
+            // 解析失败：不动现有 windows/listToken/listRows，三者保持一致。
             listStatus.setText("窗口列表损坏");
             return;
         }
+        if (input.hasRemaining()) {
+            // 尾部残留字节：payload 与声明的条目数不符，同样拒绝提交。
+            listStatus.setText("窗口列表损坏");
+            return;
+        }
+        // 一次性提交：token、列表与行视图来自同一次解析结果。
+        windows.clear();
+        windows.addAll(parsed);
+        listToken = parsedToken;
+        listRows.removeAllViews();
         if (windows.isEmpty()) {
             listStatus.setText("没有可切换的窗口");
             return;
         }
         listStatus.setText("点按窗口即移到另一块屏幕");
-        listRows.removeAllViews();
         for (int index = 0; index < windows.size(); ++index) {
             WindowEntry entry = windows.get(index);
             listRows.addView(windowRow(entry, index));
