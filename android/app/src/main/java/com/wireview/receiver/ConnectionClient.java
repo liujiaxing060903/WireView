@@ -319,12 +319,17 @@ final class ConnectionClient implements AutoCloseable {
             throw new Protocol.ProtocolException("first packet is not AUTH_CHALLENGE");
         }
         final Protocol.AuthChallenge challenge = Protocol.parseAuthChallenge(packet.payload);
+        // v2 result integrity: only a PC that set the auth_v2 flag learns we
+        // speak schema 2, and only schema 2 makes the tagged (and, when
+        // pairing, credential-masking) AUTH_RESULT acceptable.
+        final boolean pcIsV2 = (packet.header.flags & Protocol.FLAG_AUTH_V2) != 0;
         final String androidId = WifiPairing.androidId(appContext);
         final byte[] androidIdBytes = androidId.getBytes(StandardCharsets.US_ASCII);
         final byte[] nonceTablet = new byte[Protocol.AUTH_NONCE_SIZE];
         new SecureRandom().nextBytes(nonceTablet);
         final byte[] mac = new byte[Protocol.AUTH_MAC_SIZE];
         byte status = Protocol.AUTH_STATUS_NOT_PAIRED;
+        byte[] kdfKey = null;
 
         final byte[] stored = credentials.get(challenge.pcUuid);
         try {
@@ -342,7 +347,7 @@ final class ConnectionClient implements AutoCloseable {
                     publishStatus("已取消配对");
                     throw new IOException("pairing cancelled on the tablet");
                 }
-                final byte[] kdfKey = WifiAuthCrypto.derivePairingKey(
+                kdfKey = WifiAuthCrypto.derivePairingKey(
                         pin.toCharArray(), challenge.pcUuid, androidIdBytes,
                         challenge.noncePc, nonceTablet);
                 final byte[] computed = WifiAuthCrypto.computeMac(
@@ -368,20 +373,37 @@ final class ConnectionClient implements AutoCloseable {
         synchronized (writeLock) {
             output.write(Protocol.encode(
                     new Protocol.Header(Protocol.TYPE_AUTH_RESPONSE, 0, 1L, timestampMicros),
-                    Protocol.encodeAuthResponse(response)));
+                    Protocol.encodeAuthResponse(response, pcIsV2)));
             output.flush();
         }
         PersistentDiagnosticLog.record(
                 "ConnectionClient",
-                "auth response sent: mode=" + challenge.mode + " status=" + status);
+                "auth response sent: mode=" + challenge.mode + " status=" + status
+                        + " v2=" + pcIsV2);
 
         Protocol.Packet resultPacket = Protocol.readPacket(input);
         if (resultPacket.header.type != Protocol.TYPE_AUTH_RESULT) {
             throw new Protocol.ProtocolException("PC did not return AUTH_RESULT");
         }
         final Protocol.AuthResult result = Protocol.parseAuthResult(resultPacket.payload);
+        // The key material the PC would have to prove possession of. It is
+        // null exactly when this tablet could not produce a proof either
+        // (no credential stored and no PIN derived).
+        final byte[] proofKey = kdfKey != null ? kdfKey : stored;
         if (result.result == Protocol.AUTH_RESULT_PAIRING_COMPLETE) {
-            credentials.put(challenge.pcUuid, result.credential, result.message);
+            if (proofKey == null || !pcIsV2 || result.tag == null) {
+                // A legacy PC sends the credential in clear and cannot prove
+                // anything; a v2 result must always carry the tag.
+                publishStatus("配对失败：电脑端版本过旧（缺少完整性保护）");
+                throw new IOException(
+                        "pairing result lacks the v2 integrity proof (upgrade the PC)");
+            }
+            verifyResultTag(proofKey, result, result.credential,
+                    challenge.noncePc, nonceTablet);
+            final byte[] credential = WifiAuthCrypto.xorMask(
+                    result.credential,
+                    WifiAuthCrypto.wrapMask(proofKey, challenge.noncePc, nonceTablet));
+            credentials.put(challenge.pcUuid, credential, result.message);
             PersistentDiagnosticLog.record(
                     "ConnectionClient", "pairing complete with " + result.message);
             publishStatus("配对成功：" + result.message);
@@ -389,8 +411,46 @@ final class ConnectionClient implements AutoCloseable {
         } else if (result.result == Protocol.AUTH_RESULT_REJECTED) {
             publishStatus("电脑端拒绝了此次连接：" + result.message);
             throw new IOException("PC rejected this device: " + result.message);
+        } else {
+            // AUTH_RESULT_ACCEPTED: the PC is only credible when this tablet
+            // itself holds matching key material (status OK). Without a
+            // stored credential the challenge/response above proved nothing
+            // and an accept would be an unauthenticated takeover.
+            if (status != Protocol.AUTH_STATUS_OK) {
+                PersistentDiagnosticLog.record(
+                        "ConnectionClient",
+                        "rejected AUTH_RESULT_ACCEPTED without a stored credential");
+                throw new IOException("PC accepted without any shared credential");
+            }
+            if (pcIsV2) {
+                if (result.tag == null) {
+                    throw new IOException("auth result lacks the v2 integrity tag");
+                }
+                verifyResultTag(proofKey, result, null, challenge.noncePc, nonceTablet);
+            }
+            // Legacy PC + status OK: keep historical compatibility; the
+            // tablet's own response MAC already bound the session keys.
         }
-        // AUTH_RESULT_ACCEPTED falls through to the WVR1 HELLO exchange.
+    }
+
+    /** Constant-time check of the v2 AUTH_RESULT tag. */
+    private void verifyResultTag(
+            byte[] proofKey,
+            Protocol.AuthResult result,
+            byte[] credentialView,
+            byte[] noncePc,
+            byte[] nonceTablet)
+            throws IOException {
+        try {
+            final byte[] expected = WifiAuthCrypto.computeResultTag(
+                    proofKey, result.result, result.message, credentialView,
+                    noncePc, nonceTablet);
+            if (!java.security.MessageDigest.isEqual(expected, result.tag)) {
+                throw new IOException("AUTH_RESULT integrity tag mismatch");
+            }
+        } catch (java.security.GeneralSecurityException error) {
+            throw new IOException("result tag verification failed", error);
+        }
     }
 
     void sendInputBatch(byte[] payload) {

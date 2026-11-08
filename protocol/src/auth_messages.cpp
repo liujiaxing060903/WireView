@@ -6,6 +6,8 @@ namespace wireview::protocol {
 namespace {
 
 constexpr std::uint8_t kAuthSchemaVersion = 1U;
+constexpr std::uint8_t kAuthSchemaV2 = 2U;
+constexpr std::uint8_t kAuthCapsV2 = 1U;
 
 void put_u16(std::vector<std::uint8_t>& out, std::uint16_t value) {
     out.push_back(static_cast<std::uint8_t>(value & 0xffU));
@@ -104,17 +106,20 @@ std::optional<AuthChallenge> parse_auth_challenge(std::span<const std::uint8_t> 
     return challenge;
 }
 
-std::vector<std::uint8_t> encode_auth_response(const AuthResponse& response) {
+std::vector<std::uint8_t> encode_auth_response(const AuthResponse& response, bool v2) {
     std::vector<std::uint8_t> payload;
     payload.reserve(
         4U + kAuthNonceSize + response.android_id.size() + response.device_name.size() +
-        kAuthMacSize);
-    payload.push_back(kAuthSchemaVersion);
+        kAuthMacSize + (v2 ? 1U : 0U));
+    payload.push_back(v2 ? kAuthSchemaV2 : kAuthSchemaVersion);
     payload.push_back(static_cast<std::uint8_t>(response.status));
     put_string(payload, response.android_id);
     put_string(payload, response.device_name);
     put_bytes(payload, response.nonce_tablet);
     put_bytes(payload, response.mac);
+    if (v2) {
+        payload.push_back(kAuthCapsV2);
+    }
     return payload;
 }
 
@@ -123,13 +128,23 @@ std::optional<AuthResponse> parse_auth_response(std::span<const std::uint8_t> pa
     AuthResponse response;
     std::uint8_t schema = 0;
     std::uint8_t status = 0;
-    if (!reader.read_u8(&schema) || schema != kAuthSchemaVersion ||
+    std::uint8_t caps = 0;
+    if (!reader.read_u8(&schema) ||
+        (schema != kAuthSchemaVersion && schema != kAuthSchemaV2) ||
         !reader.read_u8(&status) || status > static_cast<std::uint8_t>(AuthStatus::not_paired) ||
         !reader.read_string(kMaxAuthAndroidId, &response.android_id) ||
         !reader.read_string(kMaxAuthDeviceName, &response.device_name) ||
         !reader.read_bytes(response.nonce_tablet.size(), response.nonce_tablet.data()) ||
-        !reader.read_bytes(response.mac.size(), response.mac.data()) ||
-        !reader.at_end()) {
+        !reader.read_bytes(response.mac.size(), response.mac.data())) {
+        return std::nullopt;
+    }
+    if (schema == kAuthSchemaV2) {
+        // The v2 tail is exactly one capability byte for now.
+        if (!reader.read_u8(&caps) || caps != kAuthCapsV2 || !reader.at_end()) {
+            return std::nullopt;
+        }
+        response.v2 = true;
+    } else if (!reader.at_end()) {
         return std::nullopt;
     }
     response.status = static_cast<AuthStatus>(status);
@@ -138,12 +153,15 @@ std::optional<AuthResponse> parse_auth_response(std::span<const std::uint8_t> pa
 
 std::vector<std::uint8_t> encode_auth_result(const AuthResultPayload& result) {
     std::vector<std::uint8_t> payload;
-    payload.reserve(4U + result.message.size() + kAuthKeySize);
+    payload.reserve(4U + result.message.size() + kAuthKeySize + (result.v2 ? kAuthMacSize : 0U));
     payload.push_back(kAuthSchemaVersion);
     payload.push_back(static_cast<std::uint8_t>(result.result));
     put_string(payload, result.message);
     if (result.result == AuthResult::pairing_complete) {
         put_bytes(payload, result.credential);
+    }
+    if (result.v2) {
+        put_bytes(payload, result.tag);
     }
     return payload;
 }
@@ -163,7 +181,15 @@ std::optional<AuthResultPayload> parse_auth_result(std::span<const std::uint8_t>
         !reader.read_bytes(result.credential.size(), result.credential.data())) {
         return std::nullopt;
     }
-    return reader.at_end() ? std::optional<AuthResultPayload>(result) : std::nullopt;
+    if (reader.at_end()) {
+        return result;
+    }
+    // v2 tail: exactly one 32 byte tag and nothing else.
+    if (!reader.read_bytes(result.tag.size(), result.tag.data()) || !reader.at_end()) {
+        return std::nullopt;
+    }
+    result.v2 = true;
+    return result;
 }
 
 }  // namespace wireview::protocol

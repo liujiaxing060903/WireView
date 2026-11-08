@@ -50,6 +50,10 @@ enum class PacketFlag : std::uint8_t {
     keyframe = 1U << 0U,
     final_chunk = 1U << 1U,
     acknowledgement_required = 1U << 2U,
+    // AUTH_CHALLENGE only: the PC speaks the v2 AUTH integrity layer. A
+    // tablet that answers schema 2 gets a tagged (and, when pairing, masked)
+    // AUTH_RESULT; older tablets answer schema 1 and keep the legacy bytes.
+    auth_v2 = 1U << 3U,
 };
 
 constexpr PacketFlag operator|(PacketFlag left, PacketFlag right) noexcept {

@@ -37,6 +37,26 @@ namespace wireview::host {
     std::span<const std::uint8_t> nonce_pc,
     std::span<const std::uint8_t> nonce_tablet);
 
+// v2 AUTH_RESULT integrity tag:
+// HMAC-SHA256(key, "WV1-result" || outcome || message || credential_view
+//             || nonce_pc || nonce_tablet).
+// credential_view is empty for accepted/rejected results and carries the
+// on-wire (masked) credential bytes for pairing_complete.
+[[nodiscard]] std::vector<std::uint8_t> result_mac(
+    std::span<const std::uint8_t> key,
+    std::uint8_t outcome,
+    std::string_view message,
+    std::span<const std::uint8_t> credential_view,
+    std::span<const std::uint8_t> nonce_pc,
+    std::span<const std::uint8_t> nonce_tablet);
+
+// v2 pairing credential mask: HMAC-SHA256(kdf_key, "WV1-wrap" || nonce_pc
+// || nonce_tablet); the credential travels XOR masked with it.
+[[nodiscard]] std::vector<std::uint8_t> wrap_mask(
+    std::span<const std::uint8_t> kdf_key,
+    std::span<const std::uint8_t> nonce_pc,
+    std::span<const std::uint8_t> nonce_tablet);
+
 // CryptProtectData (DPAPI, current user scope) for credentials at rest.
 [[nodiscard]] std::vector<std::uint8_t> dpapi_protect(std::span<const std::uint8_t> plain);
 

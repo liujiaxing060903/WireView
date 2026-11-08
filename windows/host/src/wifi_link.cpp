@@ -4,7 +4,6 @@
 #include "wireview/protocol.hpp"
 
 #include <algorithm>
-#include <algorithm>
 #include <chrono>
 #include <stdexcept>
 #include <string>
@@ -25,9 +24,11 @@ using wireview::protocol::AuthResponse;
 void write_packet(
     ReliableByteStream& stream,
     wireview::protocol::PacketType type,
-    std::span<const std::uint8_t> payload) {
+    std::span<const std::uint8_t> payload,
+    wireview::protocol::PacketFlag flags = wireview::protocol::PacketFlag::none) {
     wireview::protocol::PacketHeader header{
         .type = type,
+        .flags = flags,
         .sequence = monotonic_micros(),
         .timestamp_micros = monotonic_micros(),
     };
@@ -57,6 +58,9 @@ WifiPeerInfo perform_wifi_handshake(
     std::string_view pin,
     bool expect_pairing_completion,
     std::vector<std::uint8_t>* out_credential) {
+    if (identity.pc_uuid.size() != wireview::protocol::kAuthUuidSize) {
+        throw std::runtime_error("the PC identity uuid has the wrong size");
+    }
     const std::vector<std::uint8_t> nonce_pc = random_bytes(
         wireview::protocol::kAuthNonceSize);
     AuthChallenge challenge{};
@@ -64,10 +68,15 @@ WifiPeerInfo perform_wifi_handshake(
     std::copy(nonce_pc.begin(), nonce_pc.end(), challenge.nonce_pc.begin());
     std::copy(identity.pc_uuid.begin(), identity.pc_uuid.end(), challenge.pc_uuid.begin());
     challenge.host_name = identity.host_name;
+    // The auth_v2 flag advertises the tagged-result layer: a v2 tablet
+    // answers AUTH_RESPONSE schema 2 and then requires the result tag (and,
+    // when pairing, the masked credential); a legacy tablet keeps answering
+    // schema 1 and receives the historical byte format unchanged.
     write_packet(
         stream,
         wireview::protocol::PacketType::auth_challenge,
-        wireview::protocol::encode_auth_challenge(challenge));
+        wireview::protocol::encode_auth_challenge(challenge),
+        wireview::protocol::PacketFlag::auth_v2);
 
     // Pairing waits for the user to type the PIN on the tablet (the dialog
     // allows 120 s); the recurring authentication is machine-timed.
@@ -82,9 +91,12 @@ WifiPeerInfo perform_wifi_handshake(
     if (!response) {
         throw std::runtime_error("tablet AUTH_RESPONSE payload is invalid");
     }
+    const bool peer_is_v2 = response->v2;
     const std::vector<std::uint8_t> android_id_bytes(
         response->android_id.begin(), response->android_id.end());
     if (response->status == wireview::protocol::AuthStatus::not_paired) {
+        // Rejections stay in the legacy format: no shared key exists yet,
+        // and a spoofed reject is a connection-level denial at worst.
         AuthResultPayload rejection{};
         rejection.result = wireview::protocol::AuthResult::rejected;
         rejection.message = mode == wireview::protocol::AuthMode::pairing
@@ -150,10 +162,39 @@ WifiPeerInfo perform_wifi_handshake(
         credential = random_bytes(wireview::protocol::kAuthKeySize);
         result.result = wireview::protocol::AuthResult::pairing_complete;
         result.message = identity.host_name;
-        std::copy(credential.begin(), credential.end(), result.credential.begin());
+        if (peer_is_v2) {
+            // The long-term credential never travels in clear text: XOR it
+            // with an HMAC stream keyed by the PIN-derived key that both
+            // ends hold at this point of the exchange.
+            const auto mask = wrap_mask(verification_key, nonce_pc, response->nonce_tablet);
+            for (std::size_t index = 0U; index < credential.size(); ++index) {
+                result.credential[index] =
+                    static_cast<std::uint8_t>(credential[index] ^ mask[index]);
+            }
+        } else {
+            std::copy(credential.begin(), credential.end(), result.credential.begin());
+        }
     } else {
         result.result = wireview::protocol::AuthResult::accepted;
         result.message = identity.host_name;
+    }
+    if (peer_is_v2) {
+        // The tag is the PC-side proof over the whole outcome; the tablet
+        // rejects any accepted/pairing_complete result that lacks it.
+        result.v2 = true;
+        const std::span<const std::uint8_t> credential_view{
+            result.credential.data(),
+            result.result == wireview::protocol::AuthResult::pairing_complete
+                ? result.credential.size()
+                : 0U};
+        const auto tag = result_mac(
+            verification_key,
+            static_cast<std::uint8_t>(result.result),
+            result.message,
+            credential_view,
+            nonce_pc,
+            response->nonce_tablet);
+        std::copy(tag.begin(), tag.end(), result.tag.begin());
     }
     write_packet(
         stream,

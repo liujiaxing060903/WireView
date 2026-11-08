@@ -233,6 +233,26 @@ void auth_message_test() {
     }
     check(!parse_auth_response({}).has_value(), "empty response must be rejected");
 
+    // v2 response: schema 2 with one capability byte; only a v2 challenge
+    // flag can make a tablet emit this, so the parser must accept exactly
+    // this shape and nothing else.
+    const auto response_v2_bytes = encode_auth_response(response, true);
+    const auto parsed_v2_response = parse_auth_response(response_v2_bytes);
+    check(parsed_v2_response.has_value(), "v2 auth response should round trip");
+    if (parsed_v2_response) {
+        check(parsed_v2_response->v2, "v2 response must be flagged");
+        check(parsed_v2_response->mac == response.mac, "v2 response mac should survive");
+    }
+    auto bad_caps = response_v2_bytes;
+    bad_caps.back() = 0x02U;
+    check(!parse_auth_response(bad_caps).has_value(), "unknown v2 caps must be rejected");
+    auto v2_trailing = response_v2_bytes;
+    v2_trailing.push_back(0U);
+    check(!parse_auth_response(v2_trailing).has_value(), "v2 trailing bytes must be rejected");
+    check(!parse_auth_response(response_bytes).has_value() ||
+              !parse_auth_response(response_bytes)->v2,
+          "legacy response must not be flagged as v2");
+
     AuthResultPayload result{};
     result.result = AuthResult::pairing_complete;
     result.message = "DESKTOP-ABC123";
@@ -265,6 +285,29 @@ void auth_message_test() {
         check(!parse_auth_result(trailing_bytes).has_value(),
               "trailing bytes after an accepted result must be rejected");
     }
+
+    // v2 result: the legacy fields plus exactly one 32 byte tag.
+    AuthResultPayload tagged{};
+    tagged.result = AuthResult::pairing_complete;
+    tagged.message = "DESKTOP-ABC123";
+    tagged.credential.fill(0x44U);
+    tagged.v2 = true;
+    tagged.tag.fill(0x99U);
+    const auto tagged_bytes = encode_auth_result(tagged);
+    const auto parsed_tagged = parse_auth_result(tagged_bytes);
+    check(parsed_tagged.has_value(), "v2 tagged result should round trip");
+    if (parsed_tagged) {
+        check(parsed_tagged->v2, "tagged result must be flagged");
+        check(parsed_tagged->credential == tagged.credential, "masked credential should survive");
+        check(parsed_tagged->tag == tagged.tag, "result tag should survive");
+    }
+    auto short_tag = tagged_bytes;
+    short_tag.pop_back();
+    check(!parse_auth_result(short_tag).has_value(), "a truncated tag must be rejected");
+    auto long_tag = tagged_bytes;
+    long_tag.push_back(0U);
+    check(!parse_auth_result(long_tag).has_value(), "bytes after the tag must be rejected");
+    check(!parsed_result->v2, "legacy result must not be flagged as v2");
 
     // Oversized strings must be rejected before allocation.
     AuthChallenge oversized{};

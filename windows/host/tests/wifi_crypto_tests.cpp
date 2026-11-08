@@ -126,6 +126,38 @@ void auth_mac_test() {
           "auth_mac must be HMAC over the documented field order");
 }
 
+void result_integrity_vector_test() {
+    // Known-answer vectors computed independently with .NET HMACSHA256 (see
+    // the audit notes): key = 0x01..0x20, nonce_pc = 16x0x11,
+    // nonce_tablet = 16x0x22, credential view = 32x0xAA, message "MI PAD 4".
+    // The Java mirror in ProtocolSelfTest locks onto the same vectors, so
+    // any drift between the two implementations fails at least one side.
+    std::vector<std::uint8_t> key(32U, 0U);
+    for (std::size_t index = 0U; index < key.size(); ++index) {
+        key[index] = static_cast<std::uint8_t>(index + 1U);
+    }
+    const std::vector<std::uint8_t> nonce_pc(16U, 0x11U);
+    const std::vector<std::uint8_t> nonce_tablet(16U, 0x22U);
+    const std::vector<std::uint8_t> credential_view(32U, 0xAAU);
+
+    const auto pair_tag = wireview::host::result_mac(
+        key, 0x02U, "MI PAD 4", credential_view, nonce_pc, nonce_tablet);
+    check(wireview::host::to_hex(pair_tag) ==
+              "815fce97464dd863b42a7c2340333ff9db4ebf38eac2b21dbc69935bf821b337",
+          "pairing result tag must match the published vector");
+
+    const auto accepted_tag = wireview::host::result_mac(
+        key, 0x00U, "MI PAD 4", {}, nonce_pc, nonce_tablet);
+    check(wireview::host::to_hex(accepted_tag) ==
+              "50d6386ed9be251c7c492e96ca14772ec13a7e39acee9159b4de28f7c0d14798",
+          "accepted result tag must match the published vector");
+
+    const auto mask = wireview::host::wrap_mask(key, nonce_pc, nonce_tablet);
+    check(wireview::host::to_hex(mask) ==
+              "82be86bae43ef7a234893d65fe275abe540413e77d419535f01425632e3aef2e",
+          "wrap mask must match the published vector");
+}
+
 }  // namespace
 
 int main() {
@@ -135,6 +167,7 @@ int main() {
     dpapi_round_trip_test();
     random_and_hex_test();
     auth_mac_test();
+    result_integrity_vector_test();
 
     if (failures != 0) {
         std::cerr << failures << " WiFi crypto test(s) failed\n";

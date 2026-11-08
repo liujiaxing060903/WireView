@@ -149,6 +149,40 @@ std::vector<std::uint8_t> auth_mac(
     return hmac_sha256(key, message);
 }
 
+std::vector<std::uint8_t> result_mac(
+    std::span<const std::uint8_t> key,
+    std::uint8_t outcome,
+    std::string_view message,
+    std::span<const std::uint8_t> credential_view,
+    std::span<const std::uint8_t> nonce_pc,
+    std::span<const std::uint8_t> nonce_tablet) {
+    constexpr std::string_view kDomain{"WV1-result"};
+    std::vector<std::uint8_t> data;
+    data.reserve(
+        kDomain.size() + 1U + message.size() + credential_view.size() + nonce_pc.size() +
+        nonce_tablet.size());
+    data.insert(data.end(), kDomain.begin(), kDomain.end());
+    data.push_back(outcome);
+    data.insert(data.end(), message.begin(), message.end());
+    data.insert(data.end(), credential_view.begin(), credential_view.end());
+    data.insert(data.end(), nonce_pc.begin(), nonce_pc.end());
+    data.insert(data.end(), nonce_tablet.begin(), nonce_tablet.end());
+    return hmac_sha256(key, data);
+}
+
+std::vector<std::uint8_t> wrap_mask(
+    std::span<const std::uint8_t> kdf_key,
+    std::span<const std::uint8_t> nonce_pc,
+    std::span<const std::uint8_t> nonce_tablet) {
+    constexpr std::string_view kDomain{"WV1-wrap"};
+    std::vector<std::uint8_t> data;
+    data.reserve(kDomain.size() + nonce_pc.size() + nonce_tablet.size());
+    data.insert(data.end(), kDomain.begin(), kDomain.end());
+    data.insert(data.end(), nonce_pc.begin(), nonce_pc.end());
+    data.insert(data.end(), nonce_tablet.begin(), nonce_tablet.end());
+    return hmac_sha256(kdf_key, data);
+}
+
 std::vector<std::uint8_t> dpapi_protect(std::span<const std::uint8_t> plain) {
     DATA_BLOB input{};
     input.pbData = const_cast<std::uint8_t*>(plain.data());

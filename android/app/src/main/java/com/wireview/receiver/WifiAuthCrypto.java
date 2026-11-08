@@ -77,6 +77,47 @@ final class WifiAuthCrypto {
                 nonceTablet));
     }
 
+    /**
+     * v2 AUTH_RESULT integrity tag:
+     * HMAC(key, "WV1-result" || outcome || message || credentialView ||
+     * noncePc || nonceTablet). credentialView is the on-wire (masked)
+     * credential for pairing_complete and empty otherwise.
+     */
+    static byte[] computeResultTag(
+            byte[] key,
+            byte outcome,
+            String message,
+            byte[] credentialView,
+            byte[] noncePc,
+            byte[] nonceTablet) throws GeneralSecurityException {
+        byte[] view = credentialView == null ? new byte[0] : credentialView;
+        return hmacSha256(key, concat(
+                Protocol.AUTH_DOMAIN_RESULT.getBytes(StandardCharsets.US_ASCII),
+                new byte[] {outcome},
+                message.getBytes(StandardCharsets.UTF_8),
+                view,
+                noncePc,
+                nonceTablet));
+    }
+
+    /** v2 pairing credential mask: HMAC(kdfKey, "WV1-wrap" || noncePc || nonceTablet). */
+    static byte[] wrapMask(byte[] kdfKey, byte[] noncePc, byte[] nonceTablet)
+            throws GeneralSecurityException {
+        return hmacSha256(kdfKey, concat(
+                Protocol.AUTH_WRAP_DOMAIN.getBytes(StandardCharsets.US_ASCII),
+                noncePc,
+                nonceTablet));
+    }
+
+    /** XOR of two equal-length arrays (credential masking / unmasking). */
+    static byte[] xorMask(byte[] value, byte[] mask) {
+        byte[] result = new byte[value.length];
+        for (int i = 0; i < value.length; i++) {
+            result[i] = (byte) (value[i] ^ mask[i]);
+        }
+        return result;
+    }
+
     private static byte[] concat(byte[]... parts) {
         int total = 0;
         for (byte[] part : parts) {

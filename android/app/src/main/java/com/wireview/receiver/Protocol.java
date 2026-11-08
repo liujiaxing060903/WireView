@@ -67,11 +67,16 @@ final class Protocol {
     static final String AUTH_DOMAIN_AUTHENTICATE = "WV1-auth";
     static final String AUTH_DOMAIN_PAIR = "WV1-pair";
     static final String AUTH_KDF_SALT = "WV1-salt";
-    static final int AUTH_PBKDF2_ITERATIONS = 10_000;
+    static final String AUTH_DOMAIN_RESULT = "WV1-result";
+    static final String AUTH_WRAP_DOMAIN = "WV1-wrap";
+    static final int AUTH_PBKDF2_ITERATIONS = 600_000;
     static final int AUTH_NONCE_SIZE = 16;
     static final int AUTH_UUID_SIZE = 16;
     static final int AUTH_KEY_SIZE = 32;
     static final int AUTH_MAC_SIZE = 32;
+    /** Packet header flag the PC sets on AUTH_CHALLENGE to advertise the
+     *  v2 result integrity layer (tagged AUTH_RESULT, masked credential). */
+    static final int FLAG_AUTH_V2 = 0x08;
 
     static final byte AUTH_MODE_AUTHENTICATE = 0;
     static final byte AUTH_MODE_PAIRING = 1;
@@ -120,11 +125,18 @@ final class Protocol {
         final byte result;
         final String message;
         final byte[] credential;
+        /** v2 integrity tag over the outcome; null in the legacy format. */
+        final byte[] tag;
 
         AuthResult(byte result, String message, byte[] credential) {
+            this(result, message, credential, null);
+        }
+
+        AuthResult(byte result, String message, byte[] credential, byte[] tag) {
             this.result = result;
             this.message = message;
             this.credential = credential;
+            this.tag = tag;
         }
     }
 
@@ -179,18 +191,28 @@ final class Protocol {
     }
 
     static byte[] encodeAuthResponse(AuthResponse response) throws ProtocolException {
+        return encodeAuthResponse(response, false);
+    }
+
+    /** v2 = true emits schema 2 with one trailing capability byte (value 1);
+     *  the tablet only answers schema 2 when the challenge carried the
+     *  FLAG_AUTH_V2 header flag, so legacy PCs never see schema 2. */
+    static byte[] encodeAuthResponse(AuthResponse response, boolean v2) throws ProtocolException {
         // 2 (schema+status) + 2 x u16 length prefixes + nonce + MAC + strings.
         ByteBuffer output = ByteBuffer.allocate(
-                2 + 4 + AUTH_NONCE_SIZE + AUTH_MAC_SIZE
+                2 + 4 + AUTH_NONCE_SIZE + AUTH_MAC_SIZE + (v2 ? 1 : 0)
                         + response.androidId.getBytes(StandardCharsets.US_ASCII).length
                         + response.deviceName.getBytes(StandardCharsets.UTF_8).length)
                 .order(ByteOrder.LITTLE_ENDIAN);
-        output.put((byte) 1); // schema
+        output.put(v2 ? (byte) 2 : (byte) 1); // schema
         output.put(response.status);
         putString(output, response.androidId, 64);
         putString(output, response.deviceName, 128);
         output.put(response.nonceTablet);
         output.put(response.mac);
+        if (v2) {
+            output.put((byte) 1); // capability byte
+        }
         return output.array();
     }
 
@@ -200,7 +222,7 @@ final class Protocol {
             throw new ProtocolException("auth response payload is too short");
         }
         byte schema = input.get();
-        if (schema != 1) {
+        if (schema != 1 && schema != 2) {
             throw new ProtocolException("unknown auth response schema " + schema);
         }
         byte status = input.get();
@@ -216,7 +238,12 @@ final class Protocol {
         }
         input.get(nonceTablet);
         input.get(mac);
-        if (input.hasRemaining()) {
+        if (schema == 2) {
+            // The v2 tail is exactly one capability byte (value 1) for now.
+            if (input.remaining() != 1 || input.get() != 1) {
+                throw new ProtocolException("auth response v2 tail is invalid");
+            }
+        } else if (input.hasRemaining()) {
             throw new ProtocolException("auth response has trailing bytes");
         }
         return new AuthResponse(status, nonceTablet, androidId, deviceName, mac);
@@ -226,13 +253,17 @@ final class Protocol {
         boolean carriesCredential = result.result == AUTH_RESULT_PAIRING_COMPLETE;
         ByteBuffer output = ByteBuffer.allocate(
                 4 + result.message.getBytes(StandardCharsets.UTF_8).length
-                        + (carriesCredential ? AUTH_KEY_SIZE : 0))
+                        + (carriesCredential ? AUTH_KEY_SIZE : 0)
+                        + (result.tag != null ? AUTH_MAC_SIZE : 0))
                 .order(ByteOrder.LITTLE_ENDIAN);
         output.put((byte) 1); // schema
         output.put(result.result);
         putString(output, result.message, 256);
         if (carriesCredential) {
             output.put(result.credential);
+        }
+        if (result.tag != null) {
+            output.put(result.tag);
         }
         return output.array();
     }
@@ -260,10 +291,15 @@ final class Protocol {
             credential = new byte[AUTH_KEY_SIZE];
             input.get(credential);
         }
+        byte[] tag = null;
+        if (input.remaining() == AUTH_MAC_SIZE) {
+            tag = new byte[AUTH_MAC_SIZE];
+            input.get(tag);
+        }
         if (input.hasRemaining()) {
             throw new ProtocolException("auth result has trailing bytes");
         }
-        return new AuthResult(result, message, credential);
+        return new AuthResult(result, message, credential, tag);
     }
 
     private static int remainingShort(ByteBuffer input) {
