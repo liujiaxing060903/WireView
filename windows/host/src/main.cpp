@@ -494,12 +494,28 @@ int main(int argument_count, char** arguments) {
                     environment_hex("WIREVIEW_WIFI_KEY"));
                 endpoint.pc_uuid = wireview::host::from_hex(
                     environment_hex("WIREVIEW_WIFI_UUID"));
-                std::string host_name(256U, '\0');
-                const DWORD name_length = GetEnvironmentVariableA(
-                    "WIREVIEW_WIFI_NAME", host_name.data(),
-                    static_cast<DWORD>(host_name.size()));
-                host_name.resize(
-                    name_length == 0U || name_length >= host_name.size() ? 0U : name_length);
+                // Read the display name as wide characters and convert to
+                // real UTF-8: the name is covered by the v2 AUTH_RESULT tag,
+                // and an ACP (e.g. GBK) round trip would make the tablet's
+                // tag verification fail for non-ASCII computer names.
+                std::wstring wide_name(256U, L'\0');
+                const DWORD name_length = GetEnvironmentVariableW(
+                    L"WIREVIEW_WIFI_NAME", wide_name.data(),
+                    static_cast<DWORD>(wide_name.size()));
+                wide_name.resize(
+                    name_length == 0U || name_length >= wide_name.size() ? 0U : name_length);
+                std::string host_name;
+                if (!wide_name.empty()) {
+                    const int utf8_length = WideCharToMultiByte(
+                        CP_UTF8, 0U, wide_name.data(), static_cast<int>(wide_name.size()),
+                        nullptr, 0U, nullptr, nullptr);
+                    if (utf8_length > 0) {
+                        host_name.resize(static_cast<std::size_t>(utf8_length));
+                        WideCharToMultiByte(
+                            CP_UTF8, 0U, wide_name.data(), static_cast<int>(wide_name.size()),
+                            host_name.data(), utf8_length, nullptr, nullptr);
+                    }
+                }
                 endpoint.pc_name = host_name.empty() ? "WireView PC" : host_name;
                 if (endpoint.wifi_key.size() != 32U) {
                     throw std::invalid_argument(

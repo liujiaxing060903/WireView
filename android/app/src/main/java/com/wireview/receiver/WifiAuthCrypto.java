@@ -81,20 +81,22 @@ final class WifiAuthCrypto {
      * v2 AUTH_RESULT integrity tag:
      * HMAC(key, "WV1-result" || outcome || message || credentialView ||
      * noncePc || nonceTablet). credentialView is the on-wire (masked)
-     * credential for pairing_complete and empty otherwise.
+     * credential for pairing_complete and empty otherwise; message is the
+     * raw wire bytes so no decode/re-encode round trip can alter them.
      */
     static byte[] computeResultTag(
             byte[] key,
             byte outcome,
-            String message,
+            byte[] message,
             byte[] credentialView,
             byte[] noncePc,
             byte[] nonceTablet) throws GeneralSecurityException {
         byte[] view = credentialView == null ? new byte[0] : credentialView;
+        byte[] text = message == null ? new byte[0] : message;
         return hmacSha256(key, concat(
                 Protocol.AUTH_DOMAIN_RESULT.getBytes(StandardCharsets.US_ASCII),
                 new byte[] {outcome},
-                message.getBytes(StandardCharsets.UTF_8),
+                text,
                 view,
                 noncePc,
                 nonceTablet));

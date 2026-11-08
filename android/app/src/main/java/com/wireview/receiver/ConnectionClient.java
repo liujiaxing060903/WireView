@@ -283,6 +283,17 @@ final class ConnectionClient implements AutoCloseable {
                     sleepBeforeRetry();
                 }
                 continue;
+            } catch (RuntimeException parseFailure) {
+                // The probe pre-read parses packets; treat any unexpected
+                // runtime failure like a dead probe instead of letting it
+                // kill the connection thread with 'running' still true.
+                if (running.get()) {
+                    PersistentDiagnosticLog.record(
+                            "ConnectionClient", "probe parse failed: " + parseFailure);
+                    publishStatus(waitingStatus());
+                    sleepBeforeRetry();
+                }
+                continue;
             }
             activeRound = round;
             try (TransportConnection activeConnection = round.connection) {
@@ -545,7 +556,7 @@ final class ConnectionClient implements AutoCloseable {
             throws IOException {
         try {
             final byte[] expected = WifiAuthCrypto.computeResultTag(
-                    proofKey, result.result, result.message, credentialView,
+                    proofKey, result.result, result.messageBytes, credentialView,
                     noncePc, nonceTablet);
             if (!java.security.MessageDigest.isEqual(expected, result.tag)) {
                 throw new IOException("AUTH_RESULT integrity tag mismatch");

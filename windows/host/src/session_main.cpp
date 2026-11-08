@@ -308,6 +308,18 @@ ProcessResult run_capture_bounded(
         return {};
     }
     const auto deadline = GetTickCount64() + timeout_milliseconds;
+    // Drain the pipe concurrently: children that write more than the pipe
+    // capacity (e.g. "dumpsys activity activities") would otherwise block
+    // on a full pipe, miss the deadline and get killed with the output
+    // still stuck in the kernel buffer.
+    std::string bytes;
+    std::thread pipe_reader([&bytes, read_pipe] {
+        char buffer[1024];
+        DWORD read = 0U;
+        while (ReadFile(read_pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0U) {
+            bytes.append(buffer, read);
+        }
+    });
     while (WaitForSingleObject(process.hProcess, 200) == WAIT_TIMEOUT) {
         if (GetTickCount64() >= deadline) {
             TerminateProcess(process.hProcess, 1U);
@@ -320,12 +332,9 @@ ProcessResult run_capture_bounded(
     GetExitCodeProcess(process.hProcess, &result.exit_code);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    std::string bytes;
-    char buffer[1024];
-    DWORD read{};
-    while (ReadFile(read_pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0U) {
-        bytes.append(buffer, read);
-    }
+    // The child is gone and our write end was closed above, so the reader
+    // hits EOF (broken pipe) and joins promptly.
+    pipe_reader.join();
     CloseHandle(read_pipe);
     if (!bytes.empty()) {
         const int length = MultiByteToWideChar(CP_UTF8, 0, bytes.data(),

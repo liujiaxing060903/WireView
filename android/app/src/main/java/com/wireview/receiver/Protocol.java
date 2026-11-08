@@ -124,17 +124,23 @@ final class Protocol {
     static final class AuthResult {
         final byte result;
         final String message;
+        /** The message exactly as it travelled on the wire (UTF-8 bytes).
+         *  The v2 tag is computed over these raw bytes, not over a
+         *  decode/re-encode round trip. */
+        final byte[] messageBytes;
         final byte[] credential;
         /** v2 integrity tag over the outcome; null in the legacy format. */
         final byte[] tag;
 
         AuthResult(byte result, String message, byte[] credential) {
-            this(result, message, credential, null);
+            this(result, message, message.getBytes(StandardCharsets.UTF_8), credential, null);
         }
 
-        AuthResult(byte result, String message, byte[] credential, byte[] tag) {
+        AuthResult(byte result, String message, byte[] messageBytes, byte[] credential,
+                byte[] tag) {
             this.result = result;
             this.message = message;
+            this.messageBytes = messageBytes;
             this.credential = credential;
             this.tag = tag;
         }
@@ -282,7 +288,12 @@ final class Protocol {
                 && result != AUTH_RESULT_PAIRING_COMPLETE) {
             throw new ProtocolException("unknown auth result " + result);
         }
+        // Keep the raw wire bytes of the message: the v2 tag must be
+        // verified over exactly what the PC sent, so slice by buffer
+        // position (byte-exact even for multi-byte UTF-8).
+        final int messageStart = input.position() + 2;  // skip the u16 prefix
         String message = getString(input, 256);
+        byte[] messageBytes = Arrays.copyOfRange(payload, messageStart, input.position());
         byte[] credential = null;
         if (result == AUTH_RESULT_PAIRING_COMPLETE) {
             if (input.remaining() < AUTH_KEY_SIZE) {
@@ -299,7 +310,7 @@ final class Protocol {
         if (input.hasRemaining()) {
             throw new ProtocolException("auth result has trailing bytes");
         }
-        return new AuthResult(result, message, credential, tag);
+        return new AuthResult(result, message, messageBytes, credential, tag);
     }
 
     private static int remainingShort(ByteBuffer input) {

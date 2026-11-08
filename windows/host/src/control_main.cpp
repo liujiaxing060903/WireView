@@ -6167,14 +6167,21 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             }
             if (wparam == kRotateRestartTimer) {
                 KillTimer(window, kRotateRestartTimer);
-                if (g_state.shell_process == nullptr) {
+                if (g_state.profile_probe_active || g_state.preview_active) {
+                    // A transient probe/preview won the 800 ms window: it
+                    // carries no orientation, so restarting it with the new
+                    // direction would silently upgrade it to a full session.
+                    // The selector already holds the new orientation and the
+                    // next real session picks it up.
+                    set_status(L"换向已记录；当前为设备探测/预览，将在下次会话生效。");
+                } else if (g_state.shell_process == nullptr) {
                     if (!start_session(window, g_state.session_input_enabled)) {
                         set_status(L"换向重启失败：会话未能启动。");
                     }
                 } else {
-                    // Another path (manual start / device probe / VDD-ready
-                    // auto-start) won the 800 ms window; stop it and restart
-                    // so the new orientation actually applies.
+                    // Another path (manual start / VDD-ready auto-start) won
+                    // the 800 ms window; stop it and restart so the new
+                    // orientation actually applies.
                     set_status(L"检测到会话已在运行，正在按新方向重启…");
                     stop_session();
                     if (!start_session(window, g_state.session_input_enabled)) {

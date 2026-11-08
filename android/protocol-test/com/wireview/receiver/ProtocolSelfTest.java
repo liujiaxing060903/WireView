@@ -123,10 +123,13 @@ public final class ProtocolSelfTest {
         require(parsedPairing.tag == null, "legacy pairing result must not carry a tag");
 
         // v2 result round trip: legacy fields plus exactly one 32 byte tag.
+        byte[] taggedMessage = "DESKTOP-ABC123".getBytes(StandardCharsets.UTF_8);
         Protocol.AuthResult tagged = new Protocol.AuthResult(
-                Protocol.AUTH_RESULT_PAIRING_COMPLETE, "DESKTOP-ABC123",
+                Protocol.AUTH_RESULT_PAIRING_COMPLETE, "DESKTOP-ABC123", taggedMessage,
                 filled(Protocol.AUTH_KEY_SIZE, (byte) 0x44),
                 filled(Protocol.AUTH_MAC_SIZE, (byte) 0x99));
+        require(Arrays.equals(tagged.messageBytes, taggedMessage),
+                "explicit message bytes must be kept");
         Protocol.AuthResult parsedTagged = Protocol.parseAuthResult(
                 Protocol.encodeAuthResult(tagged));
         require(parsedTagged.result == tagged.result, "tagged result kind mismatch");
@@ -199,14 +202,15 @@ public final class ProtocolSelfTest {
         byte[] noncePc = filled(16, (byte) 0x11);
         byte[] nonceTablet = filled(16, (byte) 0x22);
         byte[] credView = filled(32, (byte) 0xAA);
+        byte[] messageBytes = "MI PAD 4".getBytes(StandardCharsets.UTF_8);
         byte[] pairTag = WifiAuthCrypto.computeResultTag(
-                key, Protocol.AUTH_RESULT_PAIRING_COMPLETE, "MI PAD 4", credView,
+                key, Protocol.AUTH_RESULT_PAIRING_COMPLETE, messageBytes, credView,
                 noncePc, nonceTablet);
         require(hex(pairTag).equals(
                 "815fce97464dd863b42a7c2340333ff9db4ebf38eac2b21dbc69935bf821b337"),
                 "pairing result tag must match the published vector");
         byte[] acceptedTag = WifiAuthCrypto.computeResultTag(
-                key, Protocol.AUTH_RESULT_ACCEPTED, "MI PAD 4", null, noncePc, nonceTablet);
+                key, Protocol.AUTH_RESULT_ACCEPTED, messageBytes, null, noncePc, nonceTablet);
         require(hex(acceptedTag).equals(
                 "50d6386ed9be251c7c492e96ca14772ec13a7e39acee9159b4de28f7c0d14798"),
                 "accepted result tag must match the published vector");

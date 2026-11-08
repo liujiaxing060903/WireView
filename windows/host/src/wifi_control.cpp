@@ -111,11 +111,23 @@ void save_identity_locked() {
 }
 
 std::string utf8_string(const std::wstring& value) {
-    std::string text;
-    text.reserve(value.size());
-    for (const wchar_t character : value) {
-        text.push_back(static_cast<char>(character));
+    // A real UTF-8 conversion, not a narrowing cast: the pairing host name
+    // is covered by the v2 AUTH_RESULT tag, and the tablet verifies the tag
+    // over the UTF-8 round trip - a truncated cast produced invalid UTF-8
+    // for non-ASCII computer names and broke the tag verification.
+    if (value.empty()) {
+        return {};
     }
+    const int length = WideCharToMultiByte(
+        CP_UTF8, 0U, value.data(), static_cast<int>(value.size()), nullptr, 0U,
+        nullptr, nullptr);
+    if (length <= 0) {
+        return {};
+    }
+    std::string text(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(
+        CP_UTF8, 0U, value.data(), static_cast<int>(value.size()), text.data(),
+        length, nullptr, nullptr);
     return text;
 }
 
@@ -512,9 +524,19 @@ void begin_pairing(const std::wstring& ip) {
                 stream, identity, wireview::protocol::AuthMode::pairing, {},
                 bundle->first, true, &credential);
             if (g_pairing_cancel.load()) {
-                // Cancelled while the handshake was in flight: discard the
-                // result so nothing lands in the whitelist.
-                result->second = L"已取消（设备未加入白名单）。";
+                // The cancel arrived while the handshake was completing: the
+                // tablet already stored its copy of the credential, so the
+                // PC must keep its half too - discarding only our side would
+                // leave a pairing that eternally fails authentication.
+                {
+                    std::lock_guard lock(impl_mutex());
+                    whitelist().upsert(peer.android_id, peer.device_name, credential);
+                    std::wstring save_error;
+                    whitelist().save(&save_error);
+                }
+                paired = true;
+                result->first = utf8_to_wide(peer.device_name);
+                result->second = L"取消请求过晚：配对已完成并加入白名单；如需撤销请从白名单移除。";
             } else {
                 {
                     std::lock_guard lock(impl_mutex());

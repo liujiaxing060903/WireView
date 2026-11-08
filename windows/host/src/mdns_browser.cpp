@@ -45,6 +45,13 @@ struct MdnsBrowser::Impl {
 
     void upsert(const WifiDiscoveredDevice& device) {
         std::lock_guard lock(mutex);
+        upsert_locked(device);
+    }
+
+    // Caller must hold 'mutex'; lets the resolve callback re-check the
+    // cancelled/stopped flags in the same critical section as the insert,
+    // so a result racing stop() cannot repopulate the cleared list.
+    void upsert_locked(const WifiDiscoveredDevice& device) {
         resolving.erase(device.instance);
         const auto match = std::find_if(
             devices.begin(), devices.end(),
@@ -156,7 +163,15 @@ VOID WINAPI resolve_complete_callback(
             device.ip = ipv4_text(instance->ip4Address[0]);
             device.port = instance->wPort;
         }
-        impl->upsert(device);
+        {
+            // Re-check under the same lock that guards the insert: stop()
+            // may have completed between the first check and here, and a
+            // late result must not repopulate the cleared device list.
+            std::lock_guard lock(impl->mutex);
+            if (!resolve_context->cancelled && !impl->stopped) {
+                impl->upsert_locked(device);
+            }
+        }
     }
     if (instance != nullptr) {
         // The DNS-SD API hands ownership of the instance to the callback;

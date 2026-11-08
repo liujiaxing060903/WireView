@@ -2042,6 +2042,15 @@ public:
         return low_latency_enabled_;
     }
 
+    // A naturally produced IDR proves the encoder can still emit keyframes;
+    // the escalation ladder must only trip when NO keyframe appears at all
+    // (MFTs that reject the force hint but start/periodically emit IDR
+    // would otherwise be killed one second into an otherwise fine stream).
+    void note_natural_keyframe() {
+        keyframe_failures_ = 0U;
+        keyframe_retry_pending_ = false;
+    }
+
 private:
     // Shared policy for every forced-keyframe request (first frame, Android
     // recovery, post-error recovery): a rejected CODECAPI call is logged
@@ -2458,6 +2467,9 @@ int run_desktop_encode_session(
             total_bytes += output.bytes.size();
             keyframes += output.keyframe ? 1U : 0U;
             annex_b_outputs += output.annex_b ? 1U : 0U;
+            if (output.keyframe) {
+                encoder->note_natural_keyframe();
+            }
             if (output.renegotiated) {
                 // An output-format change flushes the MFT's in-flight input
                 // frames; those slots would never be released by an output.

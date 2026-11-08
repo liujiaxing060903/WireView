@@ -32,8 +32,8 @@ HANDLE g_edge_mapping_pipe = nullptr;
 // 句柄的 DuplicateHandle 副本（不能直接复用 g_edge_mapping_pipe 的数值：
 // apply 关闭旧连接后紧接着 CreateFileW，新句柄大概率复用刚释放的数值，
 // 旧线程的 ReadFile 会读上新命令连接、把握手回复偷走）。副本只由线程
-// 自己关闭，UI 线程经 CancelIoEx 唤醒、join 后再清空全局值，无 double-close。
-HANDLE g_drain_pipe = nullptr;
+// 自己关闭；UI 线程经 CancelSynchronousIo(线程句柄) 唤醒——线程句柄在
+// join 前恒有效、数值不会被复用，不依赖可能已被系统复用的管道句柄值。
 HANDLE g_drain_thread = nullptr;
 
 DWORD WINAPI drain_pipe_thread(LPVOID parameter) {
@@ -42,7 +42,8 @@ DWORD WINAPI drain_pipe_thread(LPVOID parameter) {
         char discard[512];
         DWORD bytes_read = 0U;
         // 丢弃一切事件字节。管道断开（守护进程退出）、原始句柄生命周期
-        // 变化或 stop_event_drain 的 CancelIoEx 都会让 ReadFile 失败退出。
+        // 变化或 stop_event_drain 的 CancelSynchronousIo 都会让 ReadFile
+        // 失败退出。
         if (ReadFile(pipe, discard, sizeof(discard), &bytes_read, nullptr) == FALSE ||
             bytes_read == 0U) {
             break;
@@ -65,22 +66,20 @@ void start_event_drain(HANDLE pipe) {
         CloseHandle(drain_pipe);
         return;
     }
-    g_drain_pipe = drain_pipe;
     g_drain_thread = thread;
 }
 
 void stop_event_drain() {
-    HANDLE drain_pipe = g_drain_pipe;
     HANDLE thread = g_drain_thread;
-    g_drain_pipe = nullptr;
     g_drain_thread = nullptr;
-    if (drain_pipe != nullptr) {
-        CancelIoEx(drain_pipe, nullptr);  // 唤醒阻塞中的 ReadFile。
-    }
     if (thread != nullptr) {
-        // 等线程退出再返回：此刻线程已 CloseHandle 自己的副本，全局里的
-        // 旧数值从此不再被引用。超时（理论不可达）时只放弃线程句柄，
-        // 不关副本——由线程退出时自行关闭，避免 double-close。
+        // 唤醒阻塞中的 ReadFile：用线程句柄而非管道句柄值（线程若已
+        // 自行退出，其副本句柄数值可能已被系统复用，CancelIoEx 会误伤
+        // 无关句柄；CancelSynchronousIo 只作用于该线程且此处句柄恒有效）。
+        CancelSynchronousIo(thread);
+        // 等线程退出再返回：此刻线程已 CloseHandle 自己的副本。超时
+        // （理论不可达）时只放弃线程句柄，不关副本——由线程退出时
+        // 自行关闭，避免 double-close。
         WaitForSingleObject(thread, 2000U);
         CloseHandle(thread);
     }
