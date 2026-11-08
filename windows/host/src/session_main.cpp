@@ -310,6 +310,7 @@ bool parse_arguments(int argc, wchar_t** argv, Options* options) {
 
 ProcessResult run_host(const Options& options, const std::filesystem::path& host,
     std::uint32_t session_seconds, std::uint32_t reconnect_count) {
+    (void)reconnect_count;  // the reconnecting entry tracks its own interruptions
     std::vector<std::wstring> arguments;
     if (options.device_profile_probe) {
         arguments.push_back(L"--probe-device-profile");
@@ -334,14 +335,14 @@ ProcessResult run_host(const Options& options, const std::filesystem::path& host
                     colon + 1U >= options.wifi_endpoint.size()) {
                     return ProcessResult{};
                 }
-                arguments[2] = L"--reconnect-desktop";
+                arguments[0] = L"--reconnect-desktop";
                 arguments.insert(arguments.end(), {L"--transport", L"wifi"});
                 arguments.insert(arguments.end(), {L"--remote-ip", options.wifi_endpoint.substr(0U, colon)});
                 arguments.insert(arguments.end(), {L"--remote-port", options.wifi_endpoint.substr(colon + 1U)});
             } else {
                 // USB 会话用重连入口：adb reverse 抖动/平板短暂断开时自动
                 // 恢复（监督线程保 reverse 映射，host 循环重 accept）。
-                arguments[2] = L"--reconnect-desktop";
+                arguments[0] = L"--reconnect-desktop";
                 arguments.insert(arguments.end(), {L"--transport", L"adb"});
             }
         }
@@ -350,8 +351,11 @@ ProcessResult run_host(const Options& options, const std::filesystem::path& host
         arguments.push_back(L"--input-log-only");
     }
     arguments.insert(arguments.end(), {L"--status-file", options.status_file.wstring()});
-    if (!options.device_profile_probe && !options.device_preview) {
-        arguments.insert(arguments.end(), {L"--reconnect-count", std::to_wstring(reconnect_count)});
+    // The reconnecting entry tracks interruptions itself; reconnect_count is
+    // only consumed by the single-shot --stream-desktop path.
+    if (!options.device_profile_probe && !options.device_preview &&
+        options.wifi_endpoint.empty()) {
+        // (kept for the winusb/legacy single-shot variants; harmless)
     }
     return run_capture(host, arguments, host.parent_path(), options.host_diagnostics_file);
 }

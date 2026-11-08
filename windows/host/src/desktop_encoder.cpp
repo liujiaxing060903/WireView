@@ -314,6 +314,160 @@ private:
     bool active_{false};
 };
 
+// HDR desktops (Advanced display / HDR on) hand desktop duplication frames
+// as R16G16B16A16_FLOAT scRGB, which the BGRA-only cursor compositor and
+// NV12 converter reject. This pass draws the FP16 source into a BGRA8
+// target with a fixed SDR-white tone map; the rest of the pipeline keeps
+// operating on ordinary BGRA frames and needs no changes.
+class HdrToSdrPass {
+public:
+    HdrToSdrPass(
+        ID3D11Device* device,
+        ID3D11DeviceContext* context,
+        UINT width,
+        UINT height)
+        : context_(context),
+          width_(width),
+          height_(height) {
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = width;
+        description.Height = height;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_DEFAULT;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        check_hresult(
+            device->CreateTexture2D(&description, nullptr, &source_),
+            "ID3D11Device::CreateTexture2D(HDR source)");
+        check_hresult(
+            device->CreateShaderResourceView(source_.Get(), nullptr, &source_view_),
+            "ID3D11Device::CreateShaderResourceView(HDR source)");
+
+        D3D11_SAMPLER_DESC sampler_description{};
+        sampler_description.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        sampler_description.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_description.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_description.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler_description.MaxLOD = D3D11_FLOAT32_MAX;
+        check_hresult(
+            device->CreateSamplerState(&sampler_description, &sampler_),
+            "ID3D11Device::CreateSamplerState(HDR pass)");
+
+        const ComPtr<ID3DBlob> vertex = compile_shader(kVertexShader, "main", "vs_5_0");
+        const ComPtr<ID3DBlob> pixel = compile_shader(kPixelShader, "main", "ps_5_0");
+        check_hresult(
+            device->CreateVertexShader(
+                vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr,
+                &vertex_shader_),
+            "ID3D11Device::CreateVertexShader(HDR pass)");
+        check_hresult(
+            device->CreatePixelShader(
+                pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr,
+                &pixel_shader_),
+            "ID3D11Device::CreatePixelShader(HDR pass)");
+    }
+
+    // Binds the BGRA8 destination; called by the owner after creating it.
+    void set_destination(ID3D11RenderTargetView* target) {
+        target_ = target;
+    }
+
+    [[nodiscard]] ID3D11Texture2D* source() const noexcept {
+        return source_.Get();
+    }
+
+    void convert() {
+        if (target_ == nullptr) {
+            return;
+        }
+        const D3D11_VIEWPORT viewport{
+            .TopLeftX = 0.0F,
+            .TopLeftY = 0.0F,
+            .Width = static_cast<float>(width_),
+            .Height = static_cast<float>(height_),
+            .MinDepth = 0.0F,
+            .MaxDepth = 1.0F,
+        };
+        ID3D11ShaderResourceView* resources[]{source_view_.Get()};
+        ID3D11SamplerState* samplers[]{sampler_.Get()};
+        context_->OMSetRenderTargets(1U, &target_, nullptr);
+        context_->RSSetViewports(1U, &viewport);
+        context_->VSSetShader(vertex_shader_.Get(), nullptr, 0U);
+        context_->PSSetShader(pixel_shader_.Get(), nullptr, 0U);
+        context_->PSSetShaderResources(0U, 1U, resources);
+        context_->PSSetSamplers(0U, 1U, samplers);
+        context_->Draw(4U, 0U);
+        ID3D11ShaderResourceView* empty_resources[]{nullptr};
+        context_->PSSetShaderResources(0U, 1U, empty_resources);
+        context_->OMSetRenderTargets(0U, nullptr, nullptr);
+    }
+
+private:
+    static constexpr const char* kVertexShader = R"(
+struct VertexOutput { float4 position : SV_POSITION; float2 uv : TEXCOORD0; };
+VertexOutput main(uint vertexId : SV_VertexID) {
+    const float2 uv[4] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
+    VertexOutput output;
+    output.uv = uv[vertexId];
+    output.position = float4(output.uv.x * 2.0 - 1.0, 1.0 - output.uv.y * 2.0, 0.0, 1.0);
+    return output;
+}
+)";
+    static constexpr const char* kPixelShader = R"(
+Texture2D<float4> hdrTexture : register(t0);
+SamplerState pointSampler : register(s0);
+float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
+    // scRGB linear light: 1.0 corresponds to 80 nits. A 200-nit SDR white
+    // keeps bright windows readable on the tablet; gamma-encode into the
+    // display-referred BGRA path the rest of the pipeline expects.
+    float4 scrgb = hdrTexture.Sample(pointSampler, uv);
+    float3 mapped = saturate(scrgb.rgb * (200.0 / 80.0));
+    return float4(pow(mapped, 1.0 / 2.2), 1.0);
+}
+)";
+
+    [[nodiscard]] static ComPtr<ID3DBlob> compile_shader(
+        const char* source,
+        const char* entry,
+        const char* target) {
+        ComPtr<ID3DBlob> bytecode;
+        ComPtr<ID3DBlob> errors;
+        const HRESULT result = D3DCompile(
+            source,
+            std::char_traits<char>::length(source),
+            nullptr,
+            nullptr,
+            nullptr,
+            entry,
+            target,
+            D3DCOMPILE_ENABLE_STRICTNESS,
+            0U,
+            &bytecode,
+            &errors);
+        if (FAILED(result)) {
+            const std::string detail = errors
+                ? std::string(
+                    static_cast<const char*>(errors->GetBufferPointer()),
+                    errors->GetBufferSize())
+                : "";
+            throw std::runtime_error("HDR shader compilation failed: " + detail);
+        }
+        return bytecode;
+    }
+
+    ID3D11DeviceContext* context_{};
+    UINT width_{};
+    UINT height_{};
+    ComPtr<ID3D11Texture2D> source_;
+    ComPtr<ID3D11ShaderResourceView> source_view_;
+    ID3D11RenderTargetView* target_{nullptr};
+    ComPtr<ID3D11SamplerState> sampler_;
+    ComPtr<ID3D11VertexShader> vertex_shader_;
+    ComPtr<ID3D11PixelShader> pixel_shader_;
+};
+
 class DesktopFrameSource {
 public:
     DesktopFrameSource(
@@ -337,18 +491,36 @@ public:
         check_hresult(duplicate_result, "IDXGIOutput1::DuplicateOutput");
         duplication_->GetDesc(&description_);
 
+        // HDR-enabled desktops deliver scRGB FP16 frames; convert them into
+        // ordinary BGRA so the compositor/converter pipeline is unchanged.
+        hdr_pass_active_ = description_.ModeDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        if (hdr_pass_active_) {
+            hdr_pass_ = std::make_unique<HdrToSdrPass>(
+                device_.Get(), context_.Get(), description_.ModeDesc.Width,
+                description_.ModeDesc.Height);
+        }
+
         D3D11_TEXTURE2D_DESC texture_description{};
         texture_description.Width = description_.ModeDesc.Width;
         texture_description.Height = description_.ModeDesc.Height;
         texture_description.MipLevels = 1;
         texture_description.ArraySize = 1;
-        texture_description.Format = description_.ModeDesc.Format;
+        texture_description.Format = hdr_pass_active_
+            ? DXGI_FORMAT_B8G8R8A8_UNORM
+            : description_.ModeDesc.Format;
         texture_description.SampleDesc.Count = 1;
         texture_description.Usage = D3D11_USAGE_DEFAULT;
-        texture_description.BindFlags = 0;
+        texture_description.BindFlags = hdr_pass_active_ ? D3D11_BIND_RENDER_TARGET : 0;
         check_hresult(
             device_->CreateTexture2D(&texture_description, nullptr, &latest_),
             "ID3D11Device::CreateTexture2D(desktop copy)");
+        if (hdr_pass_active_) {
+            check_hresult(
+                device_->CreateRenderTargetView(latest_.Get(), nullptr, &hdr_target_),
+                "ID3D11Device::CreateRenderTargetView(HDR destination)");
+            hdr_pass_->set_destination(hdr_target_.Get());
+            std::cout << "HDR desktop detected: converting scRGB frames to SDR BGRA\\n";
+        }
     }
 
     [[nodiscard]] bool refresh(UINT timeout_milliseconds) {
@@ -371,7 +543,12 @@ public:
 
         ComPtr<ID3D11Texture2D> texture;
         check_hresult(resource.As(&texture), "desktop frame QueryInterface(ID3D11Texture2D)");
-        context_->CopyResource(latest_.Get(), texture.Get());
+        if (hdr_pass_active_) {
+            context_->CopyResource(hdr_pass_->source(), texture.Get());
+            hdr_pass_->convert();
+        } else {
+            context_->CopyResource(latest_.Get(), texture.Get());
+        }
         guard.release();
         ++updates_;
         return true;
@@ -390,7 +567,9 @@ public:
     }
 
     [[nodiscard]] DXGI_FORMAT format() const noexcept {
-        return description_.ModeDesc.Format;
+        // HDR desktops are converted to BGRA; the pipeline always sees BGRA.
+        return hdr_pass_active_ ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                : description_.ModeDesc.Format;
     }
 
     [[nodiscard]] std::uint64_t updates() const noexcept {
@@ -793,6 +972,10 @@ private:
     ComPtr<ID3D11DeviceContext> context_;
     ComPtr<IDXGIOutputDuplication> duplication_;
     ComPtr<ID3D11Texture2D> latest_;
+    // HDR (scRGB FP16) conversion state; empty on SDR desktops.
+    std::unique_ptr<HdrToSdrPass> hdr_pass_;
+    ComPtr<ID3D11RenderTargetView> hdr_target_;
+    bool hdr_pass_active_{false};
     DXGI_OUTDUPL_DESC description_{};
     RECT desktop_bounds_{};
     DesktopPointer pointer_;

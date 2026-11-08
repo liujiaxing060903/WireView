@@ -34,6 +34,10 @@ final class WifiServerConnector implements TransportConnector {
         serverSocket = server;
         try {
             server.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 1);
+            // Polling accept: a 2 s bound lets the connection loop re-probe
+            // USB (hybrid selection) and notice a flipped switch instead of
+            // parking here forever when the PC never dials in.
+            server.setSoTimeout(2_000);
             Socket socket = server.accept();
             try {
                 socket.setTcpNoDelay(true);

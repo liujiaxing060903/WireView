@@ -43,6 +43,10 @@ final class ConnectionClient implements AutoCloseable {
     private final Listener listener;
     private final Context appContext;
     private final TransportConnector defaultConnector;
+    // Quick USB probe used while the WiFi switch is on: if the PC-side host
+    // is listening again, USB takes over immediately instead of waiting for
+    // the WiFi accept loop.
+    private final TransportConnector usbProbeConnector;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong outboundSequence = new AtomicLong(2L);
     private final Object writeLock = new Object();
@@ -71,6 +75,10 @@ final class ConnectionClient implements AutoCloseable {
         this.listener = listener;
         this.appContext = appContext;
         this.defaultConnector = defaultConnector;
+        this.usbProbeConnector =
+            defaultConnector instanceof TcpTransportConnector
+                ? new TcpTransportConnector("127.0.0.1", DEVELOPMENT_PORT, 300)
+                : defaultConnector;
         this.wifiRequested = wifiEnabled;
         this.credentials = new WifiPairing.TabletCredentials(appContext);
     }
@@ -148,6 +156,26 @@ final class ConnectionClient implements AutoCloseable {
         return defaultConnector;
     }
 
+    /**
+     * Picks this round's transport. With the WiFi switch on, USB still gets
+     * a quick probe first: a listening host takes the connection instantly
+     * (USB recovery), and only when it is gone does the loop park in the
+     * WiFi accept waiting for a dial-in.
+     */
+    private TransportConnection nextConnection(TransportConnector loopConnector)
+            throws IOException {
+        if (loopConnector instanceof WifiServerConnector && wifiRequested) {
+            try (TransportConnection probe = usbProbeConnector.open()) {
+                // open() returning means the USB host is listening; hand the
+                // live connection straight to the session.
+                return probe;
+            } catch (IOException usbDown) {
+                // Fall through to the WiFi accept.
+            }
+        }
+        return loopConnector.open();
+    }
+
     private void connectionLoop() {
         publishStatus(waitingStatus());
         while (running.get()) {
@@ -157,7 +185,7 @@ final class ConnectionClient implements AutoCloseable {
                 PersistentDiagnosticLog.record("ConnectionClient", "opening USB transport");
             }
             final TransportConnector loopConnector = nextConnector();
-            try (TransportConnection activeConnection = loopConnector.open()) {
+            try (TransportConnection activeConnection = nextConnection(loopConnector)) {
                 connection = activeConnection;
                 InputStream input = activeConnection.inputStream();
                 OutputStream output = activeConnection.outputStream();
