@@ -3,6 +3,8 @@
 > 本报告由总代理在用户睡眠期间独立完成，按"独立可读"标准撰写。
 > 范围：WireView 仓库（`local/customizations` 分支）全部源码。基线 HEAD=0df38f3（R4 完成态）。
 > 最终状态：**13 个修复提交（0df38f3..dc3ab6d），18/18 CTest + 三组 Java 自测全绿，APK 构建通过，真机回归 7/7 通过（含 1 项以等效模拟方式执行）**。工作区干净。
+>
+> **附录（同日晚间用户实测反馈轮，dccf9d6..5f65d1e + 86cb836/8c3c478/fe20d8a）**：用户实测反馈三类问题并全部定位处置，见文末"附录：用户实测反馈轮"。
 
 ---
 
@@ -197,3 +199,39 @@ dbaa5f2 fix(wifi): add missing target_info() accessor used by control_main devic
 2. **LOCAL_NOTES 需要你知道的一处更正**：R3 验收记录里"静止画面码率自适应降至 3.05Mbps（帧率优先生效）"是误记——那是 VBR 欠冲，governor 从未接线（现已接线）。
 3. **体验差异提示**：WiFi 会话数据期现在有 25s 空闲超时（PC ping 保活不会误触）；平板凭据已迁移到 Keystore 加密存储；配对必须双端同版（旧 PC 配新平板会被平板拒绝并提示升级）。
 4. **建议下轮**：USB↔WiFi 热切换完整版立项；旋转×设备画像联动修掉；鼠标右键注入（设计已备）；mDNS 热点组播根因排查。
+
+---
+
+## 附录：用户实测反馈轮（同日晚间，dccf9d6..5f65d1e）
+
+用户真机实测反馈三类问题，全部定位处置（每项含真机验证）：
+
+### 反馈 1：设置面板无法滚动，"空闲 N 分钟退出"无法设置 —— 已修复 ✓
+`.settings-panel` 无 max-height/overflow，内容超高被 body 裁掉。修复为内层 `.settings-panel-body` 滚动容器（终审复查指出第一版 `overflow-y:auto` 直接放面板上会把绝对定位在面板外侧的赞赏码弹层一并裁掉，二版改为面板不滚动+内层 body 滚动，赞赏码弹层移出滚动容器）。**用户复测：可以滚动了 ✓**。
+
+### 反馈 2：复制模式延迟高 + 颜色刺眼 —— 两个独立根因，分别处理 ✓/方案已备
+- **颜色刺眼（已修复 ✓，用户确认"颜色正常"）**：HDR 开启时桌面复制给 FP16 scRGB，旧 tone-map `saturate(v × 200/80)` 把普通窗口白色（DWM 按 SDR 亮度滑条提升到 scRGB 2.0~3.0）全部截断成纯白。改为 exp 曝光映射 `1-exp(-max(rgb,0)×0.85)`（高光平滑滚降、永不截断、负分量防护）。
+- **画面"卡顿"（根因实锤：HDR+MPO 系统层限制，修复路线已调研完毕）**：用户精确描述"整体画面落后、鼠标实时、拖动窗口松手前不加载"——PC 侧数据证明采集层每秒拿新帧（desktopUpdates≈encoded），**Windows HDR 开启时部分窗口走 Independent Flip/MPO 硬件叠加平面绕过 DWM 合成，Desktop Duplication 采不到它们**。用户关 HDR 实验确认："关完 HDR 后就好了"✓。行业现状：**Parsec 官方不支持 HDR（错误码 15106）、spacedesk 官方声明不支持 Windows HDR**——均为回避而非修复。
+- **修复路线（两个子代理调研+设计，报告在会话工作区 phase4/H1、H2）**：
+  - 立即可试（5 分钟，需管理员）：注册表禁用 MPO——管理员 CMD 执行 `reg add "HKLM\SOFTWARE\Microsoft\Windows\Dwm" /v OverlayTestMode /t REG_DWORD /d 5 /f` 后注销/重启；24H2 无效则追加 `reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v DisableMPO /t REG_DWORD /d 1 /f`。副作用：任务栏缩略图等叠加功能失效。恢复 = `reg delete` 同键。
+  - 正式方案（下一轮实施，约 6-9 人日）：HDR 激活时采集层切 **Windows.Graphics.Capture**（Sunshine master 默认路径，社区实证 WGC 强制脱离 Independent Flip 采得全部内容；HDR 下输出 FP16 scRGB 与现有 tone-map 管线零改动衔接；设计文档已备：共享 D3D 设备零拷贝、保持 60fps 时刻表、光标继续走系统合成）。已知代价：Win11 非打包应用无法去除采集黄边框（系统能力限制）。
+  - 辅助：微软官方键 `OverlayMinFPS=0`（稳 MPO 减路径切换冻结）；升级 NVIDIA 610+ 驱动。
+
+### 反馈 3：拔线/瞬断后无法自动恢复 —— 三层根因全部修复 ✓（用户终测"能够自动恢复"）
+回归对比定位（用户质疑"一开始好好的、WiFi 能恢复 USB 不能"是关键指引）——R3 的"host 进程内重连"绕过了 session 编排：
+1. **静态桌面死链不检测**（dccf9d6）：ping 只随帧发，静止画面无流量，拔线后 host 不知情、平板读超时撞僵尸 backlog。修复：sender 独立 5s 心跳 + 编码循环 should_abort 轮询 + 平板 HELLO 12s 界。
+2. **reverse 映射无人重建**（86cb836）：拔线清掉 adb reverse 后，host 内部重连永不退出 → session 编排（重设 reverse）轮不到。修复：连续 6 轮 accept 超时（约 30s）host 以退出码 2 结束 → session 识别后回主循环重设 reverse → am start → 重启 host——**恢复到与上游/R3 前一致的语义**。
+3. **adb server 脱节自愈**（8c3c478）：实测 adb server 会与 USB 链路脱节（devices 列表空但 TCP 会话健在），设备检测信任假象永久卡在"等待设备"。修复：devices 空 5 轮 `adb reconnect offline`、10 轮 `kill-server` 强制重枚举。
+辅助修复（fe20d8a）：bounded 捕获在拉起常驻 adb server 时 reader 线程永久挂死（server 继承管道句柄）——先 CancelIoEx/关读端再 join；监督线程加诊断日志（`%LOCALAPPDATA%\WireView\logs\reverse-supervisor.log`，状态翻转时记录）。
+**用户终测："能够自动恢复" ✓**。
+
+### 终审复查（按用户要求双代理：全量 + 重点专项）
+全量 46 文件逐一过（V3）+ 恢复链/HDR/滚动/标签四专项（V4）。产出 1 P2 + 4 P3 + 1 回归，全部当轮修复（5f65d1e）：tone-map 负 scRGB NaN 防护、CLI WiFi 路径环境变量 ACP 读改 UTF-8（与主路径一致）、bounded 读管道 CancelIoEx 顺序、touch [down,hover] 覆盖丢按下、设置滚动裁剪赞赏码弹层的结构修正。**全量+专项双通过后部署**。
+
+### 验证状态（反馈轮末）
+18/18 CTest + 三组 Java 自测全绿（每轮修复后）；真机：颜色 ✓、滚动 ✓、拔线自动恢复 ✓、HDR 卡顿=系统限制（MPO 实验命令已交付用户，WGC 路线文档齐备待下一轮实施）。
+
+### 新增已知项
+- HDR 开启时画面更新缺失：系统层限制，Phase1 提示代码与 WGC 路径留待下一轮（本报告文档化完毕）。
+- adb server 脱节：自愈已加，长期观察。
+- 用户感知"有线不如 WiFi 流畅"：USB 恒 24Mbps vs WiFi governor 自适应的码率差异 + adbd 转发抖动，未量化处理，列为观察项。
