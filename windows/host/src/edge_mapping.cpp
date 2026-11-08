@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,65 @@ std::wstring pipe_path_for_current_session() {
 
 // 会话期间保持的守护进程管道连接（apply 成功后持有，shutdown 消费）。
 HANDLE g_edge_mapping_pipe = nullptr;
+
+// 事件连接的 drain 线程：Listen 之后守护进程会持续向该连接推送事件帧，
+// 会话期无人读会打满命名管道内核缓冲、拖住守护进程的 IPC 线程。线程持有
+// 句柄的 DuplicateHandle 副本（不能直接复用 g_edge_mapping_pipe 的数值：
+// apply 关闭旧连接后紧接着 CreateFileW，新句柄大概率复用刚释放的数值，
+// 旧线程的 ReadFile 会读上新命令连接、把握手回复偷走）。副本只由线程
+// 自己关闭，UI 线程经 CancelIoEx 唤醒、join 后再清空全局值，无 double-close。
+HANDLE g_drain_pipe = nullptr;
+HANDLE g_drain_thread = nullptr;
+
+DWORD WINAPI drain_pipe_thread(LPVOID parameter) {
+    HANDLE pipe = static_cast<HANDLE>(parameter);
+    for (;;) {
+        char discard[512];
+        DWORD bytes_read = 0U;
+        // 丢弃一切事件字节。管道断开（守护进程退出）、原始句柄生命周期
+        // 变化或 stop_event_drain 的 CancelIoEx 都会让 ReadFile 失败退出。
+        if (ReadFile(pipe, discard, sizeof(discard), &bytes_read, nullptr) == FALSE ||
+            bytes_read == 0U) {
+            break;
+        }
+    }
+    CloseHandle(pipe);  // 只关自己持有的副本。
+    return 0U;
+}
+
+void start_event_drain(HANDLE pipe) {
+    HANDLE drain_pipe = nullptr;
+    if (DuplicateHandle(
+            GetCurrentProcess(), pipe, GetCurrentProcess(), &drain_pipe,
+            0U, FALSE, DUPLICATE_SAME_ACCESS) == FALSE) {
+        return;  // 尽力而为：没有 drain 线程时退回旧行为（只是无人读事件）。
+    }
+    HANDLE thread = CreateThread(
+        nullptr, 0U, drain_pipe_thread, drain_pipe, 0U, nullptr);
+    if (thread == nullptr) {
+        CloseHandle(drain_pipe);
+        return;
+    }
+    g_drain_pipe = drain_pipe;
+    g_drain_thread = thread;
+}
+
+void stop_event_drain() {
+    HANDLE drain_pipe = g_drain_pipe;
+    HANDLE thread = g_drain_thread;
+    g_drain_pipe = nullptr;
+    g_drain_thread = nullptr;
+    if (drain_pipe != nullptr) {
+        CancelIoEx(drain_pipe, nullptr);  // 唤醒阻塞中的 ReadFile。
+    }
+    if (thread != nullptr) {
+        // 等线程退出再返回：此刻线程已 CloseHandle 自己的副本，全局里的
+        // 旧数值从此不再被引用。超时（理论不可达）时只放弃线程句柄，
+        // 不关副本——由线程退出时自行关闭，避免 double-close。
+        WaitForSingleObject(thread, 2000U);
+        CloseHandle(thread);
+    }
+}
 
 std::string narrow_utf8(const std::wstring& text) {
     if (text.empty()) {
@@ -166,26 +226,41 @@ bool read_frame(HANDLE pipe, std::string& utf8_payload, DWORD deadline_millis) {
 // 启动 Hook.exe（standalone + LBM_HOOK_UI=1：不回放 Current.xml，全权 IPC 控制）。
 void spawn_hook(const std::string& hook_path_narrow) {
     std::wstring command = L"\"" + widen_utf8(hook_path_narrow) + L"\"";
-    // 环境块：每项以 \0 结尾，整块以双 \0 结束。注意 operator+=(const
-    // wchar_t*) 会在内嵌 \0 处截断，必须用 push_back 追加 null。
-    std::wstring environment;
-    environment += L"LBM_HOOK_UI=1";
-    environment.push_back(L'\0');
-    environment += L"LBM_HOOK_DEBUG=";
-    environment.push_back(L'\0');
-    environment.push_back(L'\0');
+    // 环境块：以父进程环境为基础（GetEnvironmentStringsW 复制），复制时剔除
+    // 旧的 LBM_HOOK_* 项（同名项留下会与末尾追加的新值形成重复定义），再在
+    // 块尾追加本次设置。整体替换会丢 SystemRoot/TEMP/PATH 等，.NET 运行时
+    // 初始化将直接失败。每项以 \0 结尾，整块以双 \0 结束；块内含内嵌 \0，
+    // 只能按长度逐项遍历，不能当普通宽字符串拼接。
+    std::vector<wchar_t> environment;
+    LPWCH parent_block = GetEnvironmentStringsW();
+    if (parent_block != nullptr) {
+        const wchar_t* cursor = parent_block;
+        while (*cursor != L'\0') {
+            const std::size_t entry_length = wcslen(cursor);
+            if (wcsncmp(cursor, L"LBM_HOOK_", 9U) != 0) {
+                environment.insert(
+                    environment.end(), cursor, cursor + entry_length + 1U);
+            }
+            cursor += entry_length + 1U;
+        }
+        FreeEnvironmentStringsW(parent_block);
+    }
+    // 字面量自带两条完整条目与块尾双 \0（含字符串本身的结尾 \0）。
+    const wchar_t kOverrides[] = L"LBM_HOOK_UI=1\0LBM_HOOK_DEBUG=\0";
+    environment.insert(
+        environment.end(), kOverrides,
+        kOverrides + sizeof(kOverrides) / sizeof(kOverrides[0]));
 
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION process{};
-    // CREATE_UNICODE_ENVIRONMENT + 分离的只读环境块。
-    std::vector<wchar_t> environment_block(environment.begin(), environment.end());
+    // CREATE_UNICODE_ENVIRONMENT + 继承父环境并覆盖 LBM_HOOK_* 的环境块。
     const BOOL created = CreateProcessW(
         nullptr, command.data(), nullptr, nullptr, FALSE,
         CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-        environment_block.data(), nullptr, &startup, &process);
+        environment.data(), nullptr, &startup, &process);
     if (created == FALSE) {
         return;
     }
@@ -304,18 +379,25 @@ std::wstring build_zones_layout_xml(EdgeMappingRect primary, EdgeMappingRect vdd
     const std::wstring& primary_device_name, const std::wstring& vdd_device_name) {
     // 拼布局：Zone0=主屏，Zone1=副屏，两屏相邻边互写连通 ZoneLink。
     // 根据两屏相对位置判定相邻边（与副屏摆放选择一致）。
+    // 相邻 = 一轴分离（含恰好相接）且另一轴区间重叠 > 0：单轴短路会把
+    // 对角摆放/仅角接触/完全分离的布局也连起来，指针在物理不相邻的两
+    // 屏间"穿越空隙"跳变，零重叠一律返回空串交给调用方报"不邻接"。
     int horizontal = 0;  // -1 副屏在左，+1 副屏在右
     int vertical = 0;    // -1 副屏在上，+1 副屏在下
-    if (vdd.left >= primary.right) {
+    const LONG overlap_x =
+        std::min(primary.right, vdd.right) - std::max(primary.left, vdd.left);
+    const LONG overlap_y =
+        std::min(primary.bottom, vdd.bottom) - std::max(primary.top, vdd.top);
+    if (vdd.left >= primary.right && overlap_y > 0) {
         horizontal = 1;
-    } else if (vdd.right <= primary.left) {
+    } else if (vdd.right <= primary.left && overlap_y > 0) {
         horizontal = -1;
-    } else if (vdd.top >= primary.bottom) {
+    } else if (vdd.top >= primary.bottom && overlap_x > 0) {
         vertical = 1;
-    } else if (vdd.bottom <= primary.top) {
+    } else if (vdd.bottom <= primary.top && overlap_x > 0) {
         vertical = -1;
     } else {
-        return {};  // 边界不邻接
+        return {};  // 边界不邻接（含仅角接触与完全分离）
     }
 
     const MmRect primary_mm = to_mm_uniform(primary);
@@ -447,7 +529,9 @@ bool edge_mapping_apply(
         return false;
     }
 
-    // 重复 apply（拓扑变化重挂）时释放上一条事件连接，避免句柄泄漏。
+    // 重复 apply（拓扑变化重挂）时释放上一条事件连接（先停 drain 线程，
+    // 再关原始句柄），避免句柄泄漏与句柄数值复用竞态。
+    stop_event_drain();
     if (g_edge_mapping_pipe != nullptr) {
         CancelIo(g_edge_mapping_pipe);
         CloseHandle(g_edge_mapping_pipe);
@@ -505,15 +589,19 @@ bool edge_mapping_apply(
             : L"守护进程拒绝布局：" + failure;
         return false;
     }
-    // 成功：连接保留（作为事件监听者），会话结束时 Quit。
+    // 成功：连接保留（作为事件监听者；drain 线程持续丢弃事件帧，防止
+    // 打满管道内核缓冲），会话结束时 Quit。
     g_edge_mapping_pipe = pipe;
+    start_event_drain(pipe);
     return true;
 }
 
 void edge_mapping_shutdown() {
     // 事件模式连接上的命令会被守护进程丢弃，Quit 必须走一条全新的
     // 命令模式连接（探针实测）。旧的事件连接先显式关闭：控制中心长期
-    // 存活，置空不关会让每次停止会话都积一个内核句柄。
+    // 存活，置空不关会让每次停止会话都积一个内核句柄。先停 drain 线程
+    // 再关原始句柄，两步顺序与 apply 的重挂路径一致。
+    stop_event_drain();
     HANDLE stale = g_edge_mapping_pipe;
     g_edge_mapping_pipe = nullptr;
     if (stale != nullptr) {

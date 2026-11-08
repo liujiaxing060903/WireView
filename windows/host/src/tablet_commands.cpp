@@ -120,7 +120,10 @@ bool decode_window_move(
     std::uint32_t& token,
     std::uint32_t& index,
     std::uint8_t& target_area) {
-    if (payload.size() != 10U) {
+    // Defense in depth: the dispatcher already routes by payload[0], but the
+    // sibling decoders self-check their command byte, so mirror that here.
+    if (payload.size() != 10U ||
+        payload[0] != static_cast<std::uint8_t>(TabletCommand::move_window)) {
         return false;
     }
     token = read_u32_le(payload, 1U);
@@ -169,12 +172,18 @@ bool decode_ime_key(std::span<const std::uint8_t> payload, UINT& virtual_key) {
 std::vector<std::uint8_t> encode_window_list(
     std::uint32_t token,
     const std::vector<TabletWindowEntry>& entries) {
+    // The count field is u16: a silently wrapped count would make the
+    // Android side read fewer entries than encoded and treat the remainder
+    // as unparsed trailing bytes, so cap the list itself (same policy as
+    // the title truncation below).
+    const std::size_t count = entries.size() > 0xffffU ? 0xffffU : entries.size();
     std::vector<std::uint8_t> payload;
-    payload.reserve(6U + entries.size() * 16U);
+    payload.reserve(6U + count * 16U);
     write_u32_le(payload, token);
-    payload.push_back(static_cast<std::uint8_t>(entries.size() & 0xffU));
-    payload.push_back(static_cast<std::uint8_t>((entries.size() >> 8U) & 0xffU));
-    for (const auto& entry : entries) {
+    payload.push_back(static_cast<std::uint8_t>(count & 0xffU));
+    payload.push_back(static_cast<std::uint8_t>((count >> 8U) & 0xffU));
+    for (std::size_t entry_index = 0U; entry_index < count; ++entry_index) {
+        const auto& entry = entries[entry_index];
         const std::uint64_t handle = reinterpret_cast<std::uint64_t>(entry.window);
         for (int shift = 0; shift < 64; shift += 8) {
             payload.push_back(
