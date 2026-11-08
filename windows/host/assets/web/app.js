@@ -7,7 +7,8 @@
     selectedResolution: 0, selectedVddMode: 0, positions: [], selectedPosition: 0,
     orientations: [], selectedOrientation: 0, edgeMapping: true, parsecAvailable: false,
     parsecVersion: 0, parsecDisplayCount: 0, diagnostics: '',
-    wifiEnabled: false, wifiPairingActive: false, wifiDevices: [], wifiWhitelist: []
+    wifiEnabled: false, wifiPairingActive: false, wifiDevices: [], wifiWhitelist: [],
+    closeExits: false, idleExitMinutes: 0
   };
   const send = command => window.chrome?.webview?.postMessage(command);
   const lockedCommands = new Set(['mode-copy', 'mode-extend', 'input-off', 'input-on', 'create-vdd', 'remove-vdd', 'recover-vdd', 'preview']);
@@ -113,6 +114,21 @@
     document.querySelector('#wifi-mode-hint').textContent = wifiOn
       ? (state.wifiPairingActive ? '正在配对…' : '已开启，正在搜索平板（局域网）')
       : '与平板接入同一局域网后开启，配对一次长期有效';
+    const closeToggle = document.querySelector('#close-exit-toggle');
+    const closeOn = state.closeExits === true;
+    closeToggle.classList.toggle('is-on', closeOn);
+    closeToggle.setAttribute('aria-checked', closeOn ? 'true' : 'false');
+    document.querySelector('#close-exit-hint').textContent = closeOn
+      ? '点关闭按钮将直接退出 WireView'
+      : '点关闭按钮最小化到托盘（默认）';
+    const idleSelect = document.querySelector('#idle-exit-select');
+    if (document.activeElement !== idleSelect) {
+      idleSelect.value = String(state.idleExitMinutes ?? 0);
+    }
+    const idleMinutes = Number(state.idleExitMinutes ?? 0);
+    document.querySelector('#idle-exit-hint').textContent = idleMinutes > 0
+      ? '无会话持续 ' + idleMinutes + ' 分钟后自动退出'
+      : '无会话持续一段时间后自动退出';
     const pairingRow = document.querySelector('#wifi-pairing-row');
     pairingRow.hidden = !wifiOn;
     if (wifiOn) {
@@ -236,6 +252,18 @@
       if (ip) send(`wifi-pair-ip|${ip}`);
       updateSettingsPanel();
     });
+    document.querySelector('#close-exit-toggle').addEventListener('click', event => {
+      event.stopPropagation();
+      state.closeExits = !(state.closeExits === true);
+      send('close-exits-toggle');
+      updateSettingsPanel();
+    });
+    document.querySelector('#idle-exit-select').addEventListener('change', event => {
+      event.stopPropagation();
+      state.idleExitMinutes = Number(event.target.value || 0);
+      send(`idle-exit-minutes|${event.target.value}`);
+      updateSettingsPanel();
+    });
     document.querySelector('#theme-toggle').addEventListener('click', event => {
       event.stopPropagation();
       darkMode = !darkMode;
@@ -328,7 +356,9 @@
     wifiWhitelist: state.wifiWhitelist,
     wifiTargetId: state.wifiTargetId,
     wifiTargetName: state.wifiTargetName,
-    wifiTargetIp: state.wifiTargetIp
+    wifiTargetIp: state.wifiTargetIp,
+    closeExits: state.closeExits,
+    idleExitMinutes: state.idleExitMinutes
   });
   const wireEvents = () => {
     document.querySelectorAll('[data-command]').forEach(node => node.addEventListener('click', () => {

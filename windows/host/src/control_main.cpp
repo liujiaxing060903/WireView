@@ -90,6 +90,8 @@ constexpr UINT_PTR kVddTimer = 2;
 constexpr UINT_PTR kDeviceDetectTimer = 3;
 // 平板侧边栏请求换向后的延迟重启；显示器拓扑变化后边缘映射重挂的防抖。
 constexpr UINT_PTR kRotateRestartTimer = 4;
+constexpr UINT_PTR kIdleExitTimer = 6;
+constexpr UINT kIdleExitTimerPeriodMillis = 60'000U;
 constexpr UINT_PTR kEdgeRemapTimer = 5;
 constexpr UINT kTrayMessage = WM_APP + 1U;
 constexpr UINT kFinalizeControlExit = WM_APP + 2U;
@@ -217,6 +219,11 @@ struct ControlState {
     // rotate-restart transport choice.
     bool last_session_transport_wifi{false};
     bool rotate_restart_force_wifi{false};
+    // R4 控制中心设置项：关闭=彻底退出；空闲 N 分钟自动退出（0=关闭）。
+    bool close_exits{false};
+    int idle_exit_minutes{0};
+    int idle_exit_ticks{0};
+    std::filesystem::path preferences_file;
     std::wstring current_status;
     // 最近一次会话的 Host 原始输出不能依赖临时 status 文件：手动停止会关闭
     // Job，启动器来不及写最终状态。这里保留独立实时日志的快照供诊断页导出。
@@ -1565,6 +1572,53 @@ void load_control_ui_assets() {
     g_extend_screen_asset = load_control_ui_asset(L"extend-screen.png");
     g_display_only_asset = load_control_ui_asset(L"icon-display-only.png");
     g_touch_pen_asset = load_control_ui_asset(L"icon-touch-pen.png");
+}
+
+// R4 偏好（关闭行为/空闲退出）独立存盘，避免与流设置互相覆盖。
+void load_control_preferences() {
+    if (g_state.settings_file.empty()) {
+        return;
+    }
+    g_state.preferences_file =
+        g_state.settings_file.parent_path() / L"control-preferences.ini";
+    std::ifstream input(g_state.preferences_file);
+    if (!input) {
+        return;
+    }
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line == "close_exits=1") {
+            g_state.close_exits = true;
+        } else if (line.rfind("idle_exit_minutes=", 0U) == 0U) {
+            const int minutes = std::atoi(line.substr(18U).c_str());
+            g_state.idle_exit_minutes =
+                minutes < 0 ? 0 : (minutes > 1440 ? 1440 : minutes);
+        }
+    }
+}
+
+void save_control_preferences() {
+    if (g_state.preferences_file.empty()) {
+        return;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(
+        g_state.preferences_file.parent_path(), error);
+    std::ofstream output(g_state.preferences_file, std::ios::trunc);
+    if (!output) {
+        return;
+    }
+    output << "close_exits=" << (g_state.close_exits ? 1 : 0) << '\n'
+           << "idle_exit_minutes=" << g_state.idle_exit_minutes << '\n';
+}
+
+void restart_idle_exit_timer(HWND window) {
+    g_state.idle_exit_ticks = 0;
+    if (g_state.idle_exit_minutes > 0) {
+        SetTimer(window, kIdleExitTimer, kIdleExitTimerPeriodMillis, nullptr);
+    } else {
+        KillTimer(window, kIdleExitTimer);
+    }
 }
 
 std::filesystem::path find_settings_file() {
@@ -4892,6 +4946,8 @@ void publish_web_state() {
     add_number(L"selectedOrientation", static_cast<std::size_t>(combo_selected_index(g_state.vdd_orientation_selector)));
     add_bool(L"edgeMapping", g_state.edge_mapping_enabled);
     // R3 WiFi：开关、配对进度、已发现设备与白名单。
+    add_bool(L"closeExits", g_state.close_exits);
+    add_number(L"idleExitMinutes", static_cast<std::size_t>(g_state.idle_exit_minutes));
     add_bool(L"wifiEnabled", wireview::host::wifi_control::enabled());
     add_bool(L"wifiPairingActive", wireview::host::wifi_control::pairing_active());
     {
@@ -5032,6 +5088,27 @@ void handle_web_message(std::wstring_view message) {
         } else {
             set_status(L"指针跨屏边缘映射已开启，将在下次会话生效。");
         }
+    } else if (message == L"close-exits-toggle") {
+        g_state.close_exits = !g_state.close_exits;
+        save_control_preferences();
+        set_status(g_state.close_exits
+            ? L"关闭窗口 = 彻底退出已开启。"
+            : L"关闭窗口 = 最小化到托盘（默认）。");
+    } else if (message.starts_with(L"idle-exit-minutes|")) {
+        int minutes = _wtoi(std::wstring(message.substr(18U)).c_str());
+        if (minutes < 0) {
+            minutes = 0;
+        }
+        if (minutes > 1440) {
+            minutes = 1440;
+        }
+        g_state.idle_exit_minutes = minutes;
+        g_state.idle_exit_ticks = 0;
+        save_control_preferences();
+        restart_idle_exit_timer(g_state.window);
+        set_status(minutes > 0
+            ? (L"空闲自动退出已开启：" + std::to_wstring(minutes) + L" 分钟无会话将自动退出。")
+            : L"空闲自动退出已关闭。");
     } else if (message == L"wifi-toggle") {
         wireview::host::wifi_control::set_enabled(
             g_state.window, !wireview::host::wifi_control::enabled());
@@ -5731,6 +5808,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                  [] { return g_state.session_launcher_path; }});
             wireview::host::wifi_control::load_identity(
                 g_state.settings_file.parent_path());
+            load_control_preferences();
+            restart_idle_exit_timer(window);
             if (wireview::host::wifi_control::enabled()) {
                 // 开关恢复：mDNS 启动 + 发现定时器（与 set_enabled 相同路径，
                 // 但不覆盖持久化状态）。
@@ -6159,6 +6238,23 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 wireview::host::wifi_control::on_discover_tick();
                 return 0;
             }
+            if (wparam == kIdleExitTimer) {
+                // R4: idle means no session running; a live session (or the
+                // preview/probe variants) keeps the control center alive.
+                if (g_state.idle_exit_minutes > 0) {
+                    if (g_state.shell_process != nullptr) {
+                        g_state.idle_exit_ticks = 0;
+                    } else {
+                        ++g_state.idle_exit_ticks;
+                        if (g_state.idle_exit_ticks >= g_state.idle_exit_minutes) {
+                            log_control_event(L"exit-request",
+                                L"空闲超时，控制中心自动退出。 ");
+                            begin_control_center_exit(window);
+                        }
+                    }
+                }
+                return 0;
+            }
             if (wparam == kEdgeRemapTimer) {
                 KillTimer(window, kEdgeRemapTimer);
                 reapply_edge_mapping_for_topology();
@@ -6218,7 +6314,13 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             return 0;
         }
         case WM_CLOSE:
-            ShowWindow(window, SW_HIDE);
+            // Default: minimise to the tray so the next mirror starts fast.
+            // The R4 preference flips the close button into a real exit.
+            if (g_state.close_exits) {
+                begin_control_center_exit(window);
+            } else {
+                ShowWindow(window, SW_HIDE);
+            }
             return 0;
         case kTrayMessage:
             if (lparam == WM_LBUTTONDBLCLK) {

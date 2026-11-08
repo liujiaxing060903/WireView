@@ -1009,3 +1009,7 @@ body.theme-light .wifi-meta, body.theme-light .wifi-subheading, body.theme-light
 /* WiFi/USB start availability: a greyed mode card is genuinely
    unstartable (no USB device and no paired WiFi target). */
 .mode-card.disabled { opacity: .45; pointer-events: none; }
+
+/* R4: idle-exit select matches the settings-panel controls */
+#idle-exit-select { padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); color: inherit; font-size: 13px; }
+body.theme-light #idle-exit-select { border-color: rgba(0,0,0,.16); background: rgba(0,0,0,.04); }

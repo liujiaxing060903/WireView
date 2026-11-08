@@ -58,6 +58,21 @@
               <button id="wifi-settings-pair" type="button">配对</button>
             </div></span>
           </div>
+          <div class="settings-toggle-row">
+            <span><strong>关闭窗口 = 彻底退出</strong><small id="close-exit-hint">关闭后不再最小化到托盘</small></span>
+            <button id="close-exit-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-label="切换关闭行为"><i></i></button>
+          </div>
+          <div class="settings-toggle-row">
+            <span><strong>空闲自动退出</strong><small id="idle-exit-hint">无会话持续一段时间后自动退出</small></span>
+            <select id="idle-exit-select" aria-label="空闲自动退出时间">
+              <option value="0">关闭</option>
+              <option value="5">5 分钟</option>
+              <option value="10">10 分钟</option>
+              <option value="30">30 分钟</option>
+              <option value="60">60 分钟</option>
+              <option value="120">120 分钟</option>
+            </select>
+          </div>
         </section>
       </div>
     </header>
