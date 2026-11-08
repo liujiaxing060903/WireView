@@ -23,6 +23,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -32,7 +33,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace wireview::host {
@@ -1676,14 +1676,15 @@ bool set_codec_value(
     ICodecAPI* codec_api,
     const GUID& property,
     VARIANT& value,
-    const char* name) {
+    const char* name,
+    const char* success_text = "enabled") {
     if (codec_api->IsSupported(&property) != S_OK) {
         std::cout << "  " << name << "=unsupported\n";
         return false;
     }
     const HRESULT result = codec_api->SetValue(&property, &value);
     std::cout << "  " << name << '='
-              << (SUCCEEDED(result) ? "enabled" : hresult_text(result)) << '\n';
+              << (SUCCEEDED(result) ? success_text : hresult_text(result)) << '\n';
     return SUCCEEDED(result);
 }
 
@@ -1702,11 +1703,12 @@ bool set_codec_uint32(
     ICodecAPI* codec_api,
     const GUID& property,
     UINT32 number,
-    const char* name) {
+    const char* name,
+    const char* success_text = "enabled") {
     VARIANT value{};
     value.vt = VT_UI4;
     value.ulVal = number;
-    return set_codec_value(codec_api, property, value, name);
+    return set_codec_value(codec_api, property, value, name, success_text);
 }
 
 [[nodiscard]] ComPtr<IMFMediaType> make_video_type(
@@ -1844,6 +1846,11 @@ public:
     }
 
     void submit(ID3D11Texture2D* texture, LONGLONG timestamp, LONGLONG duration) {
+        if (keyframe_retry_pending_) {
+            // A previously rejected forced-keyframe request is retried here,
+            // so the IDR lands on the first frame the MFT accepts it for.
+            request_keyframe("forceKeyframeRetry");
+        }
         ComPtr<IMFMediaBuffer> buffer;
         check_hresult(
             MFCreateDXGISurfaceBuffer(
@@ -1856,8 +1863,10 @@ public:
         check_hresult(sample->SetSampleDuration(duration),
                       "IMFSample::SetSampleDuration(input)");
         if (!first_input_submitted_) {
-            set_codec_bool(
-                codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, true, "forceFirstKeyframe");
+            // The first submitted frame must be an IDR so Android can start
+            // decoding immediately; a rejection follows the shared tolerant
+            // retry policy instead of being silently dropped.
+            request_keyframe("forceFirstKeyframe");
             first_input_submitted_ = true;
         }
         check_hresult(transform_->ProcessInput(0, sample.Get(), 0),
@@ -1867,16 +1876,20 @@ public:
     // Runtime bitrate retarget for the adaptive WiFi transport. Some MFTs
     // only apply CODECAPI changes at stream start; a rejection is logged
     // once and the governor keeps running (its target simply has no effect).
+    // The success log carries the numeric target so it cannot be confused
+    // with the measured end-of-session throughput.
     void set_bitrate(UINT32 bits_per_second) {
+        const std::string target_text = std::to_string(bits_per_second);
         if (!set_codec_uint32(
                 codec_api_.Get(),
                 CODECAPI_AVEncCommonMeanBitRate,
                 bits_per_second,
-                "adaptiveBitrate")) {
+                "adaptiveBitrate",
+                target_text.c_str())) {
             if (!bitrate_retarget_failed_) {
                 bitrate_retarget_failed_ = true;
                 std::cout << "Encoder rejected a runtime bitrate change; "
-                             "the stream keeps the initial bitrate\n";
+                             "the stream keeps the previous bitrate\n";
             }
         } else {
             bit_rate_ = bits_per_second;
@@ -1887,26 +1900,31 @@ public:
         // A decoder that discarded any inter frame must not continue from its
         // old reference picture. Request an IDR on the encoder thread before
         // submitting the next source frame, then let the receiver resume only
-        // after that clean point arrives.
-        if (!set_codec_bool(
-                codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, true, "forceRecoveryKeyframe")) {
-            throw std::runtime_error("hardware encoder rejected forced recovery keyframe");
-        }
+        // after that clean point arrives. A CODECAPI rejection follows the
+        // tolerant request_keyframe policy instead of killing the session.
+        request_keyframe("forceRecoveryKeyframe");
     }
 
-    [[nodiscard]] MediaEventType next_event() {
+    struct EncoderEvent {
+        MediaEventType type{MEUnknown};
+        HRESULT status{S_OK};
+    };
+
+    // The event status is returned instead of being checked here:
+    // MENonFatalError carries a failure status by design, and the encode
+    // loop must be able to classify the event before deciding severity.
+    [[nodiscard]] EncoderEvent next_event() {
         ComPtr<IMFMediaEvent> event;
         const HRESULT result = events_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
         if (result == MF_E_NO_EVENTS_AVAILABLE) {
-            return MEUnknown;
+            return {};
         }
         check_hresult(result, "IMFMediaEventGenerator::GetEvent");
         HRESULT event_status = S_OK;
         check_hresult(event->GetStatus(&event_status), "IMFMediaEvent::GetStatus");
-        check_hresult(event_status, "hardware encoder event");
         MediaEventType type = MEUnknown;
         check_hresult(event->GetType(&type), "IMFMediaEvent::GetType");
-        return type;
+        return EncoderEvent{.type = type, .status = event_status};
     }
 
     struct Output {
@@ -1914,9 +1932,15 @@ public:
         std::vector<std::uint8_t> bytes;
         bool keyframe{false};
         bool annex_b{false};
+        // True when producing this output required an output-format
+        // renegotiation; the encode loop then releases every pending
+        // converter slot, because the MFT usually flushes its in-flight
+        // input frames around a stream change.
+        bool renegotiated{false};
     };
 
     [[nodiscard]] Output take_output() {
+        bool renegotiated = false;
         for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
             ComPtr<IMFSample> allocated_sample;
             const bool transform_provides_sample =
@@ -1952,6 +1976,7 @@ public:
                         "hardware encoder created a new output stream, which WireView does not support");
                 }
                 renegotiate_output_type();
+                renegotiated = true;
                 continue;
             }
             if (FAILED(result) && attempt > 0U) {
@@ -1972,6 +1997,7 @@ public:
             }
 
             Output output;
+            output.renegotiated = renegotiated;
             if (FAILED(sample->GetSampleTime(&output.timestamp))) {
                 output.timestamp = -1;
             }
@@ -2017,6 +2043,32 @@ public:
     }
 
 private:
+    // Shared policy for every forced-keyframe request (first frame, Android
+    // recovery, post-error recovery): a rejected CODECAPI call is logged
+    // once and retried before the next submitted frame; only a full GOP of
+    // consecutive rejections escalates to fatal. Runtime CODECAPI refusals
+    // really occur on target hardware (the AMD R3 box rejects other hints),
+    // while a missed IDR costs at most one GOP of recovery, which the
+    // natural GOP IDR already bounds.
+    void request_keyframe(const char* label) {
+        if (set_codec_bool(
+                codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, true, label)) {
+            keyframe_failures_ = 0U;
+            keyframe_retry_pending_ = false;
+            return;
+        }
+        ++keyframe_failures_;
+        keyframe_retry_pending_ = true;
+        if (keyframe_failures_ == 1U) {
+            std::cout << "Encoder rejected a forced keyframe request; "
+                         "retrying before the next submitted frame\n";
+        }
+        if (keyframe_failures_ >= kForcedKeyframeFailureLimit) {
+            throw std::runtime_error(
+                "hardware encoder rejected forced keyframes for a full GOP");
+        }
+    }
+
     void renegotiate_output_type() {
         ComPtr<IMFMediaType> output_type;
         check_hresult(transform_->GetOutputAvailableType(0, 0, &output_type),
@@ -2054,6 +2106,10 @@ private:
     bool direct3d_aware_{false};
     bool low_latency_enabled_{false};
     bool first_input_submitted_{false};
+    // Tolerant forced-keyframe retry state (see request_keyframe).
+    static constexpr unsigned kForcedKeyframeFailureLimit = 60U;
+    bool keyframe_retry_pending_{false};
+    unsigned keyframe_failures_{0};
     bool started_{false};
     bool draining_{false};
 };
@@ -2160,11 +2216,17 @@ int run_desktop_encode_session(
     }
 
     const LONGLONG frame_duration = kHundredNanosecondsPerSecond / frame_rate;
+    // FIFO of in-flight NV12 converter slots. Low-delay AVC without B-frames
+    // emits encoded output in the same order the frames were submitted, so
+    // HaveOutput releases the oldest entry; a renegotiated output format
+    // clears everything still queued. This replaces the old exact-timestamp
+    // lookup, where a missed or rewritten timestamp silently leaked slots
+    // until the three-slot pool ran dry.
     struct SubmittedFrame {
         Clock::time_point submitted_at;
         std::size_t converter_slot;
     };
-    std::unordered_map<LONGLONG, SubmittedFrame> submitted_at;
+    std::deque<SubmittedFrame> submitted_frames;
     std::uint64_t submitted = 0;
     std::uint64_t encoded = 0;
     std::uint64_t keyframes = 0;
@@ -2183,11 +2245,29 @@ int run_desktop_encode_session(
     bool draining = false;
     bool drained = false;
     std::uint64_t desktop_updates_before_reset = 0;
+    // Last bitrate target accepted from the governor; replayed onto a
+    // replacement encoder after a secure-desktop rebuild, because the
+    // command itself is edge-triggered and was already consumed by then.
+    std::uint32_t last_bitrate_command = 0;
+    unsigned consecutive_nonfatal_errors = 0U;
     encoder->start();
 
     while (!drained) {
-        const MediaEventType event = encoder->next_event();
-        if (event == MEUnknown) {
+        const HardwareAvcEncoder::EncoderEvent event = encoder->next_event();
+        if (event.type != MEUnknown && event.type != MENonFatalError) {
+            // Any healthy event breaks a run of non-fatal errors.
+            consecutive_nonfatal_errors = 0U;
+        }
+        if (event.type == MEUnknown) {
+            // The session deadline must also be enforced while idle: if the
+            // MFT goes silent (driver hang, GPU reset) it never asks for
+            // input again, and without this check the loop would spin
+            // forever. The semantics mirror the NeedInput branch below.
+            if (!draining && Clock::now() >= deadline) {
+                encoder->drain();
+                draining = true;
+                drain_deadline = Clock::now() + std::chrono::seconds(5);
+            }
             if (draining && Clock::now() > drain_deadline) {
                 throw std::runtime_error("hardware encoder drain timed out");
             }
@@ -2195,7 +2275,7 @@ int run_desktop_encode_session(
             continue;
         }
 
-        if (event == METransformNeedInput) {
+        if (event.type == METransformNeedInput) {
             if (!draining && Clock::now() >= deadline) {
                 encoder->drain();
                 draining = true;
@@ -2223,7 +2303,9 @@ int run_desktop_encode_session(
                 // Media Foundation encoder, and rebuild the complete GPU
                 // pipeline on a fresh D3D11 device.
                 desktop_updates_before_reset += frames->updates();
-                submitted_at.clear();
+                // The converter (and its slot pool) is destroyed below, so
+                // clearing this FIFO needs no per-slot release here.
+                submitted_frames.clear();
                 encoder.reset();
                 converter.reset();
                 cursor_compositor.reset();
@@ -2296,6 +2378,16 @@ int run_desktop_encode_session(
                         converter = std::move(replacement_converter);
                         activation = std::move(replacement_activation);
                         encoder = std::move(replacement_encoder);
+                        // The replacement MFT restarts at the construction
+                        // bitrate (kBitRate scaled by fps) while the governor
+                        // command was already consumed by its edge-triggered
+                        // exchange; replay the last accepted target so a
+                        // constrained link does not re-congest at the initial
+                        // bitrate until the governor's next step (up to eight
+                        // health seconds away).
+                        if (last_bitrate_command != 0U) {
+                            encoder->set_bitrate(last_bitrate_command);
+                        }
                         const auto elapsed = Clock::now() - started;
                         const auto elapsed_ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
                         submitted = std::max(submitted, static_cast<std::uint64_t>(
@@ -2340,8 +2432,17 @@ int run_desktop_encode_session(
                 std::cout << "Android requested H.264 recovery keyframe; forcing next frame\n";
                 encoder->force_keyframe();
             }
-            submitted_at.emplace(
-                timestamp,
+            // Edge-triggered bitrate command from the adaptive transport:
+            // zero means "no change", and set_bitrate itself tolerates MFTs
+            // that refuse runtime retargets.
+            if (callbacks.consume_bitrate_command) {
+                const std::uint32_t target_bps = callbacks.consume_bitrate_command();
+                if (target_bps != 0U) {
+                    encoder->set_bitrate(target_bps);
+                    last_bitrate_command = target_bps;
+                }
+            }
+            submitted_frames.push_back(
                 SubmittedFrame{
                     .submitted_at = Clock::now(),
                     .converter_slot = nv12.slot,
@@ -2351,23 +2452,33 @@ int run_desktop_encode_session(
             continue;
         }
 
-        if (event == METransformHaveOutput) {
+        if (event.type == METransformHaveOutput) {
             const HardwareAvcEncoder::Output output = encoder->take_output();
             ++encoded;
             total_bytes += output.bytes.size();
             keyframes += output.keyframe ? 1U : 0U;
             annex_b_outputs += output.annex_b ? 1U : 0U;
-            const auto input = submitted_at.find(output.timestamp);
-            if (input != submitted_at.end()) {
+            if (output.renegotiated) {
+                // An output-format change flushes the MFT's in-flight input
+                // frames; those slots would never be released by an output.
+                while (!submitted_frames.empty()) {
+                    converter->release_slot(submitted_frames.front().converter_slot);
+                    submitted_frames.pop_front();
+                }
+            }
+            if (!submitted_frames.empty()) {
+                const SubmittedFrame input = submitted_frames.front();
+                submitted_frames.pop_front();
                 const double latency_ms = std::chrono::duration<double, std::milli>(
-                    Clock::now() - input->second.submitted_at).count();
+                    Clock::now() - input.submitted_at).count();
                 total_latency_ms += latency_ms;
                 maximum_latency_ms = std::max(maximum_latency_ms, latency_ms);
                 if (encoded == 1U) {
                     first_frame_latency_ms = latency_ms;
                 }
-                converter->release_slot(input->second.converter_slot);
-                submitted_at.erase(input);
+                converter->release_slot(input.converter_slot);
+            } else {
+                std::cout << "Encoder output arrived with no pending submitted frame\n";
             }
             if (callbacks.on_frame) {
                 const std::uint64_t timestamp_micros = output.timestamp >= 0
@@ -2379,13 +2490,31 @@ int run_desktop_encode_session(
             continue;
         }
 
-        if (event == METransformDrainComplete) {
+        if (event.type == METransformDrainComplete) {
             drained = true;
             continue;
         }
 
-        if (event == MEError || event == MENonFatalError) {
-            throw std::runtime_error("hardware encoder reported an error event");
+        if (event.type == MEError) {
+            throw std::runtime_error(
+                "hardware encoder reported a fatal error event: " +
+                hresult_text(event.status));
+        }
+        if (event.type == MENonFatalError) {
+            // MENonFatalError marks a recoverable encoder error: log it, ask
+            // for a recovery IDR (the reference chain may be damaged), and
+            // keep streaming. Only a long unbroken run of them suggests the
+            // encoder is stuck and escalates to fatal.
+            ++consecutive_nonfatal_errors;
+            std::cout << "Hardware encoder reported a non-fatal error; continuing"
+                      << " | status=" << hresult_text(event.status)
+                      << " | consecutive=" << consecutive_nonfatal_errors << '\n';
+            if (consecutive_nonfatal_errors >= 10U) {
+                throw std::runtime_error(
+                    "hardware encoder reported ten consecutive non-fatal errors");
+            }
+            encoder->force_keyframe();
+            continue;
         }
     }
 
@@ -2410,7 +2539,7 @@ int run_desktop_encode_session(
               << " | desktopUpdateRate=" << desktop_update_rate << " fps"
               << " | keyframes=" << keyframes
               << " | outputRate=" << output_rate << " fps"
-              << " | bitrate=" << actual_mbps << " Mbps\n"
+              << " | measured=" << actual_mbps << " Mbps\n"
               << "Latency: first=" << first_frame_latency_ms
               << " ms | average=" << average_latency_ms
               << " ms | maximum=" << maximum_latency_ms << " ms\n"
