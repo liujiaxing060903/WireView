@@ -36,9 +36,24 @@
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const optionList = (items, selected) => items.map((item, index) => `<option value="${index}" ${index === selected ? 'selected' : ''}>${escape(item)}</option>`).join('');
   const panelTitle = (number, title) => `<div class="card-title"><span><i class="number">${number}</i>${title}</span></div>`;
-  const deviceCard = () => `<article class="device-card ${state.connected ? 'is-connected' : 'is-disconnected'}"><div class="device-art"></div><div class="device-copy"><span class="connected ${state.connected ? 'is-connected' : 'is-disconnected'}">${state.connected ? '● 设备已连接' : '○ 等待设备连接'}</span><strong class="device-name">${escape(state.deviceName)}</strong><span class="device-meta">${state.connected ? `USB 已连接 · ${escape(state.resolution)} · ${escape(state.deviceRefresh)} Hz` : '连接 USB 数据线并允许 USB 调试'}</span></div><div class="device-actions"><button class="device-stop" data-command="stop" ${state.running ? '' : 'disabled'}>■　停止 WireView</button><button class="device-settings" data-command="display-settings">▣　Windows 显示设置</button></div></article>`;
+  const deviceCard = () => {
+    const wifiReady = state.wifiEnabled === true && !state.connected;
+    const statusLine = state.connected
+      ? `USB 已连接 · ${escape(state.resolution)} · ${escape(state.deviceRefresh)} Hz`
+      : wifiReady
+        ? (state.wifiTargetId
+            ? `WiFi 模式 · 目标：${escape(state.wifiTargetName || state.wifiTargetId)}${state.wifiTargetIp ? '（' + escape(state.wifiTargetIp) + '）' : '（发现中）'}`
+            : 'WiFi 已开启 · 尚无配对平板（⚙ 设置内可配对）')
+        : '连接 USB 数据线或开启 WiFi 投屏（⚙ 设置）';
+    return `<article class="device-card ${state.connected ? 'is-connected' : 'is-disconnected'}"><div class="device-art"></div><div class="device-copy"><span class="connected ${state.connected ? 'is-connected' : 'is-disconnected'}">${state.connected ? '● 设备已连接' : (wifiReady ? '● WiFi 投屏模式' : '○ 等待设备连接')}</span><strong class="device-name">${escape(state.deviceName)}</strong><span class="device-meta">${statusLine}</span></div><div class="device-actions"><button class="device-stop" data-command="stop" ${state.running ? '' : 'disabled'}>■　停止 WireView</button><button class="device-settings" data-command="display-settings">▣　Windows 显示设置</button></div></article>`;
+  };
   const simple = () => {
-    const modeDisabled = state.connected && state.canStartSession ? '' : 'disabled';
+    // USB connection or a paired WiFi target both allow starting a session
+    // (the WiFi path dials the last-known address when discovery is down).
+    const canStart = (state.connected ||
+        (state.wifiEnabled === true && state.wifiTargetId != null &&
+         state.wifiTargetId !== '')) && state.canStartSession;
+    const modeDisabled = canStart ? '' : 'disabled';
     document.querySelector('#simple-page').innerHTML = `<div class="simple-layout">${deviceCard()}<article class="panel simple-configuration"><section class="simple-mode-section"><div class="section-heading"><h2>显示方式</h2><p>选择本次启动的显示方式（启动后生效）</p></div><div class="mode-cards"><button class="mode-card copy ${state.running && state.mode === 'copy' ? 'is-selected' : ''}" data-command="mode-copy" ${modeDisabled}><span class="diagram-stage" aria-hidden="true"><span class="screen-diagram copy"><i class="screen primary"></i><i class="screen secondary"></i></span></span><span class="mode-copy"><span class="mode-title">复制屏幕</span><span class="mode-description">副屏显示与主屏相同的内容</span><span class="hint">推荐用于演示与分享</span></span></button><button class="mode-card extend ${state.running && state.mode === 'extend' ? 'is-selected' : ''}" data-command="mode-extend" ${modeDisabled}><span class="diagram-stage" aria-hidden="true"><span class="screen-diagram extend"><i class="screen primary"></i><i class="screen secondary"></i></span></span><span class="mode-copy"><span class="mode-title">扩展屏幕</span><span class="mode-description">将副屏作为扩展显示区域</span><span class="hint">推荐用于效率与创作</span></span></button></div></section><section class="simple-input-section"><div class="section-heading"><h2>本次会话输入</h2><p>启动 WireView 时应用此设置</p></div><div class="segmented"><button class="segment ${!state.inputEnabled ? 'is-selected' : ''}" data-command="input-off"><span class="radio"></span><span><strong>仅显示</strong><small>副屏仅显示画面，无法触控</small></span></button><button class="segment ${state.inputEnabled ? 'is-selected' : ''}" data-command="input-on"><span class="radio"></span><span><strong>触控与手写笔</strong><small>启用触控与手写笔输入</small></span></button></div></section></article></div>`;
   };
   const full = () => {
@@ -47,7 +62,7 @@
     const vddDisplayImage = state.parsecDisplayCount > 0
       ? 'ui/vdd-display-1.png'
       : 'ui/vdd-display-0.png';
-    document.querySelector('#full-page').innerHTML = `<div class="full-layout"><article class="panel compact-card">${panelTitle('1', '设备概览')}<div class="device-overview ${state.connected ? 'is-connected' : 'is-disconnected'}"><div class="device-art"></div><div><div class="connected ${state.connected ? 'is-connected' : 'is-disconnected'}">${state.connected ? '● 已连接' : '○ 未连接'}</div><div class="device-name" style="font-size:23px">${escape(state.deviceName)}</div><div class="device-meta">USB ${state.connected ? '已连接' : '未连接'} · ${escape(state.resolution)} · ${escape(state.deviceRefresh)} Hz</div></div></div></article><article class="panel compact-card">${panelTitle('2', '显示配置')}<div class="config-values"><div class="config-value"><label>目标显示器</label><select data-select="display">${optionList(state.displays, state.selectedDisplay)}</select></div><div class="config-value"><label>分辨率</label><select data-select="resolution">${optionList(state.resolutions, state.selectedResolution)}</select></div><div class="config-value"><label>刷新率</label><select data-select="vdd">${optionList(state.vddModes, state.selectedVddMode)}</select></div><div class="config-value"><label>视频帧率</label><select data-select="fps"><option value="60" ${state.frameRate.startsWith('60') ? 'selected' : ''}>60 FPS</option><option value="120" ${state.frameRate.startsWith('120') ? 'selected' : ''}>120 FPS（实验）</option></select></div><div class="config-value config-value--wide"><label>副屏位置</label><select data-select="position">${optionList(state.positions, state.selectedPosition)}</select></div><div class="config-value config-value--wide"><label>副屏方向</label><select data-select="orientation">${optionList(state.orientations, state.selectedOrientation)}</select></div></div></article><article class="panel compact-card vdd-card">${panelTitle('3', 'WireView 副屏 / Parsec VDD')}<div class="vdd-summary"><img class="vdd-display-icon" src="${vddDisplayImage}" alt="WireView 副屏数量 ${state.parsecDisplayCount}"><div class="vdd-metric"><small>当前 WireView 副屏数量</small><b>${state.parsecDisplayCount} 个</b><small>启动方式：${state.mode === 'extend' ? '扩展屏幕' : '复制屏幕'}</small></div><div class="vdd-side"><strong>◇　Parsec VDD</strong><span class="connected">${state.parsecAvailable ? '● 可用' : '○ 不可用'}</span><span class="device-meta">版本：${state.parsecVersion || '--'}</span></div></div><div class="vdd-actions"><button data-command="create-vdd">＋ 创建副屏</button><button data-command="remove-vdd">− 移除副屏</button><button data-command="recover-vdd">♜ 清理残留显示</button></div></article><article class="panel compact-card input-card">${panelTitle('4', '本次会话输入（启动时应用）')}<div class="input-compact"><button class="segment ${!state.inputEnabled ? 'is-selected' : ''}" data-command="input-off"><span class="radio"></span><span><strong>仅显示</strong><small>不启用触控与手写笔</small></span></button><button class="segment ${state.inputEnabled ? 'is-selected' : ''}" data-command="input-on"><span class="radio"></span><span><strong>触控与手写笔</strong><small>启用触控与手写笔输入</small></span></button></div></article><article class="panel session-action-card wide">${panelTitle('5', sessionTitle)}<div class="session-action-content"><div class="session-details"><div class="session-summary"><div class="session-item"><label>启动方式</label><strong>${state.mode === 'extend' ? '扩展屏幕' : '复制屏幕'}</strong></div><div class="session-item"><label>副屏数量</label><strong>${state.parsecDisplayCount} 个</strong></div><div class="session-item"><label>目标显示器</label><strong>${escape(state.displayName || '--')}</strong></div><div class="session-item"><label>输入模式</label><strong>${state.inputEnabled ? '触控与手写笔' : '仅显示'}</strong></div><div class="session-item"><label>帧率</label><strong>${escape(state.frameRate)}</strong></div></div></div><div class="session-actions"><button class="primary-button" data-command="start" ${state.running || !state.connected || !state.canStartSession ? 'disabled' : ''}>${startLabel}</button><button class="stop-button" data-command="stop" ${state.running ? '' : 'disabled'}>■　停止 WireView</button></div></div></article><div class="advanced-grid wide"><article class="panel advanced-card">${panelTitle('6', '高级工具')}<div class="tool-row"><button data-command="preview">◉　预览所选画面范围<small>预览并选择显示区域</small></button><button data-command="custom-modes">⌘　编辑自定义分辨率<small>创建或编辑分辨率</small></button><button data-command="display-settings">▣　Windows 显示设置<small>打开系统显示设置</small></button></div></article><article class="panel advanced-card">${panelTitle('7', '诊断与日志')}<button class="diagnostic-link" data-command="diagnostics"><span>▤　连接诊断、日志查看与导出<small>查看连接状态、系统信息与运行日志</small></span><b>›</b></button></article></div></div>`;
+    document.querySelector('#full-page').innerHTML = `<div class="full-layout"><article class="panel compact-card">${panelTitle('1', '设备概览')}<div class="device-overview ${state.connected ? 'is-connected' : 'is-disconnected'}"><div class="device-art"></div><div><div class="connected ${state.connected ? 'is-connected' : 'is-disconnected'}">${state.connected ? '● 已连接' : '○ 未连接'}</div><div class="device-name" style="font-size:23px">${escape(state.deviceName)}</div><div class="device-meta">USB ${state.connected ? '已连接' : '未连接'} · ${escape(state.resolution)} · ${escape(state.deviceRefresh)} Hz</div></div></div></article><article class="panel compact-card">${panelTitle('2', '显示配置')}<div class="config-values"><div class="config-value"><label>目标显示器</label><select data-select="display">${optionList(state.displays, state.selectedDisplay)}</select></div><div class="config-value"><label>分辨率</label><select data-select="resolution">${optionList(state.resolutions, state.selectedResolution)}</select></div><div class="config-value"><label>刷新率</label><select data-select="vdd">${optionList(state.vddModes, state.selectedVddMode)}</select></div><div class="config-value"><label>视频帧率</label><select data-select="fps"><option value="60" ${state.frameRate.startsWith('60') ? 'selected' : ''}>60 FPS</option><option value="120" ${state.frameRate.startsWith('120') ? 'selected' : ''}>120 FPS（实验）</option></select></div><div class="config-value config-value--wide"><label>副屏位置</label><select data-select="position">${optionList(state.positions, state.selectedPosition)}</select></div><div class="config-value config-value--wide"><label>副屏方向</label><select data-select="orientation">${optionList(state.orientations, state.selectedOrientation)}</select></div></div></article><article class="panel compact-card vdd-card">${panelTitle('3', 'WireView 副屏 / Parsec VDD')}<div class="vdd-summary"><img class="vdd-display-icon" src="${vddDisplayImage}" alt="WireView 副屏数量 ${state.parsecDisplayCount}"><div class="vdd-metric"><small>当前 WireView 副屏数量</small><b>${state.parsecDisplayCount} 个</b><small>启动方式：${state.mode === 'extend' ? '扩展屏幕' : '复制屏幕'}</small></div><div class="vdd-side"><strong>◇　Parsec VDD</strong><span class="connected">${state.parsecAvailable ? '● 可用' : '○ 不可用'}</span><span class="device-meta">版本：${state.parsecVersion || '--'}</span></div></div><div class="vdd-actions"><button data-command="create-vdd">＋ 创建副屏</button><button data-command="remove-vdd">− 移除副屏</button><button data-command="recover-vdd">♜ 清理残留显示</button></div></article><article class="panel compact-card input-card">${panelTitle('4', '本次会话输入（启动时应用）')}<div class="input-compact"><button class="segment ${!state.inputEnabled ? 'is-selected' : ''}" data-command="input-off"><span class="radio"></span><span><strong>仅显示</strong><small>不启用触控与手写笔</small></span></button><button class="segment ${state.inputEnabled ? 'is-selected' : ''}" data-command="input-on"><span class="radio"></span><span><strong>触控与手写笔</strong><small>启用触控与手写笔输入</small></span></button></div></article><article class="panel session-action-card wide">${panelTitle('5', sessionTitle)}<div class="session-action-content"><div class="session-details"><div class="session-summary"><div class="session-item"><label>启动方式</label><strong>${state.mode === 'extend' ? '扩展屏幕' : '复制屏幕'}</strong></div><div class="session-item"><label>副屏数量</label><strong>${state.parsecDisplayCount} 个</strong></div><div class="session-item"><label>目标显示器</label><strong>${escape(state.displayName || '--')}</strong></div><div class="session-item"><label>输入模式</label><strong>${state.inputEnabled ? '触控与手写笔' : '仅显示'}</strong></div><div class="session-item"><label>帧率</label><strong>${escape(state.frameRate)}</strong></div></div></div><div class="session-actions"><button class="primary-button" data-command="start" ${state.running || !(state.connected || (state.wifiEnabled === true && state.wifiTargetId != null && state.wifiTargetId !== '')) || !state.canStartSession ? 'disabled' : ''}>${startLabel}</button><button class="stop-button" data-command="stop" ${state.running ? '' : 'disabled'}>■　停止 WireView</button></div></div></article><div class="advanced-grid wide"><article class="panel advanced-card">${panelTitle('6', '高级工具')}<div class="tool-row"><button data-command="preview">◉　预览所选画面范围<small>预览并选择显示区域</small></button><button data-command="custom-modes">⌘　编辑自定义分辨率<small>创建或编辑分辨率</small></button><button data-command="display-settings">▣　Windows 显示设置<small>打开系统显示设置</small></button></div></article><article class="panel advanced-card">${panelTitle('7', '诊断与日志')}<button class="diagnostic-link" data-command="diagnostics"><span>▤　连接诊断、日志查看与导出<small>查看连接状态、系统信息与运行日志</small></span><b>›</b></button></article></div></div>`;
   };
   const addDisplayRefreshButton = () => {
     const overview = document.querySelector('#full-page .device-overview');
@@ -98,6 +113,22 @@
     document.querySelector('#wifi-mode-hint').textContent = wifiOn
       ? (state.wifiPairingActive ? '正在配对…' : '已开启，正在搜索平板（局域网）')
       : '与平板接入同一局域网后开启，配对一次长期有效';
+    const pairingRow = document.querySelector('#wifi-pairing-row');
+    pairingRow.hidden = !wifiOn;
+    if (wifiOn) {
+      const targetName = state.wifiTargetName || '';
+      const targetIp = state.wifiTargetIp || '';
+      const targetId = state.wifiTargetId || '';
+      document.querySelector('#wifi-target-line').textContent =
+        state.wifiPairingActive ? '正在配对新平板…'
+        : targetId
+          ? ('会话目标：' + (targetName || targetId) + (targetIp ? '（' + targetIp + '）' : '（未发现，将用最后地址）'))
+          : '尚无配对设备：在下方输入平板 IP 发起配对';
+      const ipInput = document.querySelector('#wifi-settings-ip');
+      if (ipInput && document.activeElement !== ipInput && ipInput.value) {
+        // keep user text; never auto-clear while typing
+      }
+    }
   };
   const wifiCard = () => {
     const whitelist = state.wifiWhitelist || [];
@@ -199,6 +230,12 @@
       send('wifi-toggle');
       updateSettingsPanel();
     });
+    document.querySelector('#wifi-settings-pair').addEventListener('click', event => {
+      event.stopPropagation();
+      const ip = (document.querySelector('#wifi-settings-ip')?.value || '').trim();
+      if (ip) send(`wifi-pair-ip|${ip}`);
+      updateSettingsPanel();
+    });
     document.querySelector('#theme-toggle').addEventListener('click', event => {
       event.stopPropagation();
       darkMode = !darkMode;
@@ -232,7 +269,9 @@
     });
     document.querySelectorAll('[data-select]').forEach(node => {
       const locked = state.running;
-      const unavailable = !state.connected;
+      const unavailable = !state.connected &&
+          !(state.wifiEnabled === true && state.wifiTargetId != null &&
+            state.wifiTargetId !== '');
       node.classList.toggle('is-run-locked', locked);
       node.classList.toggle('is-device-disconnected', unavailable);
       node.disabled = unavailable;
@@ -286,7 +325,10 @@
     wifiEnabled: state.wifiEnabled,
     wifiPairingActive: state.wifiPairingActive,
     wifiDevices: state.wifiDevices,
-    wifiWhitelist: state.wifiWhitelist
+    wifiWhitelist: state.wifiWhitelist,
+    wifiTargetId: state.wifiTargetId,
+    wifiTargetName: state.wifiTargetName,
+    wifiTargetIp: state.wifiTargetIp
   });
   const wireEvents = () => {
     document.querySelectorAll('[data-command]').forEach(node => node.addEventListener('click', () => {

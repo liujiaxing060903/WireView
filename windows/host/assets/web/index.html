@@ -51,6 +51,13 @@
             <span><strong>WiFi 局域网投屏</strong><small id="wifi-mode-hint">与平板接入同一局域网后开启，配对一次长期有效</small></span>
             <button id="wifi-mode-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-label="切换 WiFi 局域网投屏"><i></i></button>
           </div>
+          <div id="wifi-pairing-row" class="settings-toggle-row" hidden>
+            <span><small id="wifi-target-line">目标：未选择</small>
+            <div class="wifi-manual" style="margin:6px 0 0">
+              <input id="wifi-settings-ip" placeholder="平板 IP（如 192.168.137.45）" aria-label="平板 IP">
+              <button id="wifi-settings-pair" type="button">配对</button>
+            </div></span>
+          </div>
         </section>
       </div>
     </header>

@@ -1005,3 +1005,7 @@ body.theme-light .wifi-manual input { border-color: rgba(0,0,0,.16); background:
 body.theme-light .wifi-manual button, body.theme-light .wifi-mini { border-color: rgba(0,0,0,.16); background: rgba(0,0,0,.05); }
 body.theme-light .wifi-row:hover { background: rgba(0,0,0,.04); }
 body.theme-light .wifi-meta, body.theme-light .wifi-subheading, body.theme-light .wifi-empty { color: rgba(0,0,0,.45); }
+
+/* WiFi/USB start availability: a greyed mode card is genuinely
+   unstartable (no USB device and no paired WiFi target). */
+.mode-card.disabled { opacity: .45; pointer-events: none; }

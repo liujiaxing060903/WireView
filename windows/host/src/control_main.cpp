@@ -213,6 +213,10 @@ struct ControlState {
     std::filesystem::path device_model_catalog_file;
     std::filesystem::path device_model_cache_file;
     std::wstring last_script_status;
+    // Transport of the most recent session status (wifi/adb); drives the
+    // rotate-restart transport choice.
+    bool last_session_transport_wifi{false};
+    bool rotate_restart_force_wifi{false};
     std::wstring current_status;
     // 最近一次会话的 Host 原始输出不能依赖临时 status 文件：手动停止会关闭
     // Job，启动器来不及写最终状态。这里保留独立实时日志的快照供诊断页导出。
@@ -2124,6 +2128,13 @@ std::optional<std::wstring> read_script_status() {
     const std::wstring requested_height = value_for(L"requested_height");
     const std::wstring requested_fps = value_for(L"requested_fps");
     const std::wstring transport = value_for(L"transport");
+    // Remember what the running session actually uses: the rotate restart
+    // must keep the same transport even when the USB-presence flag is stale
+    // (a cabled session whose cable dropped mid-rotate used to restart as
+    // ADB into a void, audit live finding).
+    if (transport == L"wifi" || transport == L"adb") {
+        g_state.last_session_transport_wifi = transport == L"wifi";
+    }
     const std::wstring client = value_for(L"client");
     const std::wstring reconnects = value_for(L"reconnects");
     const std::wstring first_frame_ms = value_for(L"first_frame_ms");
@@ -3181,6 +3192,9 @@ void handle_tablet_rotate_request(HWND window) {
         log_control_event(L"rotate", L"平板换向请求被忽略（无会话/预览/探测中/选择器缺失）");
         return;
     }
+    // A WiFi session must restart as WiFi even if a stale USB-presence flag
+    // says otherwise (the 2 s poll lags the physical cable).
+    g_state.rotate_restart_force_wifi = g_state.last_session_transport_wifi;
     const LRESULT current = SendMessageW(
         g_state.vdd_orientation_selector, CB_GETCURSEL, 0U, 0);
     const WPARAM flipped = current == 1 ? 0U : 1U;
@@ -3405,9 +3419,11 @@ bool start_session(
     // USB presence wins: a cabled session is always the more reliable
     // path, so an accidentally selected WiFi target must not hijack it
     // (audit P0-2). WiFi engages only when no USB device is detected.
+    // USB presence wins for fresh starts, EXCEPT a rotate restart of a
+    // WiFi session, which keeps its transport (the USB flag can be stale).
     const bool wifi_selected = !device_preview && !device_profile_probe &&
-        !g_state.device_connected &&
-        wireview::host::wifi_control::has_session_target();
+        wireview::host::wifi_control::has_session_target() &&
+        (g_state.rotate_restart_force_wifi || !g_state.device_connected);
     const bool wifi_session = wifi_selected;
     std::vector<std::uint8_t> wifi_key;
     std::wstring wifi_endpoint;
@@ -4879,6 +4895,12 @@ void publish_web_state() {
     add_bool(L"wifiEnabled", wireview::host::wifi_control::enabled());
     add_bool(L"wifiPairingActive", wireview::host::wifi_control::pairing_active());
     {
+        const auto target = wireview::host::wifi_control::target_info();
+        add_string(L"wifiTargetId", target.android_id);
+        add_string(L"wifiTargetName", target.device_name);
+        add_string(L"wifiTargetIp", target.ip);
+    }
+    {
         std::wstring devices_json;
         for (const auto& device : wireview::host::wifi_control::devices()) {
             if (!devices_json.empty()) {
@@ -6129,6 +6151,8 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 if (g_state.shell_process == nullptr) {
                     (void)start_session(window, g_state.session_input_enabled);
                 }
+                // The hint applies to exactly one restart.
+                g_state.rotate_restart_force_wifi = false;
                 return 0;
             }
             if (wparam == wireview::host::wifi_control::kWifiDiscoverTimerId) {
