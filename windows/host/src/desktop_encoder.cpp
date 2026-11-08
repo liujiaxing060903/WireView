@@ -2415,7 +2415,16 @@ int run_desktop_encode_session(
               << " ms | average=" << average_latency_ms
               << " ms | maximum=" << maximum_latency_ms << " ms\n"
               << "Bitstream framing: AnnexB=" << annex_b_outputs << '/' << encoded << '\n';
-    return encoded > 0U && encoder->low_latency_enabled() ? 0 : 2;
+    // A successfully encoded stream is a successful session. Some hardware
+    // MFTs (AMD on the R3 test machine) reject the CODECAPI low-latency hint
+    // while still delivering 60 fps at ~15 ms average latency; reporting
+    // failure for that made every session on those machines end as an
+    // "interruption". The measured latency is printed above regardless.
+    if (encoded > 0U && !encoder->low_latency_enabled()) {
+        std::cout << "Encoder kept running without the CODECAPI low-latency hint"
+                     " (measured latency is reported above)\n";
+    }
+    return encoded > 0U ? 0 : 2;
 }
 
 int run_desktop_encode_benchmark(std::chrono::seconds duration) {
