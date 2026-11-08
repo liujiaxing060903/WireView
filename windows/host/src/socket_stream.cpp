@@ -56,17 +56,6 @@ void SocketHandle::reset(SOCKET value) noexcept {
     value_ = value;
 }
 
-void SocketByteStream::close() {
-    if (socket_ != INVALID_SOCKET) {
-        // shutdown wakes threads blocked in send/recv on other sockets is
-        // not guaranteed, but it is the documented way to interrupt this
-        // socket's own pending operations before closesocket.
-        (void)shutdown(socket_, SD_BOTH);
-        closesocket(socket_);
-        socket_ = INVALID_SOCKET;
-    }
-}
-
 SocketByteStream::SocketByteStream(SOCKET socket) noexcept : socket_(socket) {
 }
 

@@ -62,11 +62,6 @@ public:
 
     bool wait_readable(std::chrono::milliseconds timeout) override;
 
-    // Closes the socket unconditionally (close-wake for teardown). The
-    // socket must not be used afterwards; shutdown(SD_BOTH) has already
-    // been issued to wake threads blocked in send/recv.
-    void close();
-
 private:
     SOCKET socket_{INVALID_SOCKET};
 };

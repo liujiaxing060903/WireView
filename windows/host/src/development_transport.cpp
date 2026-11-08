@@ -135,6 +135,11 @@ public:
         delivered_bytes_ = 0U;
         output_frame_rate_ = 0.0;
         bitrate_mbps_ = 0.0;
+        // Each (re)connected session is a fresh measurement window: drop the
+        // samples and the publish throttle of the previous session instead of
+        // mixing percentiles across reconnects.
+        surface_samples_.clear();
+        last_surface_publish_ = std::chrono::steady_clock::time_point{};
         stream_started_at_ = std::chrono::steady_clock::now();
         state_ = "streaming";
         message_ = "Desktop stream is active";
@@ -170,7 +175,20 @@ public:
 
     void surface_sample(double latency_millis) {
         std::lock_guard lock(mutex_);
+        // Sliding window: this publisher lives across the whole reconnecting
+        // session while surface telemetry arrives per rendered frame (up to
+        // 60+ per second), so an unbounded vector would grow for days.
+        if (surface_samples_.size() >= kMaxSurfaceSamples) {
+            surface_samples_.erase(surface_samples_.begin());
+        }
         surface_samples_.push_back(latency_millis);
+        // Recomputing percentiles costs a full copy + sort and publishing
+        // costs a status-file write; once per second is enough for readers.
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_surface_publish_ <= std::chrono::seconds(1)) {
+            return;
+        }
+        last_surface_publish_ = now;
         auto sorted = surface_samples_;
         std::sort(sorted.begin(), sorted.end());
         const auto percentile = [&sorted](double fraction) {
@@ -385,7 +403,9 @@ private:
     bool decoder_health_seen_{};
     bool decoder_active_{};
     bool decoder_first_frame_{};
+    static constexpr std::size_t kMaxSurfaceSamples = 512U;
     std::vector<double> surface_samples_;
+    std::chrono::steady_clock::time_point last_surface_publish_{};
     double surface_p50_millis_{};
     double surface_p95_millis_{};
     double output_frame_rate_{};
@@ -590,6 +610,10 @@ struct AdaptiveBitrateState {
         }
         if (command != 0U) {
             target.store(command, std::memory_order_relaxed);
+            // The governor is otherwise silent; without this line field
+            // debugging cannot tell whether it ever adjusted the bitrate.
+            std::cout << "adaptive bitrate -> " << (command / 1'000'000.0)
+                      << " Mbps\n";
         }
     }
 
@@ -980,6 +1004,29 @@ void send_desktop_stream(
     std::uint64_t slow_writes{0};
     constexpr std::size_t kMaxQueuedFrames = 4;
 
+    // Resolve the capture target and build the input injector BEFORE any
+    // thread is created: resolve_desktop_capture_area throws when the named
+    // display just vanished, and an exception escaping while sender_thread
+    // is joinable would unwind it and std::terminate the whole host (audit
+    // item P1). The sender lambda below only touches the queue, the two
+    // mutexes and the stop flag, so it has no dependency on these locals.
+    std::cout << "Capture target: "
+              << (capture_display_device.empty()
+                      ? std::string("primary display")
+                      : std::string(capture_display_device))
+              << '\n';
+    const DesktopCaptureArea input_target = resolve_desktop_capture_area(capture_display_device);
+    std::cout << "Input target: rect=" << input_target.left << ',' << input_target.top
+              << '+' << input_target.width << 'x' << input_target.height << '\n';
+    std::cout << "Input mode: "
+              << (inject_input ? "Windows injection enabled" : "log-only") << '\n';
+    WindowsInputInjector injector(input_target);
+    // input_running must also predate the callbacks below: on_frame checks
+    // it so the encode loop stops once the input thread is gone (audit P3).
+    std::atomic_bool input_running{true};
+    std::exception_ptr input_error;
+    InputReceiveStats input_stats;
+
     std::thread sender_thread([&] {
         auto last_slow_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
         for (;;) {
@@ -1033,7 +1080,21 @@ void send_desktop_stream(
             throw std::runtime_error("wireview send thread stopped");
         }
         if (outbound.size() >= kMaxQueuedFrames) {
-            outbound.pop_front();
+            // Control packets (start_stream config, clock-sync pings) must
+            // never be evicted by video: losing start_stream leaves the
+            // tablet decoding nothing for the rest of the session (there is
+            // no config re-send in the protocol). Drop the oldest queued
+            // video chunk instead (the packet type byte sits at offset 6,
+            // after the 4-byte magic and 2 version bytes) and only fall back
+            // to the queue head when no frame is queued at all.
+            const auto victim = std::find_if(
+                outbound.begin(), outbound.end(),
+                [](const std::vector<std::uint8_t>& queued) {
+                    return queued.size() > 6U &&
+                        queued[6] == static_cast<std::uint8_t>(
+                                         wireview::protocol::PacketType::video_chunk);
+                });
+            outbound.erase(victim != outbound.end() ? victim : outbound.begin());
             ++dropped_frames;
         }
         outbound.push_back(std::move(bytes));
@@ -1076,6 +1137,14 @@ void send_desktop_stream(
         .on_frame = [&](std::span<const std::uint8_t> bytes,
                         bool keyframe,
                         std::uint64_t timestamp_micros) {
+            // The input thread also carries keyframe requests, telemetry and
+            // input injection; once it is gone the session cannot recover,
+            // so fail fast instead of streaming blind until the duration
+            // expires. Throwing here ends the session through the existing
+            // catch path and feeds the reconnect loop (audit item P3).
+            if (!input_running.load()) {
+                throw std::runtime_error("input thread is gone; ending the stream session");
+            }
             if (!stream_started) {
                 throw std::runtime_error(
                     "desktop encoder produced a frame before stream setup");
@@ -1121,20 +1190,6 @@ void send_desktop_stream(
         }
     };
 
-    std::cout << "Capture target: "
-              << (capture_display_device.empty()
-                      ? std::string("primary display")
-                      : std::string(capture_display_device))
-              << '\n';
-    const DesktopCaptureArea input_target = resolve_desktop_capture_area(capture_display_device);
-    std::cout << "Input target: rect=" << input_target.left << ',' << input_target.top
-              << '+' << input_target.width << 'x' << input_target.height << '\n';
-    std::cout << "Input mode: "
-              << (inject_input ? "Windows injection enabled" : "log-only") << '\n';
-    WindowsInputInjector injector(input_target);
-    std::atomic_bool input_running{true};
-    std::exception_ptr input_error;
-    InputReceiveStats input_stats;
     // The VDD device name classifies window-list entries (primary vs. the
     // WireView display vs. other monitors).
     std::wstring vdd_device_name_wide;
@@ -1204,9 +1259,6 @@ void send_desktop_stream(
     stop_sender();
     input_running.store(false);
     input_thread.join();
-    if (input_error) {
-        std::rethrow_exception(input_error);
-    }
         if (encoder_result != 0) {
             throw std::runtime_error(
                 "desktop encoder session failed: " + std::to_string(encoder_result));
@@ -1221,7 +1273,12 @@ void send_desktop_stream(
         }
         throw;
     }
-    {
+    // stop_stream is sent best-effort even when the input thread recorded a
+    // failure: the link may still be alive (e.g. a parser error killed only
+    // the receiver), and a clean stop beats a tablet-side disconnect. A dead
+    // link merely logs here; the original input exception is rethrown below
+    // so the reconnect loop still sees the failure (audit claim 3).
+    try {
         std::lock_guard lock(write_mutex);
         write_all(
             stream,
@@ -1232,6 +1289,12 @@ void send_desktop_stream(
                     .timestamp_micros = monotonic_micros(),
                 },
                 {}));
+    } catch (const std::exception& error) {
+        std::cerr << "WireView stop_stream notification failed: " << error.what()
+                  << '\n';
+    }
+    if (input_error) {
+        std::rethrow_exception(input_error);
     }
     std::cout << "Send queue: drops=" << dropped_frames
               << " | slowWrites=" << slow_writes << '\n';
@@ -1795,7 +1858,12 @@ int run_wifi_desktop_stream_session(
         output_height,
         frame_rate,
         capture_display_device,
-        &status);
+        &status,
+        // Adaptive bitrate is a WiFi-transport feature: the single-shot
+        // entry must behave like the reconnect entry (which passes true
+        // below), otherwise manual --transport wifi runs silently lose the
+        // governor.
+        true);
 }
 
 int run_reconnecting_desktop_stream_session(
