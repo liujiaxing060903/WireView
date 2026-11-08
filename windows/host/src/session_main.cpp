@@ -351,10 +351,13 @@ ProcessResult run_capture_bounded(
     GetExitCodeProcess(process.hProcess, &result.exit_code);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    // The child is gone and our write end was closed above, so the reader
-    // hits EOF (broken pipe) and joins promptly.
-    pipe_reader.join();
+    // Closing the read end first is essential when this run spawned the adb
+    // server: the resident server inherits the pipe handles, so the write
+    // end never runs dry and the reader's ReadFile would block forever.
+    // Closing read_pipe fails that pending ReadFile immediately and the
+    // join completes; the collected bytes are already safe in 'bytes'.
     CloseHandle(read_pipe);
+    pipe_reader.join();
     if (!bytes.empty()) {
         const int length = MultiByteToWideChar(CP_UTF8, 0, bytes.data(),
             static_cast<int>(bytes.size()), nullptr, 0);
