@@ -768,6 +768,23 @@ int run(const Options& options) {
         if (std::chrono::steady_clock::now() >= deadline) {
             break;
         }
+        if (host_result.exit_code == 2U) {
+            // The host gave up its in-process accept loop: no tablet showed
+            // up for several rounds, which for the adb listener means the
+            // reverse mapping is gone (a yanked or glitched cable clears
+            // it) and the tablet cannot dial in until it is re-established.
+            // Hand control back to this loop - it re-detects the device,
+            // re-runs adb reverse and relaunches the host, the same
+            // recovery path the pre-reconnect sessions used. am start on a
+            // foreground activity is a harmless bring-to-front, not a
+            // restart. Every other exit code stays terminal: a real host
+            // failure must not be disguised as a waiting state.
+            write_status(options, L"waiting",
+                L"正在重设 ADB 端口映射并等待平板重新连接……", reconnect_count,
+                compact_host_diagnostics(host_result.output));
+            Sleep(500U);
+            continue;
+        }
         // 会话一旦断开即结束。不要在设备端被用户划掉后台后再次通过 ADB 拉起应用，
         // 也不要把拔线后的会话伪装成仍可继续的自动重连。
         write_status(options, L"error", host_failure_message(host_result), reconnect_count,

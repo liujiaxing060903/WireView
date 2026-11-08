@@ -1931,6 +1931,15 @@ int run_reconnecting_desktop_stream_session(
     const auto deadline = std::chrono::steady_clock::now() + total_duration;
     std::uint64_t interrupted_sessions = 0;
     std::uint64_t completed_sessions = 0;
+    // Consecutive accept timeouts on the adb listener. After enough of them
+    // the tablet clearly cannot dial in at all (a yanked cable clears the
+    // adb reverse mapping, and this process deliberately never runs adb),
+    // so the host gives up and lets the session supervisor re-establish the
+    // mapping and relaunch it - the same recovery path the pre-reconnect
+    // sessions used. WiFi dialing is exempt: its tablet-side listener
+    // re-arms itself every round.
+    std::uint64_t consecutive_accept_timeouts = 0;
+    bool gave_up_accepting = false;
     while (std::chrono::steady_clock::now() < deadline) {
         const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             deadline - std::chrono::steady_clock::now());
@@ -2001,10 +2010,25 @@ int run_reconnecting_desktop_stream_session(
             if (result == 0) {
                 break;
             }
+            if (endpoint.kind != SessionEndpoint::Kind::wifi_dial &&
+                result == 2) {
+                ++consecutive_accept_timeouts;
+                if (consecutive_accept_timeouts >= 6U) {
+                    std::cout << "No WireView client for " << consecutive_accept_timeouts
+                              << " accept rounds; ending this host so the session "
+                                 "supervisor can re-run adb reverse\n";
+                    gave_up_accepting = true;
+                    break;
+                }
+            }
             // result != 0: the endpoint timed out waiting for the tablet. Keep
             // the loop going so the session survives a slow tablet restart.
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
         } catch (const std::exception& error) {
+            // A session existed and just died (link lost mid-stream): the
+            // tablet may reconnect on its own within seconds, so the accept
+            // timeout streak restarts from zero.
+            consecutive_accept_timeouts = 0;
             if (!capture_display_device.empty()) {
                 (void)resolve_desktop_capture_area(capture_display_device);
             }
@@ -2018,7 +2042,7 @@ int run_reconnecting_desktop_stream_session(
     std::cout << "WireView reconnecting session completed; interrupted="
               << interrupted_sessions << " | completed=" << completed_sessions << '\n';
     status.completed();
-    return 0;
+    return gave_up_accepting ? 2U : 0U;
 }
 
 int run_development_reconnecting_desktop_stream_server(
