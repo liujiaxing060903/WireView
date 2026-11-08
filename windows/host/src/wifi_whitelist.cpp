@@ -110,23 +110,52 @@ void WifiWhitelist::load() {
 }
 
 bool WifiWhitelist::save(std::wstring* error) const {
-    std::ofstream output(path_, std::ios::binary | std::ios::trunc);
-    if (!output) {
+    if (path_.empty()) {
+        // Fallback object without a real path (whitelist() used before
+        // load_identity): fail instead of writing a stray file.
+        if (error != nullptr) {
+            *error = L"WiFi whitelist path is not initialized";
+        }
+        return false;
+    }
+    // Atomic replace (audit A6 claim 5): write a sibling temp file, then
+    // rename it over the real one. Truncating in place could destroy every
+    // stored DPAPI credential on a crash mid-write, forcing re-pairing of
+    // all tablets.
+    const std::wstring temp_path = path_ + L".tmp";
+    bool written = false;
+    {
+        std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+        if (output) {
+            output << "version=1\n";
+            for (std::size_t index = 0U; index < entries_.size(); ++index) {
+                const WifiWhitelistEntry& entry = entries_[index];
+                output << "device." << index << ".android_id=" << entry.android_id << '\n'
+                       << "device." << index << ".device_name="
+                       << sanitize_text(entry.device_name) << '\n'
+                       << "device." << index << ".paired_at="
+                       << sanitize_text(entry.paired_at) << '\n'
+                       << "device." << index << ".last_ip=" << sanitize_text(entry.last_ip) << '\n'
+                       << "device." << index << ".key=" << to_hex(entry.sealed_key) << '\n';
+            }
+            output.flush();
+            written = output.good();
+        }
+    }
+    if (!written) {
+        (void)DeleteFileW(temp_path.c_str());
         if (error != nullptr) {
             *error = L"cannot write the WiFi whitelist file";
         }
         return false;
     }
-    output << "version=1\n";
-    for (std::size_t index = 0U; index < entries_.size(); ++index) {
-        const WifiWhitelistEntry& entry = entries_[index];
-        output << "device." << index << ".android_id=" << entry.android_id << '\n'
-               << "device." << index << ".device_name="
-               << sanitize_text(entry.device_name) << '\n'
-               << "device." << index << ".paired_at="
-               << sanitize_text(entry.paired_at) << '\n'
-               << "device." << index << ".last_ip=" << sanitize_text(entry.last_ip) << '\n'
-               << "device." << index << ".key=" << to_hex(entry.sealed_key) << '\n';
+    if (!MoveFileExW(
+            temp_path.c_str(), path_.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        (void)DeleteFileW(temp_path.c_str());
+        if (error != nullptr) {
+            *error = L"cannot replace the WiFi whitelist file";
+        }
+        return false;
     }
     if (error != nullptr) {
         *error = {};

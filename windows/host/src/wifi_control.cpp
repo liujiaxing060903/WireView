@@ -14,6 +14,7 @@
 #include "wireview/protocol.hpp"
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <fstream>
 #include <mutex>
@@ -27,6 +28,10 @@ namespace {
 // creates its own session per attempt.
 std::mutex g_mutex;
 std::atomic_bool g_pairing_active{false};
+// Cooperative cancel request for the in-flight pairing worker (see
+// cancel_pairing): the worker checks it only after the handshake returns
+// or throws, so no socket or thread lifetime is disturbed.
+std::atomic_bool g_pairing_cancel{false};
 
 std::mutex& impl_mutex() {
     return g_mutex;
@@ -37,16 +42,23 @@ std::filesystem::path g_settings_directory;
 UiHooks g_hooks;
 MdnsBrowser* g_browser = nullptr;
 
+// Whitelist singleton, constructed explicitly by load_identity() under
+// g_mutex. It must NOT be a function-local static initialised from
+// g_settings_directory: any call before load_identity() would latch an
+// empty path forever (audit A6 fix design 2) and make the first save()
+// write a stray file into the working directory.
+WifiWhitelist* g_whitelist = nullptr;
+
 WifiWhitelist& whitelist() {
-    static WifiWhitelist instance(g_settings_directory / L"wifi-whitelist.ini");
-    static const bool loaded = [] {
-        if (!g_settings_directory.empty()) {
-            instance.load();
-        }
-        return true;
-    }();
-    (void)loaded;
-    return instance;
+    if (g_whitelist == nullptr) {
+        // Before load_identity(): hand out an empty-path object. Its load()
+        // is a no-op and its save() fails with an error instead of writing
+        // a dirty relative path.
+        assert(false && "whitelist() used before load_identity()");
+        static WifiWhitelist fallback{std::wstring{}};
+        return fallback;
+    }
+    return *g_whitelist;
 }
 
 MdnsBrowser& browser() {
@@ -61,17 +73,41 @@ std::filesystem::path identity_file() {
 }
 
 void save_identity_locked() {
-    std::error_code error;
-    std::filesystem::create_directories(g_settings_directory, error);
-    std::ofstream output(identity_file(), std::ios::trunc);
-    if (!output) {
+    if (g_settings_directory.empty()) {
+        // No settings directory yet: never write a relative path into the
+        // working directory.
         return;
     }
-    output << "wifi_pc_uuid=";
-    for (const wchar_t character : g_pc_uuid) {
-        output << static_cast<char>(character);
+    std::error_code error;
+    std::filesystem::create_directories(g_settings_directory, error);
+    // Atomic replace (audit A6 claim 5): write a sibling temp file, then
+    // rename it over the real one. Truncating the identity file in place
+    // could lose the pc_uuid on a crash mid-write, which silently
+    // invalidates every tablet-side credential.
+    const std::filesystem::path target = identity_file();
+    std::filesystem::path temp_path = target;
+    temp_path += L".tmp";
+    bool written = false;
+    {
+        std::ofstream output(temp_path, std::ios::trunc);
+        if (output) {
+            output << "wifi_pc_uuid=";
+            for (const wchar_t character : g_pc_uuid) {
+                output << static_cast<char>(character);
+            }
+            output << "\nwifi_enabled=" << (g_enabled ? 1 : 0) << '\n';
+            output.flush();
+            written = output.good();
+        }
     }
-    output << "\nwifi_enabled=" << (g_enabled ? 1 : 0) << '\n';
+    if (!written) {
+        (void)DeleteFileW(temp_path.c_str());
+        return;
+    }
+    if (!MoveFileExW(
+            temp_path.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        (void)DeleteFileW(temp_path.c_str());
+    }
 }
 
 std::string utf8_string(const std::wstring& value) {
@@ -189,6 +225,7 @@ void attach_hooks(const UiHooks& hooks) {
 }
 
 void load_identity(const std::filesystem::path& settings_directory) {
+    std::wstring auto_selected;
     {
         std::lock_guard lock(g_mutex);
         g_settings_directory = settings_directory;
@@ -209,12 +246,25 @@ void load_identity(const std::filesystem::path& settings_directory) {
             g_pc_uuid = ascii_to_wide(to_hex(bytes));
             save_identity_locked();
         }
+        // Explicit path-driven whitelist construction (audit A6 fix design
+        // 2): the path always comes from this initialisation instead of a
+        // first-call static capture of g_settings_directory. Load
+        // unconditionally; a missing file just yields an empty list.
+        g_whitelist = new WifiWhitelist(
+            (g_settings_directory / L"wifi-whitelist.ini").wstring());
+        g_whitelist->load();
+        // One whitelisted tablet means one obvious session target: selecting
+        // it here spares the user a trip to the full-page whitelist card.
+        // Multiple devices keep the explicit selection. The entries read
+        // stays inside g_mutex (audit A6 claim 4); select_target takes the
+        // same mutex, so it runs after this scope ends.
+        if (g_whitelist->entries().size() == 1U) {
+            auto_selected = ascii_to_wide(
+                g_whitelist->entries().front().android_id);
+        }
     }
-    // One whitelisted tablet means one obvious session target: selecting it
-    // here spares the user a trip to the full-page whitelist card. Multiple
-    // devices keep the explicit selection.
-    if (whitelist().entries().size() == 1U) {
-        select_target(ascii_to_wide(whitelist().entries().front().android_id));
+    if (!auto_selected.empty()) {
+        select_target(auto_selected);
     }
 }
 
@@ -413,6 +463,8 @@ void begin_pairing(const std::wstring& ip) {
         notify_status(L"已有一次配对正在进行。");
         return;
     }
+    // Fresh attempt: clear any stale cancel request from a previous run.
+    g_pairing_cancel.store(false);
     const std::string uuid = uuid_hex();
     std::vector<std::uint8_t> pc_uuid_bytes;
     try {
@@ -420,6 +472,16 @@ void begin_pairing(const std::wstring& ip) {
     } catch (const std::runtime_error&) {
         g_pairing_active.store(false);
         notify_status(L"WiFi 身份标识损坏，请删除 wifi-identity.ini 后重试。");
+        return;
+    }
+    // A hand-edited or corrupted identity file may hold a uuid of the wrong
+    // length: a longer one would overflow the fixed 16-byte challenge
+    // field in the handshake, a shorter one silently breaks the MAC
+    // (audit A6 claim 6). The session path (development_transport.cpp)
+    // applies the same check.
+    if (pc_uuid_bytes.size() != wireview::protocol::kAuthUuidSize) {
+        g_pairing_active.store(false);
+        notify_status(L"WiFi 身份标识长度异常，请删除 wifi-identity.ini 后重试。");
         return;
     }
     const std::string pin = random_pairing_pin();
@@ -449,16 +511,24 @@ void begin_pairing(const std::wstring& ip) {
             const WifiPeerInfo peer = perform_wifi_handshake(
                 stream, identity, wireview::protocol::AuthMode::pairing, {},
                 bundle->first, true, &credential);
-            {
-                std::lock_guard lock(impl_mutex());
-                whitelist().upsert(peer.android_id, peer.device_name, credential);
-                std::wstring save_error;
-                whitelist().save(&save_error);
+            if (g_pairing_cancel.load()) {
+                // Cancelled while the handshake was in flight: discard the
+                // result so nothing lands in the whitelist.
+                result->second = L"已取消（设备未加入白名单）。";
+            } else {
+                {
+                    std::lock_guard lock(impl_mutex());
+                    whitelist().upsert(peer.android_id, peer.device_name, credential);
+                    std::wstring save_error;
+                    whitelist().save(&save_error);
+                }
+                paired = true;
+                result->first = utf8_to_wide(peer.device_name);
             }
-            paired = true;
-            result->first = utf8_to_wide(peer.device_name);
         } catch (const std::exception& error) {
-            result->second = utf8_to_wide(error.what());
+            result->second = g_pairing_cancel.load()
+                ? std::wstring(L"已取消。")
+                : utf8_to_wide(error.what());
         }
         g_pairing_active.store(false);
         PostMessageW(
@@ -468,15 +538,33 @@ void begin_pairing(const std::wstring& ip) {
     }).detach();
 }
 
+void cancel_pairing() {
+    if (!g_pairing_active.load()) {
+        notify_status(L"当前没有正在进行的 WiFi 配对。");
+        return;
+    }
+    g_pairing_cancel.store(true);
+    notify_status(L"已请求取消配对，等待当前尝试结束（最长约 130 秒）…");
+}
+
 bool remove_from_whitelist(const std::wstring& android_id) {
+    bool removed = false;
+    bool saved = false;
+    std::wstring error;
     {
+        // remove + save under the same lock (audit A6 claim 4): an
+        // unsynchronised save here races the pairing worker's
+        // upsert/save on the same entries vector and file.
         std::lock_guard lock(g_mutex);
-        if (!whitelist().remove(utf8_string(android_id))) {
-            return false;
+        removed = whitelist().remove(utf8_string(android_id));
+        if (removed) {
+            saved = whitelist().save(&error);
         }
     }
-    std::wstring error;
-    if (!whitelist().save(&error)) {
+    if (!removed) {
+        return false;
+    }
+    if (!saved) {
         notify_status(L"白名单删除成功但保存失败：" + error);
     } else {
         notify_status(L"已从 WiFi 白名单移除该设备；重新配对即可再次使用。");
@@ -540,7 +628,15 @@ void on_pairing_done(HWND window, WPARAM wparam, LPARAM lparam) {
     }
     if (wparam != 0U) {
         std::wstring error;
-        if (!whitelist().save(&error)) {
+        bool saved = false;
+        {
+            // The pairing worker already saved under the lock; this save is
+            // the reported retry and must take the same lock (audit A6
+            // claim 4).
+            std::lock_guard lock(g_mutex);
+            saved = whitelist().save(&error);
+        }
+        if (!saved) {
             notify_status(L"与 " + result->first + L" 配对成功，但白名单保存失败：" + error);
         } else {
             notify_status(L"WiFi 配对成功：" + result->first + L" 已加入白名单。");

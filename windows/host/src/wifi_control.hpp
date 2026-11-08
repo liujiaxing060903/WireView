@@ -82,6 +82,14 @@ bool has_session_target();
 bool resolve_session_credential(std::wstring* endpoint, std::vector<std::uint8_t>* key);
 
 void begin_pairing(const std::wstring& ip);
+
+// Requests cancellation of the in-flight pairing attempt, if any. The
+// worker checks the flag only after the handshake returns or throws: the
+// result is discarded, the whitelist is left untouched, and the completion
+// status is marked as cancelled. If the handshake is blocked on a read,
+// cancellation takes effect when that read times out or fails.
+void cancel_pairing();
+
 bool remove_from_whitelist(const std::wstring& android_id);
 
 // Timer tick (kWifiDiscoverTimer): refresh the discovery snapshot.

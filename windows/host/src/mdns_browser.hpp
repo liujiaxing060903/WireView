@@ -33,6 +33,9 @@ public:
     // entry with a hint.
     bool start();
 
+    // Stops browsing and cancels in-flight resolves. Cancelled resolve
+    // contexts are deleted by their completion callbacks (the single
+    // deletion point), not here.
     void stop();
 
     bool is_running() const noexcept;

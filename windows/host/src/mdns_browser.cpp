@@ -23,14 +23,25 @@ struct MdnsBrowser::Impl {
         std::string instance_name;
         std::wstring query_name;
         DNS_SERVICE_CANCEL cancel{};
+        // Set by stop() while holding the mutex, read by the completion
+        // callback under the same mutex: the result of a resolve that
+        // belonged to a stopped browsing session must be dropped.
+        bool cancelled{false};
     };
 
     std::mutex mutex;
     std::vector<WifiDiscoveredDevice> devices;
     std::set<std::string> resolving;
+    // Contexts with an in-flight DnsServiceResolve. stop() only marks them
+    // cancelled and cancels the pending operation; removal plus deletion
+    // happen exclusively in finish_resolve (the single deletion point), so
+    // a context pointer in this vector is always alive under the mutex.
     std::vector<ResolveContext*> active_resolves;
     DNS_SERVICE_CANCEL browse_cancel{};
     bool browse_active{false};
+    // Window-period flag: set by stop(), reset by a successful start().
+    // browse_callback must not start new resolves while stopped.
+    bool stopped{false};
 
     void upsert(const WifiDiscoveredDevice& device) {
         std::lock_guard lock(mutex);
@@ -122,7 +133,14 @@ VOID WINAPI resolve_complete_callback(
     DWORD status, PVOID raw_context, PDNS_SERVICE_INSTANCE instance) {
     auto* resolve_context = static_cast<MdnsBrowser::Impl::ResolveContext*>(raw_context);
     auto* impl = resolve_context->owner;
-    if (status == ERROR_SUCCESS && instance != nullptr) {
+    // The context is alive even when stop() already ran: stop() never
+    // deletes; finish_resolve below is its sole deletion point.
+    bool cancelled = false;
+    {
+        std::lock_guard lock(impl->mutex);
+        cancelled = resolve_context->cancelled;
+    }
+    if (!cancelled && status == ERROR_SUCCESS && instance != nullptr) {
         WifiDiscoveredDevice device;
         device.instance = resolve_context->instance_name;
         device.android_id = txt_value(*instance, "id");
@@ -139,6 +157,11 @@ VOID WINAPI resolve_complete_callback(
             device.port = instance->wPort;
         }
         impl->upsert(device);
+    }
+    if (instance != nullptr) {
+        // The DNS-SD API hands ownership of the instance to the callback;
+        // it must be freed here (previously leaked on every resolve).
+        DnsServiceFreeInstance(instance);
     }
     impl->finish_resolve(resolve_context);
 }
@@ -164,7 +187,10 @@ VOID WINAPI browse_callback(PVOID raw_context, PDNS_QUERY_RESULT result) {
                 [&instance](const WifiDiscoveredDevice& device) {
                     return device.instance == instance;
                 });
-            should_resolve = !known && !impl->resolving.contains(instance);
+            // A stopped browser must not launch new resolves (results
+            // could repopulate the just-cleared device list).
+            should_resolve =
+                !impl->stopped && !known && !impl->resolving.contains(instance);
             if (should_resolve) {
                 impl->resolving.insert(instance);
             }
@@ -198,6 +224,11 @@ VOID WINAPI browse_callback(PVOID raw_context, PDNS_QUERY_RESULT result) {
 }  // namespace
 
 MdnsBrowser::~MdnsBrowser() {
+    // impl_ is intentionally never deleted: it belongs to a process-lifetime
+    // singleton (wifi_control keeps a global instance), and resolve
+    // callbacks may still fire after stop() and must land on a valid Impl.
+    // If instances ever become destructible, Impl release needs its own
+    // deferred-reaping design.
     stop();
 }
 
@@ -221,6 +252,13 @@ bool MdnsBrowser::start() {
     if (status != ERROR_SUCCESS) {
         return false;
     }
+    {
+        // Fresh browsing session: allow browse_callback to initiate
+        // resolves again. Contexts cancelled by a previous stop() keep
+        // their own flag and stay dropped.
+        std::lock_guard lock(impl_->mutex);
+        impl_->stopped = false;
+    }
     impl_->browse_active = true;
     return true;
 }
@@ -234,16 +272,20 @@ void MdnsBrowser::stop() {
         impl_->browse_cancel = DNS_SERVICE_CANCEL{};
         impl_->browse_active = false;
     }
-    std::vector<Impl::ResolveContext*> pending;
-    {
-        std::lock_guard lock(impl_->mutex);
-        impl_->resolving.clear();
-        impl_->devices.clear();
-        pending.swap(impl_->active_resolves);
-    }
-    for (auto* resolve_context : pending) {
+    // Cancel under the lock and let the completion callbacks reap their own
+    // contexts: the DNS-SD contract still invokes the resolve callback
+    // (ERROR_CANCELLED) after a successful cancel, so deleting the context
+    // here would be a guaranteed use-after-free (audit A6 fix design 1).
+    // Cancelling while holding the mutex is safe: a context still listed in
+    // active_resolves has not been removed by finish_resolve (it needs the
+    // same mutex first), and cancel itself never calls back synchronously.
+    std::lock_guard lock(impl_->mutex);
+    impl_->stopped = true;
+    impl_->resolving.clear();
+    impl_->devices.clear();
+    for (Impl::ResolveContext* resolve_context : impl_->active_resolves) {
+        resolve_context->cancelled = true;
         (void)DnsServiceResolveCancel(&resolve_context->cancel);
-        delete resolve_context;
     }
 }
 
