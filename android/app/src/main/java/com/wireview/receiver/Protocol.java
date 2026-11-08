@@ -383,10 +383,16 @@ final class Protocol {
         byte[] header = readExactly(input, HEADER_SIZE);
         HeaderFields fields = validateHeader(header);
         byte[] payload = readExactly(input, fields.payloadSize);
-        byte[] packet = new byte[HEADER_SIZE + payload.length];
-        System.arraycopy(header, 0, packet, 0, HEADER_SIZE);
-        System.arraycopy(payload, 0, packet, HEADER_SIZE, payload.length);
-        return decode(packet);
+        if (crc32(payload, 0, payload.length) != fields.payloadCrc) {
+            throw new ProtocolException("payload checksum mismatch");
+        }
+        // The payload array is already the final buffer: building the Packet
+        // directly skips the two extra copies (assembly + decode's
+        // copyOfRange) the previous decode() detour made on the 60 fps
+        // receive path. decode() stays for whole-packet callers/tests.
+        return new Packet(
+                new Header(fields.type, fields.flags, fields.sequence, fields.timestampMicros),
+                payload);
     }
 
     private static HeaderFields validateHeader(byte[] header) throws ProtocolException {

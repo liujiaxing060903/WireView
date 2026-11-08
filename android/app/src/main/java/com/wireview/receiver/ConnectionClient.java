@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -39,6 +40,18 @@ final class ConnectionClient implements AutoCloseable {
     }
 
     static final int DEVELOPMENT_PORT = 39871;
+    // The USB probe must prove the PC-side host itself, not just the local
+    // adbd (audit A7 claim 1): one protocol packet under a short read bound
+    // separates "the host accepted and spoke WVR1" from "adbd fooled us".
+    private static final int USB_PROBE_READ_TIMEOUT_MILLIS = 800;
+    // Data-phase idle bound (audit A7 claim 2 / N1). The PC bursts clock-sync
+    // pings at session start and accompanies frames with a ping every 5 s,
+    // so a live stream never trips this; a half-open link now fails in
+    // seconds instead of waiting on TCP keepalives or an infinite read.
+    private static final int FLOW_IDLE_READ_TIMEOUT_MILLIS = 25_000;
+    // A pairing failure stays on screen this long before the generic
+    // waiting status may overwrite it (connection-side half of A7 claim 3).
+    private static final long PAIRING_FAILURE_HOLD_MILLIS = 3_000L;
 
     private final Listener listener;
     private final Context appContext;
@@ -54,6 +67,9 @@ final class ConnectionClient implements AutoCloseable {
     private ExecutorService executor;
     private ExecutorService writer;
     private volatile TransportConnection connection;
+    // The round that owns {@link #connection}; lets setWifiEnabled(false)
+    // tear down an established WiFi session (audit N2).
+    private volatile RoundConnection activeRound;
     private volatile WifiServerConnector wifiConnector;
     private volatile boolean wifiRequested;
     // Pairing PIN delivered over USB (adb broadcast): the out-of-band channel
@@ -62,6 +78,10 @@ final class ConnectionClient implements AutoCloseable {
     private volatile String approvedPairingToken;
     private volatile long approvedPairingTokenAtMillis;
     private String lastStatus;
+    // Connection-thread only: the most recent pairing-type failure status
+    // and when it was published, for the failure-hold window.
+    private String recentFailureStatus;
+    private long recentFailureStatusAtMillis;
 
     ConnectionClient(Listener listener, Context appContext) {
         this(listener, appContext, new TcpTransportConnector("127.0.0.1", DEVELOPMENT_PORT), false);
@@ -118,6 +138,19 @@ final class ConnectionClient implements AutoCloseable {
             if (connector != null) {
                 connector.shutdown();
             }
+            // An established WiFi session must not outlive the switch
+            // (audit N2): closing its socket unblocks the read loop, which
+            // then reconnects through the default transport.
+            RoundConnection round = activeRound;
+            if (round != null && round.isWifi) {
+                try {
+                    round.connection.close();
+                } catch (IOException error) {
+                    PersistentDiagnosticLog.record(
+                            "ConnectionClient",
+                            "closing the active WiFi session failed: " + error);
+                }
+            }
         }
     }
 
@@ -160,10 +193,20 @@ final class ConnectionClient implements AutoCloseable {
     private static final class RoundConnection {
         final TransportConnection connection;
         final boolean isWifi;
+        /** HELLO pre-read by the USB probe, consumed by the connection loop. */
+        final Protocol.Packet deferredPacket;
 
         RoundConnection(TransportConnection connection, boolean isWifi) {
+            this(connection, isWifi, null);
+        }
+
+        RoundConnection(
+                TransportConnection connection,
+                boolean isWifi,
+                Protocol.Packet deferredPacket) {
             this.connection = connection;
             this.isWifi = isWifi;
+            this.deferredPacket = deferredPacket;
         }
     }
 
@@ -172,6 +215,16 @@ final class ConnectionClient implements AutoCloseable {
      * a quick probe first: a listening host takes the connection instantly
      * (USB recovery), and only when it is gone does the loop park in the
      * WiFi accept waiting for a dial-in.
+     *
+     * <p>The probe must prove the PC-side host is alive: with
+     * {@code adb reverse} the local adbd accepts the TCP connect even when
+     * the PC process is gone, and a bare "connect succeeded" starved the
+     * WiFi accept forever (audit A7 claim 1). The probe therefore pre-reads
+     * one protocol packet under a short timeout — a live host sends its
+     * HELLO immediately after accepting — and only a HELLO promotes the
+     * probe to this round's session, carried as the deferred first packet.
+     * A timeout, EOF, garbage or a non-HELLO packet closes the probe and
+     * this round falls through to the WiFi accept.</p>
      *
      * <p>The probe result must NOT be opened inside try-with-resources:
      * returning it from there closes the socket before the caller uses it
@@ -183,13 +236,28 @@ final class ConnectionClient implements AutoCloseable {
             throws IOException {
         if (loopConnector instanceof WifiServerConnector && wifiRequested
                 && defaultConnector instanceof TcpTransportConnector) {
+            TransportConnection probe = null;
             try {
-                TransportConnection probe = usbProbeConnector.open();
-                // A live probe connection IS the session (the PC-side host
-                // accepted it); USB recovery takes over this round.
-                return new RoundConnection(probe, false);
-            } catch (IOException usbDown) {
-                // USB host gone: fall through to the WiFi accept.
+                probe = usbProbeConnector.open();
+                probe.setReadTimeout(USB_PROBE_READ_TIMEOUT_MILLIS);
+                Protocol.Packet preRead = Protocol.readPacket(probe.inputStream());
+                if (preRead.header.type != Protocol.TYPE_HELLO) {
+                    // AUTH never runs on the probe path, so anything but a
+                    // HELLO means this is not a live WireView host session.
+                    throw new Protocol.ProtocolException(
+                            "probe pre-read packet is not HELLO");
+                }
+                return new RoundConnection(probe, false, preRead);
+            } catch (IOException probeFailed) {
+                if (probe != null) {
+                    try {
+                        probe.close();
+                    } catch (IOException ignored) {
+                        // The probe already failed; closing is best effort.
+                    }
+                }
+                // The PC host did not answer in time: fall through to the
+                // WiFi accept instead of starving it.
             }
         }
         return new RoundConnection(loopConnector.open(),
@@ -210,11 +278,13 @@ final class ConnectionClient implements AutoCloseable {
                 round = nextConnection(loopConnector);
             } catch (IOException openFailure) {
                 if (running.get()) {
+                    holdRecentFailureStatus();
                     publishStatus(waitingStatus());
                     sleepBeforeRetry();
                 }
                 continue;
             }
+            activeRound = round;
             try (TransportConnection activeConnection = round.connection) {
                 connection = activeConnection;
                 InputStream input = activeConnection.inputStream();
@@ -223,8 +293,9 @@ final class ConnectionClient implements AutoCloseable {
                 if (wifiTransport) {
                     // The WiFi handshake is adversarial: bound the AUTH and
                     // HELLO exchange so a half-open or hostile dial cannot
-                    // pin this thread forever. Flow reads revert to no
-                    // timeout once the handshake is complete.
+                    // pin this thread forever. The bound stays in force
+                    // through the HELLO read and is replaced by the flow
+                    // idle timeout only after HELLO_ACK (audit N1).
                     try {
                         activeConnection.setReadTimeout(5_000);
                     } catch (IOException ignored) {
@@ -241,15 +312,14 @@ final class ConnectionClient implements AutoCloseable {
 
                 if (wifiTransport) {
                     performWifiHandshake(input, output);
-                    // Handshake done: release the read timeout for the flow.
-                    try {
-                        activeConnection.setReadTimeout(0);
-                    } catch (IOException ignored) {
-                        // A dead socket will fail on the next read anyway.
-                    }
                 }
 
-                Protocol.Packet hello = Protocol.readPacket(input);
+                // The USB probe path already pre-read its HELLO (deferred);
+                // every other path reads it here, still under the handshake
+                // bound on WiFi.
+                Protocol.Packet hello = round.deferredPacket != null
+                        ? round.deferredPacket
+                        : Protocol.readPacket(input);
                 if (isUsbAccessory()) {
                     PersistentDiagnosticLog.record(
                             "ConnectionClient",
@@ -279,9 +349,32 @@ final class ConnectionClient implements AutoCloseable {
                 }
                 publishStatus("握手成功：" + android.os.Build.MODEL);
                 handshakeCompleted = true;
+                // Flow phase (A7 N1/claim 2): never return to unbounded
+                // reads. A live session is continuously fed (clock-sync
+                // pings, frames); a silent half-open link trips this bound
+                // and takes the normal retry path below.
+                try {
+                    activeConnection.setReadTimeout(FLOW_IDLE_READ_TIMEOUT_MILLIS);
+                } catch (IOException ignored) {
+                    // Transports without read timeouts unblock on close.
+                }
 
                 while (running.get()) {
                     listener.onPacket(Protocol.readPacket(input));
+                }
+            } catch (SocketTimeoutException readTimeout) {
+                // Read silence for a full idle window: a half-open link.
+                // Same recovery as any I/O failure, but with its own trace
+                // because nothing else about the socket is wrong.
+                if (running.get()) {
+                    if (handshakeCompleted || isUsbAccessory() || wifiTransport) {
+                        PersistentDiagnosticLog.record(
+                                "ConnectionClient",
+                                "read timed out: link went silent (" + readTimeout + ")");
+                    }
+                    holdRecentFailureStatus();
+                    publishStatus(waitingStatus());
+                    sleepBeforeRetry();
                 }
             } catch (IOException | RuntimeException error) {
                 if (running.get()
@@ -298,11 +391,13 @@ final class ConnectionClient implements AutoCloseable {
                     // development host is not running. Keep the UI stable
                     // instead of flashing once per retry; detailed failures
                     // remain available through the diagnostic log.
+                    holdRecentFailureStatus();
                     publishStatus(waitingStatus());
                     sleepBeforeRetry();
                 }
             } finally {
                 connection = null;
+                activeRound = null;
                 if (isUsbAccessory()) {
                     PersistentDiagnosticLog.record(
                             "ConnectionClient", "USB connection attempt ended");
@@ -400,9 +495,16 @@ final class ConnectionClient implements AutoCloseable {
             }
             verifyResultTag(proofKey, result, result.credential,
                     challenge.noncePc, nonceTablet);
-            final byte[] credential = WifiAuthCrypto.xorMask(
-                    result.credential,
-                    WifiAuthCrypto.wrapMask(proofKey, challenge.noncePc, nonceTablet));
+            final byte[] credential;
+            try {
+                credential = WifiAuthCrypto.xorMask(
+                        result.credential,
+                        WifiAuthCrypto.wrapMask(proofKey, challenge.noncePc, nonceTablet));
+            } catch (java.security.GeneralSecurityException error) {
+                PersistentDiagnosticLog.record(
+                        "ConnectionClient", "credential unwrap failed: " + error);
+                throw new IOException("credential unwrap failed", error);
+            }
             credentials.put(challenge.pcUuid, credential, result.message);
             PersistentDiagnosticLog.record(
                     "ConnectionClient", "pairing complete with " + result.message);
@@ -534,9 +636,43 @@ final class ConnectionClient implements AutoCloseable {
     }
 
     private void publishStatus(String status) {
+        if (isPairingFailureStatus(status)) {
+            recentFailureStatus = status;
+            recentFailureStatusAtMillis = SystemClock.uptimeMillis();
+        }
         if (!status.equals(lastStatus)) {
             lastStatus = status;
             listener.onStatusChanged(status);
+        }
+    }
+
+    /** Pairing-type failure statuses the UI must keep visible for a moment. */
+    private static boolean isPairingFailureStatus(String status) {
+        return status.startsWith("已取消配对")
+                || status.startsWith("配对失败")
+                || status.startsWith("电脑端拒绝了此次连接");
+    }
+
+    /**
+     * Sleeps out the remainder of the failure-hold window so the generic
+     * waiting status cannot instantly overwrite a pairing failure (A7
+     * claim 3, connection side). One shot: the first retry after the
+     * failure consumes the hold; later rounds behave as before.
+     */
+    private void holdRecentFailureStatus() {
+        String failure = recentFailureStatus;
+        if (failure == null) {
+            return;
+        }
+        recentFailureStatus = null;
+        long remainingMillis = PAIRING_FAILURE_HOLD_MILLIS
+                - (SystemClock.uptimeMillis() - recentFailureStatusAtMillis);
+        if (remainingMillis > 0L) {
+            try {
+                Thread.sleep(remainingMillis);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -571,8 +707,12 @@ final class ConnectionClient implements AutoCloseable {
         }
         if (executor != null) {
             executor.shutdownNow();
+            // A 1 s bound (was 2 s): close() runs on the main thread and the
+            // blocking sources were already closed above, so the loop and
+            // writer threads exit immediately in the normal case; this join
+            // only covers a wedged thread without risking a broadcast ANR.
             try {
-                executor.awaitTermination(2, TimeUnit.SECONDS);
+                executor.awaitTermination(1, TimeUnit.SECONDS);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
@@ -581,7 +721,7 @@ final class ConnectionClient implements AutoCloseable {
         if (writer != null) {
             writer.shutdownNow();
             try {
-                writer.awaitTermination(2, TimeUnit.SECONDS);
+                writer.awaitTermination(1, TimeUnit.SECONDS);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }

@@ -7,6 +7,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 
 /**
  * WiFi transport: the tablet listens and the Windows host connects. This is
@@ -33,12 +34,32 @@ final class WifiServerConnector implements TransportConnector {
         ServerSocket server = new ServerSocket();
         serverSocket = server;
         try {
-            server.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 1);
+            try {
+                server.bind(new InetSocketAddress(InetAddress.getByName("0.0.0.0"), port), 1);
+            } catch (IOException bindFailure) {
+                // A silent bind failure (e.g. the port is occupied) used to
+                // retry invisibly once per round with an empty diagnostic
+                // log; leave a trace naming the port (A7 claim 4).
+                PersistentDiagnosticLog.record(
+                        "WifiServerConnector",
+                        "bind failed on port " + port + ": " + bindFailure.getMessage());
+                throw bindFailure;
+            }
             // Polling accept: a 2 s bound lets the connection loop re-probe
             // USB (hybrid selection) and notice a flipped switch instead of
             // parking here forever when the PC never dials in.
             server.setSoTimeout(2_000);
-            Socket socket = server.accept();
+            final Socket socket;
+            try {
+                socket = server.accept();
+            } catch (SocketTimeoutException idlePoll) {
+                throw idlePoll; // the normal "no dial-in this round" path
+            } catch (IOException acceptFailure) {
+                PersistentDiagnosticLog.record(
+                        "WifiServerConnector",
+                        "accept failed on port " + port + ": " + acceptFailure.getMessage());
+                throw acceptFailure;
+            }
             try {
                 socket.setTcpNoDelay(true);
                 socket.setKeepAlive(true);
