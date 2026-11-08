@@ -69,7 +69,12 @@ WifiPeerInfo perform_wifi_handshake(
         wireview::protocol::PacketType::auth_challenge,
         wireview::protocol::encode_auth_challenge(challenge));
 
-    const auto response_packet = read_packet(stream, std::chrono::seconds(5));
+    // Pairing waits for the user to type the PIN on the tablet (the dialog
+    // allows 120 s); the recurring authentication is machine-timed.
+    const auto response_timeout = mode == wireview::protocol::AuthMode::pairing
+        ? std::chrono::seconds(130)
+        : std::chrono::seconds(5);
+    const auto response_packet = read_packet(stream, response_timeout);
     if (response_packet.header.type != wireview::protocol::PacketType::auth_response) {
         throw std::runtime_error("tablet did not return AUTH_RESPONSE");
     }
