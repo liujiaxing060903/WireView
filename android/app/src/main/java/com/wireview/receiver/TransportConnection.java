@@ -18,6 +18,14 @@ interface TransportConnection extends AutoCloseable {
 
     String displayName();
 
+    /**
+     * Bounds how long a blocking read may wait, in milliseconds; zero means
+     * forever. Default is a no-op for transports without a socket timeout
+     * (the USB accessory streams), which rely on descriptor close to unblock.
+     */
+    default void setReadTimeout(int timeoutMillis) throws IOException {
+    }
+
     @Override
     void close() throws IOException;
 }

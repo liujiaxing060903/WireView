@@ -32,3 +32,31 @@ Windows Host 会严格校验版本、记录大小、数量、视口和载荷总�
 归一化坐标先映射到当前目标显示器的 Windows 全局屏幕矩形。鼠标再按整个虚拟桌面转换为 `MOUSEEVENTF_VIRTUALDESK` 的 0–65535 绝对轴；触控与笔的 `ptPixelLocation` 按 `InjectSyntheticPointerInput` 要求，减去 `SM_XVIRTUALSCREEN/SM_YVIRTUALSCREEN`，转换为相对虚拟桌面左上角的像素坐标。不能直接把位于主屏左侧/上方显示器的负数全局坐标传给 Synthetic Pointer API。
 
 Windows 端已将同一批手指事件聚合为完整活动触点集，并在参考平板上真机验证至四指；单支压感笔、橡皮、压力与倾角也已验证。
+
+## 平板控制命令（包类型 13，Android → PC）
+
+平板贴边侧边栏的按钮经此通道把动作发往 Windows Host。载荷小端序；旧端对未知包类型静默忽略，新增类型向后兼容，无版本协商。
+
+| 值 | 子命令 | 载荷 | Host 行为 |
+|---:|---|---|---|
+| 1 | escape | 1 字节：`01` | `SendInput` 注入 ESC 按下+抬起 |
+| 2 | （已废弃） | — | 曾为 Windows 触摸键盘，已由安卓输入法桥取代 |
+| 3 | rotate_orientation | 1 字节：`03` | PostMessage 请求控制中心"停会话→翻转方向→重启"（复用 R1 安全路径） |
+| 4 | request_window_list | 1 字节：`04` | 枚举顶层窗口并以包类型 14 应答 |
+| 5 | move_window | `[u8 命令][u32 token][u32 索引][u8 目标区]` 共 10 字节 | 按最近列表把窗口居中移到目标显示器（最大化的窗口先还原、移动后再最大化） |
+| 6 | ime_text | `[u8 命令][u16 utf8 字节数][utf-8 文本]` | `VK_PACKET`+`KEYEVENTF_UNICODE` 逐字符注入（绕过 PC 输入法，安卓输入法已完成组词） |
+| 7 | ime_key | `[u8 命令][u8 vk]` 共 2 字节 | 注入编辑键；白名单：Backspace(8)/Tab(9)/Return(13)/Delete(46)/方向键(37-40) |
+
+目标区取值：`0`=主屏、`1`=WireView 副屏、`2`=其他显示器（move_window 目标只接受 0/1）。
+
+> 注：包类型 15（IME 呼出控制，PC→Android）与 UIA 自动呼出机制已于 R2 收工时整体移除——实测"自动探测需要输入"不够智能（点选/误触也会弹），输入法改由侧边栏键盘按钮手动开关。
+
+## 窗口列表应答（包类型 14，PC → Android）
+
+| 偏移 | 大小 | 字段 | 含义 |
+|---:|---:|---|---|
+| 0 | 4 | token | 列表版本号；move_window 必须回传最新 token，过期即拒绝 |
+| 4 | 2 | count | 窗口条目数 |
+| 6 | … | 条目×count | 每条：`u64 hwnd`、`u8 area`（0/1/2）、`u16 标题字节数`、UTF-8 标题 |
+
+列表过滤：仅可见、非最小化、非工具窗、非 DWM cloaked、标题非空、非 Host 自身进程，并跳过 Shell 托盘/Progman/CoreWindow 等系统类。

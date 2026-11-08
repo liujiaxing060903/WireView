@@ -1,4 +1,5 @@
 add_library(wireview_protocol STATIC
+    src/auth_messages.cpp
     src/input.cpp
     src/protocol.cpp
 )

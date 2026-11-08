@@ -1,26 +1,35 @@
 #include "development_transport.hpp"
 
+// WinSock2 must precede any header that pulls in <Windows.h>.
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+
 #include "annex_b_stream.hpp"
+#include "bitrate_governor.hpp"
 #include "input_injector.hpp"
 #include "reliable_byte_stream.hpp"
+#include "socket_stream.hpp"
+#include "tablet_commands.hpp"
 #include "usb_accessory_discovery.hpp"
+#include "wifi_crypto.hpp"
+#include "wifi_link.hpp"
 #include "winusb_byte_stream.hpp"
 #include "windows_video.hpp"
 
 #include "wireview/protocol.hpp"
-
-#include <WinSock2.h>
-#include <WS2tcpip.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -34,77 +43,37 @@
 #include <vector>
 
 namespace wireview::host {
+
+// R3 adaptive bitrate bounds for the WiFi transport (framerate first):
+// the ceiling is the measured 2026-11-06 WiFi budget (<= 60 Mbps); the
+// floor keeps H.264 at 1080p legible. USB keeps the fixed 24 Mbps start.
+constexpr std::uint32_t kAdaptiveMinBitrateBps = 6'000'000U;
+constexpr std::uint32_t kAdaptiveMaxBitrateBps = 60'000'000U;
+constexpr std::uint32_t kAdaptiveInitialBitrateBps = 24'000'000U;
+
 namespace {
-
-class WinsockSession {
-public:
-    WinsockSession() {
-        WSADATA data{};
-        const int error = WSAStartup(MAKEWORD(2, 2), &data);
-        if (error != 0) {
-            throw std::runtime_error("WSAStartup failed: " + std::to_string(error));
-        }
-    }
-
-    ~WinsockSession() {
-        WSACleanup();
-    }
-
-    WinsockSession(const WinsockSession&) = delete;
-    WinsockSession& operator=(const WinsockSession&) = delete;
-};
-
-class SocketHandle {
-public:
-    explicit SocketHandle(SOCKET value = INVALID_SOCKET) noexcept : value_(value) {
-    }
-
-    ~SocketHandle() {
-        reset();
-    }
-
-    SocketHandle(SocketHandle&& other) noexcept : value_(other.release()) {
-    }
-
-    SocketHandle& operator=(SocketHandle&& other) noexcept {
-        if (this != &other) {
-            reset(other.release());
-        }
-        return *this;
-    }
-
-    SocketHandle(const SocketHandle&) = delete;
-    SocketHandle& operator=(const SocketHandle&) = delete;
-
-    [[nodiscard]] SOCKET get() const noexcept {
-        return value_;
-    }
-
-    [[nodiscard]] bool valid() const noexcept {
-        return value_ != INVALID_SOCKET;
-    }
-
-private:
-    [[nodiscard]] SOCKET release() noexcept {
-        const auto value = value_;
-        value_ = INVALID_SOCKET;
-        return value;
-    }
-
-    void reset(SOCKET value = INVALID_SOCKET) noexcept {
-        if (valid()) {
-            closesocket(value_);
-        }
-        value_ = value;
-    }
-
-    SOCKET value_{INVALID_SOCKET};
-};
 
 class DevelopmentStatusPublisher {
 public:
     explicit DevelopmentStatusPublisher(std::string_view path)
         : path_(path.empty() ? std::filesystem::path{} : std::filesystem::path(path)) {
+        // The status file is rewritten from a dedicated thread: the encoder
+        // thread used to pay a synchronous WRITE_THROUGH flush once per second
+        // (audit item P4), turning disk stalls into dropped beats.
+        if (!path_.empty()) {
+            publisher_ = std::thread([this] { publish_worker(); });
+        }
+    }
+
+    ~DevelopmentStatusPublisher() {
+        {
+            std::lock_guard lock(mutex_);
+            publish_stopped_ = true;
+        }
+        publish_cv_.notify_all();
+        if (publisher_.joinable()) {
+            publisher_.join();
+        }
     }
 
     void configure(
@@ -166,6 +135,11 @@ public:
         delivered_bytes_ = 0U;
         output_frame_rate_ = 0.0;
         bitrate_mbps_ = 0.0;
+        // Each (re)connected session is a fresh measurement window: drop the
+        // samples and the publish throttle of the previous session instead of
+        // mixing percentiles across reconnects.
+        surface_samples_.clear();
+        last_surface_publish_ = std::chrono::steady_clock::time_point{};
         stream_started_at_ = std::chrono::steady_clock::now();
         state_ = "streaming";
         message_ = "Desktop stream is active";
@@ -201,7 +175,20 @@ public:
 
     void surface_sample(double latency_millis) {
         std::lock_guard lock(mutex_);
+        // Sliding window: this publisher lives across the whole reconnecting
+        // session while surface telemetry arrives per rendered frame (up to
+        // 60+ per second), so an unbounded vector would grow for days.
+        if (surface_samples_.size() >= kMaxSurfaceSamples) {
+            surface_samples_.erase(surface_samples_.begin());
+        }
         surface_samples_.push_back(latency_millis);
+        // Recomputing percentiles costs a full copy + sort and publishing
+        // costs a status-file write; once per second is enough for readers.
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_surface_publish_ <= std::chrono::seconds(1)) {
+            return;
+        }
+        last_surface_publish_ = now;
         auto sorted = surface_samples_;
         std::sort(sorted.begin(), sorted.end());
         const auto percentile = [&sorted](double fraction) {
@@ -282,10 +269,81 @@ private:
         publish_locked();
     }
 
-    void publish_locked() const {
+    void publish_locked() {
         if (path_.empty()) {
             return;
         }
+        // Serialize the report under the state mutex and hand it to the
+        // publisher thread; the file I/O itself never runs on the caller
+        // (encoder) thread.
+        std::ostringstream report;
+        report << "version=1\n"
+               << "state=" << state_ << '\n'
+               << "message=" << single_line(message_) << '\n'
+               << "display=" << single_line(display_) << '\n'
+               << "input_mode=" << input_mode_ << '\n'
+               << "requested_width=" << requested_width_ << '\n'
+               << "requested_height=" << requested_height_ << '\n'
+               << "requested_fps=" << requested_frame_rate_ << '\n'
+               << "transport=" << single_line(transport_) << '\n'
+               << "actual_width=" << actual_width_ << '\n'
+               << "actual_height=" << actual_height_ << '\n'
+               << "actual_fps=" << actual_frame_rate_ << '\n'
+               << "client=" << single_line(client_) << '\n'
+               << "reconnects=" << reconnect_count_ << '\n'
+               << "first_frame_ms=" << first_frame_millis_ << '\n'
+               << "surface_samples=" << surface_samples_.size() << '\n'
+               << std::fixed << std::setprecision(2)
+               << "surface_p50_ms=" << surface_p50_millis_ << '\n'
+               << "surface_p95_ms=" << surface_p95_millis_ << '\n'
+               << "delivered_frames=" << delivered_frames_ << '\n'
+               << "output_fps=" << output_frame_rate_ << '\n'
+               << "bitrate_mbps=" << bitrate_mbps_ << '\n'
+               << "decoder_name=" << single_line(decoder_name_) << '\n'
+               << "decoder_hardware=" << (decoder_hardware_ ? 1 : 0) << '\n'
+               << "decoder_software=" << (decoder_software_ ? 1 : 0) << '\n'
+               << "decoder_low_latency=" << (decoder_low_latency_ ? 1 : 0) << '\n'
+               << "decoder_1080p60=" << (decoder_1080p60_ ? 1 : 0) << '\n'
+               << "android_width=" << android_width_ << '\n'
+               << "android_height=" << android_height_ << '\n'
+               << "android_refresh_hz=" << android_refresh_hz_ << '\n'
+               << "android_max_refresh_hz=" << android_max_refresh_hz_ << '\n'
+               << "android_manufacturer=" << single_line(android_manufacturer_) << '\n'
+               << "android_device_type=" << android_device_type_ << '\n'
+               << "decoder_health_seen=" << (decoder_health_seen_ ? 1 : 0) << '\n'
+               << "decoder_active=" << (decoder_active_ ? 1 : 0) << '\n'
+               << "decoder_first_frame=" << (decoder_first_frame_ ? 1 : 0) << '\n'
+               << "decoder_received_frames=" << decoder_received_frames_ << '\n'
+               << "decoder_queued_frames=" << decoder_queued_frames_ << '\n'
+               << "decoder_dropped_frames=" << decoder_dropped_frames_ << '\n'
+               << "decoder_errors=" << decoder_errors_ << '\n';
+        pending_publish_ = report.str();
+        publish_dirty_ = true;
+        publish_cv_.notify_one();
+    }
+
+    void publish_worker() {
+        std::unique_lock lock(mutex_);
+        while (true) {
+            publish_cv_.wait(lock, [this] {
+                return publish_dirty_ || publish_stopped_;
+            });
+            const bool dirty = publish_dirty_;
+            publish_dirty_ = false;
+            if (publish_stopped_) {
+                if (dirty && !pending_publish_.empty()) {
+                    write_status_file(pending_publish_);
+                }
+                return;
+            }
+            std::string content = std::move(pending_publish_);
+            lock.unlock();
+            write_status_file(content);
+            lock.lock();
+        }
+    }
+
+    void write_status_file(const std::string& content) const {
         std::error_code error;
         if (!path_.parent_path().empty()) {
             std::filesystem::create_directories(path_.parent_path(), error);
@@ -296,50 +354,12 @@ private:
         auto temporary = path_;
         temporary += L".host.tmp";
         {
-            std::ofstream output(temporary, std::ios::trunc);
+            std::ofstream output(temporary, std::ios::trunc | std::ios::binary);
             if (!output) {
                 return;
             }
-            output << "version=1\n"
-                   << "state=" << state_ << '\n'
-                   << "message=" << single_line(message_) << '\n'
-                   << "display=" << single_line(display_) << '\n'
-                   << "input_mode=" << input_mode_ << '\n'
-                   << "requested_width=" << requested_width_ << '\n'
-                   << "requested_height=" << requested_height_ << '\n'
-                   << "requested_fps=" << requested_frame_rate_ << '\n'
-                   << "transport=" << single_line(transport_) << '\n'
-                   << "actual_width=" << actual_width_ << '\n'
-                   << "actual_height=" << actual_height_ << '\n'
-                   << "actual_fps=" << actual_frame_rate_ << '\n'
-                   << "client=" << single_line(client_) << '\n'
-                   << "reconnects=" << reconnect_count_ << '\n'
-                   << "first_frame_ms=" << first_frame_millis_ << '\n'
-                   << "surface_samples=" << surface_samples_.size() << '\n'
-                   << std::fixed << std::setprecision(2)
-                   << "surface_p50_ms=" << surface_p50_millis_ << '\n'
-                   << "surface_p95_ms=" << surface_p95_millis_ << '\n'
-                   << "delivered_frames=" << delivered_frames_ << '\n'
-                   << "output_fps=" << output_frame_rate_ << '\n'
-                   << "bitrate_mbps=" << bitrate_mbps_ << '\n'
-                   << "decoder_name=" << single_line(decoder_name_) << '\n'
-                   << "decoder_hardware=" << (decoder_hardware_ ? 1 : 0) << '\n'
-                   << "decoder_software=" << (decoder_software_ ? 1 : 0) << '\n'
-                   << "decoder_low_latency=" << (decoder_low_latency_ ? 1 : 0) << '\n'
-                   << "decoder_1080p60=" << (decoder_1080p60_ ? 1 : 0) << '\n'
-                   << "android_width=" << android_width_ << '\n'
-                   << "android_height=" << android_height_ << '\n'
-                   << "android_refresh_hz=" << android_refresh_hz_ << '\n'
-                   << "android_max_refresh_hz=" << android_max_refresh_hz_ << '\n'
-                   << "android_manufacturer=" << single_line(android_manufacturer_) << '\n'
-                   << "android_device_type=" << android_device_type_ << '\n'
-                   << "decoder_health_seen=" << (decoder_health_seen_ ? 1 : 0) << '\n'
-                   << "decoder_active=" << (decoder_active_ ? 1 : 0) << '\n'
-                   << "decoder_first_frame=" << (decoder_first_frame_ ? 1 : 0) << '\n'
-                   << "decoder_received_frames=" << decoder_received_frames_ << '\n'
-                   << "decoder_queued_frames=" << decoder_queued_frames_ << '\n'
-                   << "decoder_dropped_frames=" << decoder_dropped_frames_ << '\n'
-                   << "decoder_errors=" << decoder_errors_ << '\n';
+            output << content;
+            output.flush();
         }
         if (MoveFileExW(
                 temporary.c_str(),
@@ -383,7 +403,9 @@ private:
     bool decoder_health_seen_{};
     bool decoder_active_{};
     bool decoder_first_frame_{};
+    static constexpr std::size_t kMaxSurfaceSamples = 512U;
     std::vector<double> surface_samples_;
+    std::chrono::steady_clock::time_point last_surface_publish_{};
     double surface_p50_millis_{};
     double surface_p95_millis_{};
     double output_frame_rate_{};
@@ -391,6 +413,11 @@ private:
     double android_refresh_hz_{};
     double android_max_refresh_hz_{};
     std::chrono::steady_clock::time_point stream_started_at_{};
+    std::thread publisher_;
+    std::condition_variable publish_cv_;
+    bool publish_dirty_{false};
+    bool publish_stopped_{false};
+    std::string pending_publish_;
 };
 
 struct AndroidDeviceProfile {
@@ -470,115 +497,6 @@ void write_device_preview(
         std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }
 
-[[noreturn]] void throw_socket_error(const char* operation) {
-    throw std::runtime_error(
-        std::string(operation) + " failed: " + std::to_string(WSAGetLastError()));
-}
-
-class SocketByteStream final : public ReliableByteStream {
-public:
-    explicit SocketByteStream(SOCKET socket) noexcept : socket_(socket) {
-    }
-
-    std::size_t read(std::span<std::uint8_t> destination) override {
-        const int batch = static_cast<int>(
-            std::min<std::size_t>(destination.size(), 64U * 1024U));
-        const int received = recv(
-            socket_,
-            reinterpret_cast<char*>(destination.data()),
-            batch,
-            0);
-        if (received == SOCKET_ERROR) {
-            throw_socket_error("recv");
-        }
-        return static_cast<std::size_t>(received);
-    }
-
-    std::size_t write(std::span<const std::uint8_t> source) override {
-        const int batch = static_cast<int>(
-            std::min<std::size_t>(source.size(), 64U * 1024U));
-        const int written = send(
-            socket_,
-            reinterpret_cast<const char*>(source.data()),
-            batch,
-            0);
-        if (written == SOCKET_ERROR) {
-            throw_socket_error("send");
-        }
-        return static_cast<std::size_t>(written);
-    }
-
-    bool wait_readable(std::chrono::milliseconds timeout) override {
-        fd_set readable{};
-        FD_ZERO(&readable);
-        FD_SET(socket_, &readable);
-        timeval native_timeout{};
-        native_timeout.tv_sec = static_cast<long>(timeout.count() / 1'000);
-        native_timeout.tv_usec = static_cast<long>((timeout.count() % 1'000) * 1'000);
-        const int ready = select(0, &readable, nullptr, nullptr, &native_timeout);
-        if (ready == SOCKET_ERROR) {
-            throw_socket_error("select(byte stream)");
-        }
-        return ready != 0;
-    }
-
-private:
-    SOCKET socket_{INVALID_SOCKET};
-};
-
-SocketHandle create_tcp_socket() {
-    SocketHandle socket(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
-    if (!socket.valid()) {
-        throw_socket_error("socket");
-    }
-    return socket;
-}
-
-void allow_listener_rebind(SOCKET socket) {
-    // A USB disconnect or a Ctrl+C can leave the previous TCP connection in
-    // Windows' closing state briefly. The development host is loopback-only,
-    // so permit its recovery loop to reclaim this fixed local port immediately.
-    const int enabled = 1;
-    if (setsockopt(
-            socket,
-            SOL_SOCKET,
-            SO_REUSEADDR,
-            reinterpret_cast<const char*>(&enabled),
-            sizeof(enabled)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(SO_REUSEADDR)");
-    }
-}
-
-void set_low_latency_socket_options(SOCKET socket) {
-    const int enabled = 1;
-    if (setsockopt(
-            socket,
-            IPPROTO_TCP,
-            TCP_NODELAY,
-            reinterpret_cast<const char*>(&enabled),
-            sizeof(enabled)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(TCP_NODELAY)");
-    }
-
-    constexpr DWORD timeout_millis = 10'000;
-    if (setsockopt(
-            socket,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&timeout_millis),
-            sizeof(timeout_millis)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(SO_RCVTIMEO)");
-    }
-}
-
-sockaddr_in loopback_address(std::uint16_t port) {
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    return address;
-}
-
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
@@ -646,6 +564,64 @@ void send_test_stream(
     std::cout << "Synthetic H.264 stream completed\n";
 }
 
+// R3 adaptive bitrate: shared between the receive thread (which diffs the
+// decoder health telemetry) and the encoder thread (which consumes the
+// target). The parent keeps this object alive for both threads' lifetimes.
+struct AdaptiveBitrateState {
+    BitrateGovernor governor;
+    std::atomic_bool active{false};
+    std::atomic_uint32_t target{0};
+    std::uint64_t base_received = 0;
+    std::uint64_t base_dropped = 0;
+    std::uint32_t base_errors = 0;
+    bool base_valid = false;
+    std::mutex base_mutex;
+
+    explicit AdaptiveBitrateState(std::uint32_t initial_bps)
+        : governor(kAdaptiveMinBitrateBps, kAdaptiveMaxBitrateBps, initial_bps) {
+    }
+
+    void on_health(
+        std::uint64_t received_frames,
+        std::uint64_t queued_frames,
+        std::uint64_t dropped_frames,
+        std::uint32_t decoder_errors) {
+        if (!active.load(std::memory_order_relaxed)) {
+            return;
+        }
+        std::uint32_t command = 0;
+        {
+            std::lock_guard lock(base_mutex);
+            if (base_valid) {
+                const std::uint32_t delivered_delta = static_cast<std::uint32_t>(
+                    received_frames >= base_received ? received_frames - base_received : 0U);
+                const std::uint32_t dropped_delta = static_cast<std::uint32_t>(
+                    dropped_frames >= base_dropped ? dropped_frames - base_dropped : 0U);
+                const std::uint32_t errors_delta =
+                    decoder_errors >= base_errors ? decoder_errors - base_errors : 0U;
+                command = governor.on_sample(
+                    delivered_delta, dropped_delta,
+                    static_cast<std::uint32_t>(queued_frames), errors_delta);
+            }
+            base_received = received_frames;
+            base_dropped = dropped_frames;
+            base_errors = decoder_errors;
+            base_valid = true;
+        }
+        if (command != 0U) {
+            target.store(command, std::memory_order_relaxed);
+            // The governor is otherwise silent; without this line field
+            // debugging cannot tell whether it ever adjusted the bitrate.
+            std::cout << "adaptive bitrate -> " << (command / 1'000'000.0)
+                      << " Mbps\n";
+        }
+    }
+
+    [[nodiscard]] std::uint32_t consume() {
+        return active.load(std::memory_order_relaxed) ? target.exchange(0U) : 0U;
+    }
+};
+
 struct InputReceiveStats {
     struct ClockSyncSample {
         double round_trip_millis;
@@ -705,8 +681,14 @@ void receive_input_packets(
     WindowsInputInjector& injector,
     bool inject_input,
     InputReceiveStats& stats,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    const std::function<void(
+        wireview::protocol::PacketType, std::vector<std::uint8_t>&&)>& send_reply,
+    const std::wstring& vdd_device_name,
+    AdaptiveBitrateState* adaptive) {
     wireview::protocol::PacketStreamParser parser;
+    std::vector<wireview::host::TabletWindowEntry> window_entries;
+    std::uint32_t window_list_token = 0U;
     std::array<std::uint8_t, 4U * 1024U> buffer{};
     while (running.load()) {
         if (!stream.wait_readable(std::chrono::milliseconds(200))) {
@@ -844,6 +826,10 @@ void receive_input_packets(
                             (flags & 1U) != 0U,
                             (flags & 2U) != 0U);
                     }
+                    if (adaptive != nullptr) {
+                        adaptive->on_health(
+                            received_frames, queued_frames, dropped_frames, decoder_errors);
+                    }
                 } else {
                     std::cerr << "Rejected WireView telemetry payload\n";
                 }
@@ -884,9 +870,97 @@ void receive_input_packets(
                     sample.round_trip_millis < stats.best_clock_sync->round_trip_millis) {
                     stats.best_clock_sync = sample;
                 }
+            } else if (parsed.packet->header.type ==
+                       wireview::protocol::PacketType::control_command) {
+            // Tablet sidebar control commands (type 13). Handled inline on the
+            // receive thread; replies go through send_reply, which shares the
+            // send-side write mutex with the frame sender thread.
+            const auto payload = std::span(parsed.packet->payload);
+            wireview::host::TabletCommand command{};
+            if (!wireview::host::decode_control_command(payload, command)) {
+                std::cerr << "Rejected WireView control command payload\n";
+                continue;
+            }
+            std::cout << "Tablet control command: "
+                      << static_cast<int>(payload[0]) << '\n';
+            switch (command) {
+                case wireview::host::TabletCommand::escape:
+                    if (!wireview::host::inject_escape_key()) {
+                        std::cerr << "Failed to inject the ESC key\n";
+                    }
+                    break;
+                case wireview::host::TabletCommand::rotate_orientation:
+                    wireview::host::request_control_center_rotation();
+                    break;
+                case wireview::host::TabletCommand::request_window_list: {
+                    window_list_token += 1U;
+                    window_entries = wireview::host::enumerate_streaming_windows(
+                        vdd_device_name);
+                    std::cout << "Tablet window list: " << window_entries.size()
+                              << " windows | token " << window_list_token << '\n';
+                    send_reply(
+                        wireview::protocol::PacketType::window_list,
+                        wireview::host::encode_window_list(
+                            window_list_token, window_entries));
+                    break;
+                }
+                case wireview::host::TabletCommand::ime_text: {
+                    std::wstring text;
+                    if (!wireview::host::decode_ime_text(payload, text)) {
+                        std::cerr << "Rejected WireView IME text payload\n";
+                        break;
+                    }
+                    if (!wireview::host::inject_unicode_text(text)) {
+                        std::cerr << "Failed to inject the IME text ("
+                                  << text.size() << " chars)\n";
+                    } else {
+                        std::cout << "Tablet IME text injected: " << text.size()
+                                  << " chars\n";
+                    }
+                    break;
+                }
+                case wireview::host::TabletCommand::ime_key: {
+                    UINT virtual_key = 0U;
+                    if (!wireview::host::decode_ime_key(payload, virtual_key)) {
+                        std::cerr << "Rejected WireView IME key payload\n";
+                        break;
+                    }
+                    if (!wireview::host::inject_virtual_key(virtual_key)) {
+                        std::cerr << "Failed to inject the IME key "
+                                  << virtual_key << '\n';
+                    } else {
+                        std::cout << "Tablet IME key injected: " << virtual_key << '\n';
+                    }
+                    break;
+                }
+                case wireview::host::TabletCommand::move_window: {
+                    std::uint32_t token = 0U;
+                    std::uint32_t index = 0U;
+                    std::uint8_t target_area = 0U;
+                    if (!wireview::host::decode_window_move(
+                            payload, token, index, target_area)) {
+                        std::cerr << "Rejected WireView window move payload\n";
+                        break;
+                    }
+                    if (token != window_list_token || index >= window_entries.size()) {
+                        std::cerr << "Rejected stale WireView window move request\n";
+                        break;
+                    }
+                    const bool moved = wireview::host::move_window_to_area(
+                        window_entries[index].window, target_area, vdd_device_name);
+                    std::cout << "Tablet window move: index=" << index
+                              << " area=" << static_cast<int>(target_area)
+                              << " -> " << (moved ? "moved" : "failed") << '\n';
+                    break;
+                }
+                default:
+                    std::cerr << "Ignored unknown WireView control command "
+                              << static_cast<int>(payload[0]) << '\n';
+                    break;
             }
         }
     }
+}
 }
 
 void send_desktop_stream(
@@ -897,18 +971,166 @@ void send_desktop_stream(
     std::uint16_t output_height,
     std::uint16_t frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    bool adaptive_bitrate) {
     std::uint64_t sequence = 2U;
     std::atomic_bool keyframe_requested{false};
+    // R3 adaptive bitrate (WiFi only): the receive thread diffs the decoder
+    // health telemetry once per second; the encoder thread consumes the
+    // governor's target before each frame. Lives on this frame: the input
+    // thread is joined before this function returns.
+    AdaptiveBitrateState adaptive_state(
+        kAdaptiveInitialBitrateBps * frame_rate / 60U);
+    adaptive_state.active.store(adaptive_bitrate, std::memory_order_relaxed);
     constexpr std::uint64_t kClockSyncPingSequenceBase = 0x5756520000000000ULL;
     std::uint64_t clock_sync_sequence = kClockSyncPingSequenceBase;
     // Windows headers define a max macro, so use min() here to schedule the
     // first in-stream calibration immediately without invoking that macro.
     auto next_clock_sync = (std::chrono::steady_clock::time_point::min)();
+
+    // Dedicated send thread (audit item P3): the encoder thread used to block
+    // in write_all on every frame, so an adb/USB stall translated directly
+    // into missed beats. Frames now flow through a bounded queue; overflow
+    // drops the oldest frame and the Android pipeline resyncs (drain-to-
+    // latest + watchdog). All stream writes share write_mutex because the
+    // receive thread answers window-list requests on the same socket.
+    std::mutex write_mutex;
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
+    std::deque<std::vector<std::uint8_t>> outbound;
+    std::atomic_bool sender_running{true};
+    std::exception_ptr sender_error;
+    std::uint64_t dropped_frames{0};
+    std::uint64_t slow_writes{0};
+    constexpr std::size_t kMaxQueuedFrames = 4;
+
+    // Resolve the capture target and build the input injector BEFORE any
+    // thread is created: resolve_desktop_capture_area throws when the named
+    // display just vanished, and an exception escaping while sender_thread
+    // is joinable would unwind it and std::terminate the whole host (audit
+    // item P1). The sender lambda below only touches the queue, the two
+    // mutexes and the stop flag, so it has no dependency on these locals.
+    std::cout << "Capture target: "
+              << (capture_display_device.empty()
+                      ? std::string("primary display")
+                      : std::string(capture_display_device))
+              << '\n';
+    const DesktopCaptureArea input_target = resolve_desktop_capture_area(capture_display_device);
+    std::cout << "Input target: rect=" << input_target.left << ',' << input_target.top
+              << '+' << input_target.width << 'x' << input_target.height << '\n';
+    std::cout << "Input mode: "
+              << (inject_input ? "Windows injection enabled" : "log-only") << '\n';
+    WindowsInputInjector injector(input_target);
+    // input_running must also predate the callbacks below: on_frame checks
+    // it so the encode loop stops once the input thread is gone (audit P3).
+    std::atomic_bool input_running{true};
+    std::exception_ptr input_error;
+    InputReceiveStats input_stats;
+
+    std::thread sender_thread([&] {
+        auto last_slow_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        // Keepalive: pings used to ride only on video frames, so a static
+        // desktop produced no traffic at all - a dead link went unnoticed
+        // by the sender (nothing to write) and the tablet's idle read
+        // timeout fired into a host that never returned to accept. An
+        // independent heartbeat both detects the dead link here (the write
+        // fails and ends the session into the reconnect loop) and keeps
+        // the tablet's flow-phase read timeout from tripping on a live
+        // but static session.
+        auto last_wire_activity = std::chrono::steady_clock::now();
+        std::uint64_t keepalive_sequence = 0U;
+        constexpr auto kKeepaliveInterval = std::chrono::seconds(5);
+        for (;;) {
+            std::vector<std::uint8_t> bytes;
+            {
+                std::unique_lock lock(queue_mutex);
+                queue_cv.wait_for(lock, std::chrono::seconds(2), [&] {
+                    return !outbound.empty() || !sender_running;
+                });
+                if (outbound.empty()) {
+                    if (!sender_running) {
+                        return;
+                    }
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last_wire_activity < kKeepaliveInterval) {
+                        continue;
+                    }
+                    last_wire_activity = now;
+                    bytes = wireview::protocol::encode_packet(
+                        wireview::protocol::PacketHeader{
+                            .type = wireview::protocol::PacketType::ping,
+                            .sequence = keepalive_sequence++,
+                            .timestamp_micros = monotonic_micros(),
+                        },
+                        {});
+                } else {
+                    bytes = std::move(outbound.front());
+                    outbound.pop_front();
+                }
+            }
+            const auto write_started = std::chrono::steady_clock::now();
+            try {
+                std::lock_guard lock(write_mutex);
+                write_all(stream, bytes);
+            } catch (...) {
+                std::lock_guard lock(queue_mutex);
+                sender_error = std::current_exception();
+                sender_running = false;
+                queue_cv.notify_all();
+                return;
+            }
+            last_wire_activity = std::chrono::steady_clock::now();
+            const auto write_elapsed = std::chrono::steady_clock::now() - write_started;
+            if (write_elapsed > std::chrono::milliseconds(5)) {
+                ++slow_writes;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_slow_log > std::chrono::seconds(5)) {
+                    last_slow_log = now;
+                    std::cerr << "WireView frame send stalled for "
+                              << std::chrono::duration<double, std::milli>(
+                                  write_elapsed)
+                                  .count()
+                              << " ms\n";
+                }
+            }
+        }
+    });
+
+    // Enqueue an encoded packet on the wire. Called from the encoder thread
+    // (clock-sync pings, stream config, video frames).
+    auto enqueue_outbound = [&](std::vector<std::uint8_t>&& bytes) {
+        std::lock_guard lock(queue_mutex);
+        if (!sender_running) {
+            if (sender_error) {
+                std::rethrow_exception(sender_error);
+            }
+            throw std::runtime_error("wireview send thread stopped");
+        }
+        if (outbound.size() >= kMaxQueuedFrames) {
+            // Control packets (start_stream config, clock-sync pings) must
+            // never be evicted by video: losing start_stream leaves the
+            // tablet decoding nothing for the rest of the session (there is
+            // no config re-send in the protocol). Drop the oldest queued
+            // video chunk instead (the packet type byte sits at offset 6,
+            // after the 4-byte magic and 2 version bytes) and only fall back
+            // to the queue head when no frame is queued at all.
+            const auto victim = std::find_if(
+                outbound.begin(), outbound.end(),
+                [](const std::vector<std::uint8_t>& queued) {
+                    return queued.size() > 6U &&
+                        queued[6] == static_cast<std::uint8_t>(
+                                         wireview::protocol::PacketType::video_chunk);
+                });
+            outbound.erase(victim != outbound.end() ? victim : outbound.begin());
+            ++dropped_frames;
+        }
+        outbound.push_back(std::move(bytes));
+        queue_cv.notify_one();
+    };
+
     const auto send_clock_sync_ping = [&] {
         const std::uint64_t sent_at_host = monotonic_micros();
-        write_all(
-            stream,
+        enqueue_outbound(
             wireview::protocol::encode_packet(
                 wireview::protocol::PacketHeader{
                     .type = wireview::protocol::PacketType::ping,
@@ -923,8 +1145,7 @@ void send_desktop_stream(
                           std::uint16_t height,
                           std::uint16_t frame_rate) {
             const auto config = make_avc_stream_config(width, height, frame_rate, 1U);
-            write_all(
-                stream,
+            enqueue_outbound(
                 wireview::protocol::encode_packet(
                     wireview::protocol::PacketHeader{
                         .type = wireview::protocol::PacketType::start_stream,
@@ -943,6 +1164,14 @@ void send_desktop_stream(
         .on_frame = [&](std::span<const std::uint8_t> bytes,
                         bool keyframe,
                         std::uint64_t timestamp_micros) {
+            // The input thread also carries keyframe requests, telemetry and
+            // input injection; once it is gone the session cannot recover,
+            // so fail fast instead of streaming blind until the duration
+            // expires. Throwing here ends the session through the existing
+            // catch path and feeds the reconnect loop (audit item P3).
+            if (!input_running.load()) {
+                throw std::runtime_error("input thread is gone; ending the stream session");
+            }
             if (!stream_started) {
                 throw std::runtime_error(
                     "desktop encoder produced a frame before stream setup");
@@ -956,8 +1185,7 @@ void send_desktop_stream(
             if (keyframe) {
                 flags = flags | wireview::protocol::PacketFlag::keyframe;
             }
-            write_all(
-                stream,
+            enqueue_outbound(
                 wireview::protocol::encode_packet(
                     wireview::protocol::PacketHeader{
                         .type = wireview::protocol::PacketType::video_chunk,
@@ -973,41 +1201,87 @@ void send_desktop_stream(
         .consume_keyframe_request = [&] {
             return keyframe_requested.exchange(false);
         },
+        .consume_bitrate_command = [&] {
+            return adaptive_state.consume();
+        },
+        .should_abort = [&] {
+            // The sender clears this flag when its keepalive write failed
+            // (link dead); the input thread clears its own when the receive
+            // loop terminated. Both atomics, readable from the encode loop.
+            return !sender_running.load() || !input_running.load();
+        },
     };
 
-    std::cout << "Capture target: "
-              << (capture_display_device.empty()
-                      ? std::string("primary display")
-                      : std::string(capture_display_device))
-              << '\n';
-    const DesktopCaptureArea input_target = resolve_desktop_capture_area(capture_display_device);
-    std::cout << "Input target: rect=" << input_target.left << ',' << input_target.top
-              << '+' << input_target.width << 'x' << input_target.height << '\n';
-    std::cout << "Input mode: "
-              << (inject_input ? "Windows injection enabled" : "log-only") << '\n';
-    WindowsInputInjector injector(input_target);
-    std::atomic_bool input_running{true};
-    std::exception_ptr input_error;
-    InputReceiveStats input_stats;
+    auto stop_sender = [&] {
+        {
+            std::lock_guard lock(queue_mutex);
+            sender_running = false;
+        }
+        queue_cv.notify_all();
+        if (sender_thread.joinable()) {
+            sender_thread.join();
+        }
+    };
+
+    // The VDD device name classifies window-list entries (primary vs. the
+    // WireView display vs. other monitors).
+    std::wstring vdd_device_name_wide;
+    if (!capture_display_device.empty()) {
+        const int wide_length = MultiByteToWideChar(
+            CP_UTF8, 0, capture_display_device.data(),
+            static_cast<int>(capture_display_device.size()), nullptr, 0);
+        if (wide_length > 0) {
+            vdd_device_name_wide.resize(static_cast<std::size_t>(wide_length));
+            MultiByteToWideChar(
+                CP_UTF8, 0, capture_display_device.data(),
+                static_cast<int>(capture_display_device.size()),
+                vdd_device_name_wide.data(), wide_length);
+        }
+    }
+    // PC -> Android replies (window list) share the send-side write mutex
+    // with the frame sender thread.
+    std::atomic_uint64_t reply_sequence{0x5756530000000000ULL};
+    const auto send_reply = [&](wireview::protocol::PacketType type,
+                                std::vector<std::uint8_t>&& payload) {
+        std::lock_guard lock(write_mutex);
+        write_all(
+            stream,
+            wireview::protocol::encode_packet(
+                wireview::protocol::PacketHeader{
+                    .type = type,
+                    .sequence = reply_sequence.fetch_add(1U),
+                    .timestamp_micros = monotonic_micros(),
+                },
+                payload));
+    };
     std::thread input_thread([&] {
         try {
             receive_input_packets(
-                stream, input_running, keyframe_requested, injector, inject_input, input_stats, status);
+                stream,
+                input_running,
+                keyframe_requested,
+                injector,
+                inject_input,
+                input_stats,
+                status,
+                send_reply,
+                vdd_device_name_wide,
+                &adaptive_state);
         } catch (...) {
             input_error = std::current_exception();
             input_running.store(false);
         }
     });
 
-    for (std::uint64_t index = 0U; index < 8U; ++index) {
-        send_clock_sync_ping();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    next_clock_sync = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-
-    int encoder_result = 1;
     try {
+        for (std::uint64_t index = 0U; index < 8U; ++index) {
+            send_clock_sync_ping();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        next_clock_sync = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+
+        int encoder_result = 1;
         encoder_result = run_desktop_encode_session(
             duration,
             callbacks,
@@ -1015,29 +1289,48 @@ void send_desktop_stream(
             output_height,
             frame_rate,
             capture_display_device);
-    } catch (...) {
-        input_running.store(false);
-        input_thread.join();
-        throw;
-    }
+    stop_sender();
     input_running.store(false);
     input_thread.join();
+        if (encoder_result != 0) {
+            throw std::runtime_error(
+                "desktop encoder session failed: " + std::to_string(encoder_result));
+        }
+    } catch (...) {
+        // The input thread is owned by this scope: tear it down on every
+        // escape path before the exception continues.
+        stop_sender();
+        input_running.store(false);
+        if (input_thread.joinable()) {
+            input_thread.join();
+        }
+        throw;
+    }
+    // stop_stream is sent best-effort even when the input thread recorded a
+    // failure: the link may still be alive (e.g. a parser error killed only
+    // the receiver), and a clean stop beats a tablet-side disconnect. A dead
+    // link merely logs here; the original input exception is rethrown below
+    // so the reconnect loop still sees the failure (audit claim 3).
+    try {
+        std::lock_guard lock(write_mutex);
+        write_all(
+            stream,
+            wireview::protocol::encode_packet(
+                wireview::protocol::PacketHeader{
+                    .type = wireview::protocol::PacketType::stop_stream,
+                    .sequence = sequence,
+                    .timestamp_micros = monotonic_micros(),
+                },
+                {}));
+    } catch (const std::exception& error) {
+        std::cerr << "WireView stop_stream notification failed: " << error.what()
+                  << '\n';
+    }
     if (input_error) {
         std::rethrow_exception(input_error);
     }
-    if (encoder_result != 0) {
-        throw std::runtime_error(
-            "desktop encoder session failed: " + std::to_string(encoder_result));
-    }
-    write_all(
-        stream,
-        wireview::protocol::encode_packet(
-            wireview::protocol::PacketHeader{
-                .type = wireview::protocol::PacketType::stop_stream,
-                .sequence = sequence,
-                .timestamp_micros = monotonic_micros(),
-            },
-            {}));
+    std::cout << "Send queue: drops=" << dropped_frames
+              << " | slowWrites=" << slow_writes << '\n';
     std::cout << "Real desktop stream completed\n";
     if (status != nullptr) {
         status->completed();
@@ -1146,7 +1439,8 @@ int run_connected_stream_impl(
     std::uint16_t output_height,
     std::uint16_t desktop_frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    bool adaptive_bitrate = false) {
     const std::string hello_text = "WireView Windows phase-0";
     const std::vector<std::uint8_t> hello_payload(hello_text.begin(), hello_text.end());
     const wireview::protocol::PacketHeader hello_header{
@@ -1189,7 +1483,8 @@ int run_connected_stream_impl(
             output_height,
             desktop_frame_rate,
             capture_display_device,
-            status);
+            status,
+            adaptive_bitrate);
     }
     return 0;
 }
@@ -1495,6 +1790,274 @@ int run_winusb_desktop_stream_session(
         frame_rate,
         capture_display_device,
         &status);
+}
+
+int run_wifi_desktop_stream_session(
+    std::string_view remote_ip,
+    std::uint16_t remote_port,
+    std::chrono::milliseconds connect_timeout,
+    std::chrono::seconds stream_duration,
+    bool inject_input,
+    std::uint16_t output_width,
+    std::uint16_t output_height,
+    std::uint16_t frame_rate,
+    std::string_view capture_display_device,
+    std::string_view status_file,
+    std::uint64_t reconnect_count) {
+    if (stream_duration <= std::chrono::seconds::zero()) {
+        throw std::invalid_argument("desktop stream duration must be positive");
+    }
+    if (frame_rate != 60U && frame_rate != 120U) {
+        throw std::invalid_argument("desktop stream frame rate must be 60 or 120");
+    }
+    // The pairing credential and PC identity arrive through the environment
+    // (injected by the control center): not visible on any command line.
+    const auto environment_hex = [](const char* name) -> std::string {
+        std::string value(129U, '\0');
+        const DWORD length = GetEnvironmentVariableA(
+            name, value.data(), static_cast<DWORD>(value.size()));
+        if (length == 0U || length >= value.size()) {
+            return {};
+        }
+        value.resize(length);
+        return value;
+    };
+    const std::string key_hex = environment_hex("WIREVIEW_WIFI_KEY");
+    const std::string uuid_hex = environment_hex("WIREVIEW_WIFI_UUID");
+    // Read the display name wide and convert to real UTF-8, matching the
+    // reconnect path in main.cpp: the name feeds the v2 AUTH_RESULT tag and
+    // an ACP read would poison it for non-ASCII computer names.
+    std::wstring wide_name(256U, L'\0');
+    const DWORD wide_length = GetEnvironmentVariableW(
+        L"WIREVIEW_WIFI_NAME", wide_name.data(), static_cast<DWORD>(wide_name.size()));
+    wide_name.resize(
+        wide_length == 0U || wide_length >= wide_name.size() ? 0U : wide_length);
+    std::string host_name;
+    if (!wide_name.empty()) {
+        const int utf8_length = WideCharToMultiByte(
+            CP_UTF8, 0U, wide_name.data(), static_cast<int>(wide_name.size()),
+            nullptr, 0U, nullptr, nullptr);
+        if (utf8_length > 0) {
+            host_name.resize(static_cast<std::size_t>(utf8_length));
+            WideCharToMultiByte(
+                CP_UTF8, 0U, wide_name.data(), static_cast<int>(wide_name.size()),
+                host_name.data(), utf8_length, nullptr, nullptr);
+        }
+    }
+    if (key_hex.empty() || uuid_hex.empty()) {
+        throw std::runtime_error(
+            "the WiFi session is missing WIREVIEW_WIFI_KEY / WIREVIEW_WIFI_UUID; "
+            "pair the tablet in the WireView control center first");
+    }
+    std::vector<std::uint8_t> key;
+    std::vector<std::uint8_t> pc_uuid;
+    try {
+        key = from_hex(key_hex);
+        pc_uuid = from_hex(uuid_hex);
+    } catch (const std::runtime_error& error) {
+        throw std::runtime_error(std::string("invalid WiFi credential environment: ") +
+            error.what());
+    }
+    if (key.size() != wireview::protocol::kAuthKeySize ||
+        pc_uuid.size() != wireview::protocol::kAuthUuidSize) {
+        throw std::runtime_error("the WiFi credential environment has the wrong size");
+    }
+
+    DevelopmentStatusPublisher status(status_file);
+    status.configure(
+        capture_display_device,
+        inject_input,
+        output_width,
+        output_height,
+        frame_rate,
+        reconnect_count,
+        "wifi");
+
+    WinsockSession winsock;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(remote_port);
+    if (inet_pton(AF_INET, std::string(remote_ip).c_str(), &address.sin_addr) != 1) {
+        throw std::runtime_error("the WiFi endpoint IP is not a valid IPv4 address");
+    }
+    std::cout << "WireView WiFi session dialing " << remote_ip << ':' << remote_port << '\n';
+    auto socket = connect_tcp_with_timeout(address, connect_timeout);
+    std::cout << "Connected; authenticating the WiFi link\n";
+    SocketByteStream stream(socket.get());
+
+    WifiLinkIdentity identity{pc_uuid, host_name.empty() ? "WireView PC" : host_name};
+    const WifiPeerInfo peer = perform_wifi_handshake(
+        stream, identity, wireview::protocol::AuthMode::authenticate, key, {},
+        false, nullptr);
+    std::cout << "WiFi authentication verified with " << peer.device_name
+              << " (android_id " << peer.android_id << ")\n";
+    if (status_file.empty() == false) {
+        status.connected(peer.device_name);
+    }
+    return run_connected_stream_impl(
+        stream,
+        nullptr,
+        0U,
+        0U,
+        0U,
+        stream_duration,
+        inject_input,
+        output_width,
+        output_height,
+        frame_rate,
+        capture_display_device,
+        &status,
+        // Adaptive bitrate is a WiFi-transport feature: the single-shot
+        // entry must behave like the reconnect entry (which passes true
+        // below), otherwise manual --transport wifi runs silently lose the
+        // governor.
+        true);
+}
+
+int run_reconnecting_desktop_stream_session(
+    const SessionEndpoint& endpoint,
+    std::chrono::milliseconds accept_timeout,
+    std::chrono::seconds total_duration,
+    bool inject_input,
+    std::uint16_t output_width,
+    std::uint16_t output_height,
+    std::uint16_t frame_rate,
+    std::string_view capture_display_device,
+    std::string_view status_file) {
+    if (total_duration <= std::chrono::seconds::zero()) {
+        throw std::invalid_argument("reconnecting session duration must be positive");
+    }
+    if (frame_rate != 60U && frame_rate != 120U) {
+        throw std::invalid_argument("desktop stream frame rate must be 60 or 120");
+    }
+    const char* transport_name =
+        endpoint.kind == SessionEndpoint::Kind::wifi_dial ? "wifi" : "adb";
+    DevelopmentStatusPublisher status(status_file);
+    status.configure(
+        capture_display_device,
+        inject_input,
+        output_width,
+        output_height,
+        frame_rate,
+        0U,
+        transport_name);
+
+    WinsockSession winsock;
+    const auto deadline = std::chrono::steady_clock::now() + total_duration;
+    std::uint64_t interrupted_sessions = 0;
+    std::uint64_t completed_sessions = 0;
+    // Consecutive accept timeouts on the adb listener. After enough of them
+    // the tablet clearly cannot dial in at all (a yanked cable clears the
+    // adb reverse mapping, and this process deliberately never runs adb),
+    // so the host gives up and lets the session supervisor re-establish the
+    // mapping and relaunch it - the same recovery path the pre-reconnect
+    // sessions used. WiFi dialing is exempt: its tablet-side listener
+    // re-arms itself every round.
+    std::uint64_t consecutive_accept_timeouts = 0;
+    bool gave_up_accepting = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining <= std::chrono::seconds::zero()) {
+            break;
+        }
+        // A named target is a hard product requirement; re-verify before
+        // every session so reconnect never silently falls back to primary.
+        if (!capture_display_device.empty()) {
+            (void)resolve_desktop_capture_area(capture_display_device);
+        }
+        try {
+            int result;
+            if (endpoint.kind == SessionEndpoint::Kind::wifi_dial) {
+                sockaddr_in address{};
+                address.sin_family = AF_INET;
+                address.sin_port = htons(endpoint.remote_port);
+                if (inet_pton(
+                        AF_INET, endpoint.remote_ip.c_str(), &address.sin_addr) != 1) {
+                    throw std::runtime_error("the WiFi endpoint IP is not valid IPv4");
+                }
+                std::cout << "WireView WiFi session dialing " << endpoint.remote_ip
+                          << ':' << endpoint.remote_port << '\n';
+                auto socket = connect_tcp_with_timeout(address, accept_timeout);
+                SocketByteStream stream(socket.get());
+                WifiLinkIdentity identity{endpoint.pc_uuid, endpoint.pc_name};
+                const WifiPeerInfo peer = perform_wifi_handshake(
+                    stream,
+                    identity,
+                    wireview::protocol::AuthMode::authenticate,
+                    endpoint.wifi_key,
+                    {},
+                    false,
+                    nullptr);
+                std::cout << "WiFi authentication verified with " << peer.device_name << '\n';
+                status.connected(peer.device_name);
+                result = run_connected_stream_impl(
+                    stream,
+                    nullptr,
+                    0U,
+                    0U,
+                    0U,
+                    remaining,
+                    inject_input,
+                    output_width,
+                    output_height,
+                    frame_rate,
+                    capture_display_device,
+                    &status,
+                    true);
+            } else {
+                result = run_server_impl(
+                    endpoint.port,
+                    accept_timeout,
+                    nullptr,
+                    0U,
+                    0U,
+                    0U,
+                    remaining,
+                    inject_input,
+                    output_width,
+                    output_height,
+                    frame_rate,
+                    capture_display_device,
+                    &status);
+            }
+            ++completed_sessions;
+            if (result == 0) {
+                break;
+            }
+            if (endpoint.kind != SessionEndpoint::Kind::wifi_dial &&
+                result == 2) {
+                ++consecutive_accept_timeouts;
+                if (consecutive_accept_timeouts >= 6U) {
+                    std::cout << "No WireView client for " << consecutive_accept_timeouts
+                              << " accept rounds; ending this host so the session "
+                                 "supervisor can re-run adb reverse\n";
+                    gave_up_accepting = true;
+                    break;
+                }
+            }
+            // result != 0: the endpoint timed out waiting for the tablet. Keep
+            // the loop going so the session survives a slow tablet restart.
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        } catch (const std::exception& error) {
+            // A session existed and just died (link lost mid-stream): the
+            // tablet may reconnect on its own within seconds, so the accept
+            // timeout streak restarts from zero.
+            consecutive_accept_timeouts = 0;
+            if (!capture_display_device.empty()) {
+                (void)resolve_desktop_capture_area(capture_display_device);
+            }
+            ++interrupted_sessions;
+            status.interrupted(error.what());
+            std::cerr << "WireView session interrupted: " << error.what()
+                      << ". Waiting for the tablet to reconnect...\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+    }
+    std::cout << "WireView reconnecting session completed; interrupted="
+              << interrupted_sessions << " | completed=" << completed_sessions << '\n';
+    status.completed();
+    return gave_up_accepting ? 2U : 0U;
 }
 
 int run_development_reconnecting_desktop_stream_server(

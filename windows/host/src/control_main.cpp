@@ -1,15 +1,26 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// WinSock2 must precede <Windows.h>: the WiFi headers pull in sockets, and
+// letting Windows.h drag in winsock.h first causes the ws2def.h redefinition
+// cascade (see LOCAL_NOTES section 5).
+#include <WinSock2.h>
+#include <WS2tcpip.h>
 #include <Windows.h>
 #include <Shellapi.h>
 #include <dwmapi.h>
+#include <dbghelp.h>
 #include <commctrl.h>
 #include <gdiplus.h>
 #include <uxtheme.h>
 
+#include "display_layout.hpp"
+#include "edge_mapping.hpp"
+#include "tablet_commands.hpp"
 #include "parsec_vdd.hpp"
 #include "parsec_vdd_custom_modes.hpp"
+#include "wifi_control.hpp"
+#include "wifi_crypto.hpp"
 #ifdef WIREVIEW_WEBVIEW_UI
 #include "webview_host.hpp"
 #endif
@@ -26,6 +37,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,10 +62,7 @@ constexpr int kVddModeSelector = 1015;
 constexpr int kIdentifyDeviceButton = 1016;
 constexpr int kSimpleModeToggle = 1017;
 constexpr int kSimpleMirrorButton = 1018;
-constexpr int kSimpleInputButton = 1019;
 constexpr int kSimpleExtendButton = 1020;
-constexpr int kSimpleExtendInputButton = 1021;
-constexpr int kSimpleReturnButton = 1022;
 constexpr int kDisplaySettingsButton = 1023;
 constexpr int kInputDisplayOnlyButton = 1024;
 constexpr int kInputEnabledButton = 1025;
@@ -67,6 +76,8 @@ constexpr int kDiagnosticsButton = 1032;
 constexpr int kDiagnosticsBackButton = 1033;
 constexpr int kCheckUpdateButton = 1034;
 constexpr int kDiagnosticsOutput = 1035;
+constexpr int kVddPositionSelector = 1036;
+constexpr int kVddOrientationSelector = 1037;
 constexpr int kCustomModeSaveButton = 1100;
 constexpr int kCustomModeEditBase = 1110;
 constexpr int kWireViewAppIcon = 200;
@@ -75,6 +86,16 @@ constexpr int kCustomModeFieldStep = 45;
 constexpr UINT_PTR kProcessTimer = 1;
 constexpr UINT_PTR kVddTimer = 2;
 constexpr UINT_PTR kDeviceDetectTimer = 3;
+// 平板侧边栏请求换向后的延迟重启；显示器拓扑变化后边缘映射重挂的防抖。
+constexpr UINT_PTR kRotateRestartTimer = 4;
+constexpr UINT_PTR kIdleExitTimer = 6;
+constexpr UINT kIdleExitTimerPeriodMillis = 60'000U;
+// Timer id 5 is owned by wifi_control's discovery timer on the same window;
+// sharing it would make SetTimer silently rewrite the WiFi poll period. Keep
+// the edge-remap debounce on its own id (ids in use: 1,2,3,4,6,wifi=5).
+constexpr UINT_PTR kEdgeRemapTimer = 7;
+static_assert(kEdgeRemapTimer != wireview::host::wifi_control::kWifiDiscoverTimerId,
+    "kEdgeRemapTimer must not collide with the WiFi discovery timer id");
 constexpr UINT kTrayMessage = WM_APP + 1U;
 constexpr UINT kFinalizeControlExit = WM_APP + 2U;
 constexpr UINT kTrayRestore = 2001U;
@@ -151,7 +172,6 @@ struct ControlState {
     HWND window{nullptr};
     HWND title{nullptr};
     HWND status{nullptr};
-    HWND simple_window{nullptr};
     HWND simple_status{nullptr};
     HWND simple_mode_toggle{nullptr};
     HWND full_mode_toggle{nullptr};
@@ -169,6 +189,8 @@ struct ControlState {
     HWND resolution_selector{nullptr};
     HWND frame_rate_selector{nullptr};
     HWND vdd_mode_selector{nullptr};
+    HWND vdd_position_selector{nullptr};
+    HWND vdd_orientation_selector{nullptr};
     HWND recommendation{nullptr};
     HWND start_mirror_button{nullptr};
     HWND start_input_button{nullptr};
@@ -195,6 +217,15 @@ struct ControlState {
     std::filesystem::path device_model_catalog_file;
     std::filesystem::path device_model_cache_file;
     std::wstring last_script_status;
+    // Transport of the most recent session status (wifi/adb); drives the
+    // rotate-restart transport choice.
+    bool last_session_transport_wifi{false};
+    bool rotate_restart_force_wifi{false};
+    // R4 控制中心设置项：关闭=彻底退出；空闲 N 分钟自动退出（0=关闭）。
+    bool close_exits{false};
+    int idle_exit_minutes{0};
+    int idle_exit_ticks{0};
+    std::filesystem::path preferences_file;
     std::wstring current_status;
     // 最近一次会话的 Host 原始输出不能依赖临时 status 文件：手动停止会关闭
     // Job，启动器来不及写最终状态。这里保留独立实时日志的快照供诊断页导出。
@@ -215,17 +246,24 @@ struct ControlState {
     std::uint16_t pending_vdd_refresh_hz{};
     bool preview_active{false};
     bool profile_probe_active{false};
+    // 防止 ChangeDisplaySettingsExW 泵消息导致的 start_session 重入。
+    bool start_session_in_progress{false};
     bool auto_device_profile_completed{false};
     bool auto_device_profile_attempted{false};
     // 用户点击“刷新”时，即使同一条 USB 连接此前已经自动识别过，也重新向
     // Android 应用请求一次当前屏幕模式（分辨率、当前刷新率和最高刷新率）。
     bool device_profile_refresh_requested{false};
     bool device_profile_requires_custom_mode{false};
+    // One-shot per session: the 500 ms status poll must not reopen the
+    // custom-mode editor after the user closed it (slots still full).
+    bool custom_mode_prompt_shown{false};
     bool simple_mode{false};
     // WebView2 的页面选择状态。它不替代 VDD/会话后端，只用于在页面上解释
     // 当前准备启动复制还是扩展，并驱动简易模式的大卡片入口。
     bool web_extend_mode{false};
     bool display_config_expanded{false};
+    // R2：指针跨屏边缘映射（LittleBigMouse）总开关，默认开启。
+    bool edge_mapping_enabled{true};
     bool diagnostics_page{false};
     bool session_input_enabled{false};
     bool start_after_vdd_ready{false};
@@ -264,6 +302,9 @@ std::array<std::array<HWND, 3U>, 5U> g_custom_mode_edits{};
 HWND g_diagnostics_window{nullptr};
 HWND g_diagnostics_text{nullptr};
 bool g_popup_light_theme{false};
+// Registered "TaskbarCreated" message id: Explorer restarts wipe every tray
+// icon and rebroadcast it; we re-add ours so a hidden window stays reachable.
+UINT g_taskbar_created_message{0U};
 
 #ifdef WIREVIEW_WEBVIEW_UI
 std::unique_ptr<wireview::host::WebViewHost> g_webview_host;
@@ -547,8 +588,51 @@ void begin_simple_extension(bool enable_input);
 void set_status(const std::wstring& text);
 std::string wide_to_utf8(std::wstring_view value);
 void log_control_event(std::wstring_view category, std::wstring detail);
+
+// CRT 断言（含 Debug 迭代器检查）触发时，把符号化调用栈写进控制日志：
+// 真机上没有调试器，这是崩溃后唯一能拿到现场的手段。
+int __cdecl assertion_stack_hook(int report_type, wchar_t* message, int* return_value) {
+    if (report_type != _CRT_ASSERT && report_type != _CRT_ERROR) {
+        return FALSE;
+    }
+    if (message != nullptr) {
+        log_control_event(L"assert", message);
+    }
+    void* frames[32]{};
+    const USHORT count = CaptureStackBackTrace(1U, 32U, frames, nullptr);
+    static bool symbols_ready = false;
+    if (!symbols_ready) {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        symbols_ready = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
+    }
+    char symbol_buffer[sizeof(SYMBOL_INFOW) + 256 * sizeof(wchar_t)]{};
+    auto* symbol = reinterpret_cast<SYMBOL_INFOW*>(symbol_buffer);
+    for (USHORT index = 0; index < count; ++index) {
+        std::wstring frame_text = L"#" + std::to_wstring(index) + L" 0x" +
+            std::to_wstring(reinterpret_cast<unsigned long long>(frames[index]));
+        if (symbols_ready) {
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+            symbol->MaxNameLen = 255U;
+            DWORD64 displacement = 0U;
+            if (SymFromAddrW(GetCurrentProcess(),
+                    reinterpret_cast<DWORD64>(frames[index]), &displacement,
+                    reinterpret_cast<PSYMBOL_INFOW>(symbol)) != FALSE) {
+                frame_text += L" " + std::wstring(symbol->Name, symbol->NameLen) +
+                    L" +0x" + std::to_wstring(displacement);
+            }
+        }
+        log_control_event(L"assert-stack", frame_text);
+    }
+    if (return_value != nullptr) {
+        *return_value = 0;  // 继续默认弹窗流程
+    }
+    return FALSE;
+}
 std::wstring describe_display_choices_for_log();
 void update_recommendation();
+bool apply_custom_modes_with_elevation(HWND window);
+bool vdd_portrait_selected();
+std::optional<wireview::host::VddPosition> selected_vdd_position();
 void show_custom_mode_editor(HWND owner);
 void show_diagnostics_window(HWND owner);
 void notify_android_of_vdd_created(const StreamSettings& settings);
@@ -560,33 +644,72 @@ struct StreamSettings {
     std::uint16_t vdd_refresh_hz{60U};
     std::uint16_t vdd_width{};
     std::uint16_t vdd_height{};
+    // R1 扩展布局：vdd_portrait=true 时 width/height/vdd_width/vdd_height 均为
+    // 交换后的有效值；vdd_position 是规范名（right/left/top/bottom）。
+    bool vdd_portrait{false};
+    std::wstring vdd_position{L"right"};
     std::wstring display_device;
 };
 
 std::wstring selector_text(HWND selector);
 void refresh_diagnostics_output();
 
+// Settings files must survive a crash mid-write: a truncated ini silently
+// loses persisted state (identity, preferences, custom slots). Write the full
+// text to <file>.tmp, flush, then swap it in atomically so readers always see
+// either the previous file or the complete new one.
+bool save_text_file_atomically(const std::filesystem::path& path, const std::string& contents) {
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) {
+        return false;
+    }
+    const std::filesystem::path temporary = path.wstring() + L".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            return false;
+        }
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        output.flush();
+        if (!output) {
+            std::filesystem::remove(temporary, error);
+            return false;
+        }
+    }
+    if (MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) == FALSE) {
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    return true;
+}
+
 void save_stream_settings(const StreamSettings& settings) {
     if (g_state.settings_file.empty()) {
         return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(g_state.settings_file.parent_path(), error);
-    if (error) {
-        return;
-    }
-    std::ofstream output(g_state.settings_file, std::ios::trunc);
-    if (!output) {
-        return;
-    }
+    std::ostringstream output;
     if (settings.width == 0U) {
         output << "resolution=auto\n";
     } else {
-        output << "resolution=" << settings.width << 'x' << settings.height << '\n';
+        // 持久化始终保存基础（横屏）分辨率；竖屏只体现在 vdd_orientation。
+        // vdd_orientation 写在 vdd_mode 之前，保证恢复时先知道方向再联动刷新率。
+        const auto [base_width, base_height] = settings.vdd_portrait
+            ? std::pair{settings.height, settings.width}
+            : std::pair{settings.width, settings.height};
+        output << "resolution=" << base_width << 'x' << base_height << '\n';
+        output << "vdd_orientation="
+               << (settings.vdd_portrait ? "portrait" : "landscape") << '\n';
+        output << "vdd_position=";
+        for (const wchar_t character : settings.vdd_position) {
+            output << static_cast<char>(character);
+        }
+        output << '\n';
+        output << "frame_rate=" << settings.frame_rate << '\n';
+        output << "vdd_mode=" << base_width << 'x' << base_height << '@'
+               << settings.vdd_refresh_hz << '\n';
     }
-    output << "frame_rate=" << settings.frame_rate << '\n';
-    output << "vdd_mode=" << settings.vdd_width << 'x' << settings.vdd_height << '@'
-           << settings.vdd_refresh_hz << '\n';
+    output << "edge_mapping=" << (g_state.edge_mapping_enabled ? 1 : 0) << '\n';
     // 控制中心的日常路径固定使用 ADB；WinUSB 实验入口仍保留在命令行工具中。
     output << "transport=adb\n";
     if (!settings.display_device.empty()) {
@@ -596,6 +719,7 @@ void save_stream_settings(const StreamSettings& settings) {
         }
         output << '\n';
     }
+    (void)save_text_file_atomically(g_state.settings_file, output.str());
 }
 
 std::wstring format_custom_mode(const CustomMode& mode) {
@@ -633,15 +757,7 @@ void save_custom_modes() {
     if (g_state.custom_modes_file.empty()) {
         return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(g_state.custom_modes_file.parent_path(), error);
-    if (error) {
-        return;
-    }
-    std::ofstream output(g_state.custom_modes_file, std::ios::trunc);
-    if (!output) {
-        return;
-    }
+    std::ostringstream output;
     output << "version=1\n";
     for (std::size_t index = 0U; index < g_custom_modes.size(); ++index) {
         output << "slot" << (index + 1U) << '=';
@@ -651,6 +767,7 @@ void save_custom_modes() {
         }
         output << '\n';
     }
+    (void)save_text_file_atomically(g_state.custom_modes_file, output.str());
 }
 
 void load_custom_modes() {
@@ -784,17 +901,21 @@ void populate_vdd_mode_selector(std::wstring preferred = {}) {
     if (!resolution) {
         return;
     }
+    // 竖屏方向下，副屏刷新率候选按交换后的有效宽高（WxH→HxW）匹配。
+    const auto effective_resolution = vdd_portrait_selected()
+        ? std::pair{resolution->second, resolution->first}
+        : *resolution;
     std::vector<std::uint16_t> refresh_rates;
     for (const StandardModeGroup& group : kStandardModeGroups) {
         const auto standard_resolution = parse_resolution(group.resolution);
-        if (standard_resolution && *standard_resolution == *resolution) {
+        if (standard_resolution && *standard_resolution == effective_resolution) {
             refresh_rates.insert(refresh_rates.end(), group.refresh_rates.begin(), group.refresh_rates.end());
             break;
         }
     }
     for (const auto& custom_mode : g_custom_modes) {
-        if (custom_mode && custom_mode->width == resolution->first &&
-            custom_mode->height == resolution->second) {
+        if (custom_mode && custom_mode->width == effective_resolution.first &&
+            custom_mode->height == effective_resolution.second) {
             refresh_rates.push_back(custom_mode->refresh_hz);
         }
     }
@@ -826,6 +947,66 @@ void populate_vdd_mode_selector(std::wstring preferred = {}) {
             reinterpret_cast<LPARAM>(selected_label.c_str())) == CB_ERR) {
         SendMessageW(g_state.vdd_mode_selector, CB_SETCURSEL, 0U, 0);
     }
+}
+
+int vdd_position_combo_index(wireview::host::VddPosition position) {
+    switch (position) {
+        case wireview::host::VddPosition::Right:
+            return 0;
+        case wireview::host::VddPosition::Left:
+            return 1;
+        case wireview::host::VddPosition::Top:
+            return 2;
+        case wireview::host::VddPosition::Bottom:
+            return 3;
+        default:
+            return 0;
+    }
+}
+
+std::optional<wireview::host::VddPosition> selected_vdd_position() {
+    if (g_state.vdd_position_selector == nullptr) {
+        return std::nullopt;
+    }
+    switch (SendMessageW(g_state.vdd_position_selector, CB_GETCURSEL, 0U, 0)) {
+        case 0:
+            return wireview::host::VddPosition::Right;
+        case 1:
+            return wireview::host::VddPosition::Left;
+        case 2:
+            return wireview::host::VddPosition::Top;
+        case 3:
+            return wireview::host::VddPosition::Bottom;
+        default:
+            return std::nullopt;
+    }
+}
+
+bool vdd_portrait_selected() {
+    return g_state.vdd_orientation_selector != nullptr &&
+        SendMessageW(g_state.vdd_orientation_selector, CB_GETCURSEL, 0U, 0) == 1;
+}
+
+void populate_vdd_position_selector() {
+    if (g_state.vdd_position_selector == nullptr) {
+        return;
+    }
+    for (const wchar_t* const label : {L"右侧", L"左侧", L"上方", L"下方"}) {
+        SendMessageW(g_state.vdd_position_selector, CB_ADDSTRING, 0U,
+            reinterpret_cast<LPARAM>(label));
+    }
+    SendMessageW(g_state.vdd_position_selector, CB_SETCURSEL, 0U, 0);
+}
+
+void populate_vdd_orientation_selector() {
+    if (g_state.vdd_orientation_selector == nullptr) {
+        return;
+    }
+    for (const wchar_t* const label : {L"横向", L"纵向"}) {
+        SendMessageW(g_state.vdd_orientation_selector, CB_ADDSTRING, 0U,
+            reinterpret_cast<LPARAM>(label));
+    }
+    SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, 0U, 0);
 }
 
 void sync_custom_modes_from_parsec_vdd() {
@@ -893,7 +1074,12 @@ void apply_detected_device_profile(
                 g_state.device_profile_note = L"已识别设备：" + profile +
                     L"。投屏分辨率列表没有对应项，且 5 个自定义模式槽均已占用；"
                     L"请先替换或释放一个槽，才能开始 WireView。";
-                show_custom_mode_editor(g_state.window);
+                // Poll-driven reopen loop guard: show the editor at most once
+                // per session (the note above keeps the explanation visible).
+                if (!g_state.custom_mode_prompt_shown) {
+                    g_state.custom_mode_prompt_shown = true;
+                    show_custom_mode_editor(g_state.window);
+                }
                 return;
             }
             *empty_slot = CustomMode{
@@ -1017,7 +1203,6 @@ void update_vdd_controls() {
         refresh_diagnostics_output();
     }
     InvalidateRect(g_state.window, nullptr, FALSE);
-    InvalidateRect(g_state.simple_window, nullptr, FALSE);
     const bool session_idle = g_state.shell_process == nullptr || g_state.preview_active;
     if (g_state.create_vdd_button != nullptr) {
         EnableWindow(
@@ -1114,20 +1299,73 @@ void refresh_display_choices(std::wstring preferred_device = {}) {
     update_vdd_controls();
 }
 
+bool standard_mode_exists(std::uint16_t width, std::uint16_t height, std::uint16_t refresh_hz) {
+    for (const StandardModeGroup& group : kStandardModeGroups) {
+        const auto standard_resolution = parse_resolution(group.resolution);
+        if (standard_resolution && standard_resolution->first == width &&
+            standard_resolution->second == height) {
+            return std::find(group.refresh_rates.begin(), group.refresh_rates.end(),
+                       refresh_hz) != group.refresh_rates.end();
+        }
+    }
+    return false;
+}
+
+bool custom_mode_exists(std::uint16_t width, std::uint16_t height, std::uint16_t refresh_hz) {
+    return std::any_of(g_custom_modes.begin(), g_custom_modes.end(),
+        [&](const std::optional<CustomMode>& mode) {
+            return mode && mode->width == width && mode->height == height &&
+                mode->refresh_hz == refresh_hz;
+        });
+}
+
+// 竖屏的交换分辨率通常不在驱动标准模式表里；确认一个自定义槽可用，必要时
+// 提权写入（一次管理员授权）。失败时返回 false 并给出用户可读原因。
+bool ensure_custom_mode_available(
+    std::uint16_t width, std::uint16_t height, std::uint16_t refresh_hz) {
+    if (standard_mode_exists(width, height, refresh_hz) ||
+        custom_mode_exists(width, height, refresh_hz)) {
+        return true;
+    }
+    const auto empty_slot = std::find_if(
+        g_custom_modes.begin(), g_custom_modes.end(),
+        [](const std::optional<CustomMode>& mode) { return !mode.has_value(); });
+    if (empty_slot == g_custom_modes.end()) {
+        set_status(L"竖屏模式 " + std::to_wstring(width) + L"×" + std::to_wstring(height) +
+            L" @ " + std::to_wstring(refresh_hz) +
+            L" Hz 需要一个自定义模式槽，但 5 个槽均已占用；请先释放一个槽。");
+        return false;
+    }
+    *empty_slot = CustomMode{.width = width, .height = height, .refresh_hz = refresh_hz};
+    save_custom_modes();
+    if (!apply_custom_modes_with_elevation(g_state.window)) {
+        *empty_slot = std::nullopt;
+        save_custom_modes();
+        set_status(L"写入竖屏自定义模式需要管理员授权，已取消；副屏方向保持不变。");
+        return false;
+    }
+    sync_custom_modes_from_parsec_vdd();
+    return custom_mode_exists(width, height, refresh_hz);
+}
+
 bool apply_selected_mode_to_parsec_vdd() {
     if (g_state.shell_process != nullptr) {
         set_status(L"WireView 正在运行，无法切换 Parsec VDD 的显示模式。请先停止会话。");
         return false;
     }
-    const auto resolution = parse_resolution(selector_text(g_state.resolution_selector));
+    const auto base_resolution = parse_resolution(selector_text(g_state.resolution_selector));
     std::uint16_t refresh_hz{};
     try {
         refresh_hz = static_cast<std::uint16_t>(std::stoul(selector_text(g_state.vdd_mode_selector)));
     } catch (const std::exception&) {
     }
-    if (!resolution || refresh_hz == 0U) {
+    if (!base_resolution || refresh_hz == 0U) {
         return false;
     }
+    // 竖屏方向下应用到驱动的是交换后的有效宽高（WxH→HxW）。
+    const auto resolution = vdd_portrait_selected()
+        ? std::pair{base_resolution->second, base_resolution->first}
+        : *base_resolution;
 
     const auto first_parsec = std::find_if(
         g_state.display_choices.begin(), g_state.display_choices.end(),
@@ -1150,7 +1388,7 @@ bool apply_selected_mode_to_parsec_vdd() {
         set_status(L"无法读取当前 Parsec VDD 显示模式。");
         return false;
     }
-    if (current.dmPelsWidth == resolution->first && current.dmPelsHeight == resolution->second &&
+    if (current.dmPelsWidth == resolution.first && current.dmPelsHeight == resolution.second &&
         current.dmDisplayFrequency == refresh_hz) {
         return true;
     }
@@ -1162,41 +1400,88 @@ bool apply_selected_mode_to_parsec_vdd() {
         if (EnumDisplaySettingsW(first_parsec->device_name.c_str(), index, &candidate) == FALSE) {
             break;
         }
-        if (candidate.dmPelsWidth == resolution->first && candidate.dmPelsHeight == resolution->second &&
+        if (candidate.dmPelsWidth == resolution.first && candidate.dmPelsHeight == resolution.second &&
             candidate.dmDisplayFrequency == refresh_hz) {
             mode_supported = true;
             break;
         }
     }
+    // ensure_custom_mode_available 可能弹出 UAC 授权框并泵消息；期间嵌套的
+    // kVddTimer 回调可重建 display_choices 使 first_parsec 失效（50f3d0d /
+    // 04a2492 同家族问题，全量代码审查发现的第三处），先拷出设备名。
+    const std::wstring parsec_device_name = first_parsec->device_name;
+    if (!mode_supported && vdd_portrait_selected() &&
+        ensure_custom_mode_available(resolution.first, resolution.second, refresh_hz)) {
+        // 竖屏模式已写入自定义槽，重新枚举驱动模式表做二次验证。
+        for (DWORD index = 0U;; ++index) {
+            DEVMODEW candidate{};
+            candidate.dmSize = sizeof(candidate);
+            if (EnumDisplaySettingsW(parsec_device_name.c_str(), index, &candidate) == FALSE) {
+                break;
+            }
+            if (candidate.dmPelsWidth == resolution.first &&
+                candidate.dmPelsHeight == resolution.second &&
+                candidate.dmDisplayFrequency == refresh_hz) {
+                mode_supported = true;
+                break;
+            }
+        }
+    }
     if (!mode_supported) {
-        set_status(L"Parsec VDD 不支持 " + std::to_wstring(resolution->first) + L"×" +
-            std::to_wstring(resolution->second) + L" @ " + std::to_wstring(refresh_hz) +
+        set_status(L"Parsec VDD 不支持 " + std::to_wstring(resolution.first) + L"×" +
+            std::to_wstring(resolution.second) + L" @ " + std::to_wstring(refresh_hz) +
             L" Hz。请先在“编辑自定义分辨率”中写入对应模式。");
         return false;
     }
 
-    current.dmPelsWidth = resolution->first;
-    current.dmPelsHeight = resolution->second;
+    current.dmPelsWidth = resolution.first;
+    current.dmPelsHeight = resolution.second;
     current.dmDisplayFrequency = refresh_hz;
     current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+    // CDS 泵消息期间嵌套 refresh 会使 first_parsec 失效，使用先前的拷贝。
     const LONG result = ChangeDisplaySettingsExW(
-        first_parsec->device_name.c_str(), &current, nullptr, CDS_UPDATEREGISTRY, nullptr);
+        parsec_device_name.c_str(), &current, nullptr, CDS_UPDATEREGISTRY, nullptr);
     if (result != DISP_CHANGE_SUCCESSFUL) {
         set_status(L"Parsec VDD 显示模式切换失败（代码 " + std::to_wstring(result) + L"）。");
         return false;
     }
-    const std::wstring device_name = first_parsec->device_name;
-    refresh_display_choices(device_name);
-    set_status(L"已同步 Parsec VDD：" + std::to_wstring(resolution->first) + L"×" +
-        std::to_wstring(resolution->second) + L" @ " + std::to_wstring(refresh_hz) + L" Hz。");
+    refresh_display_choices(parsec_device_name);
+    set_status(L"已同步 Parsec VDD：" + std::to_wstring(resolution.first) + L"×" +
+        std::to_wstring(resolution.second) + L" @ " + std::to_wstring(refresh_hz) + L" Hz。");
     return true;
+}
+
+// R1：把当前持有的 WireView 副屏摆放到"副屏位置"选择的方位。尚未持有副屏时
+// 不动作，等 broker 创建完成后（poll_vdd_broker ready 分支）静默应用一次。
+void apply_selected_vdd_position(bool announce) {
+    if (g_state.owned_display_device.empty()) {
+        return;
+    }
+    const auto position = selected_vdd_position();
+    if (!position) {
+        return;
+    }
+    std::wstring error;
+    if (!wireview::host::apply_vdd_position(
+            g_state.owned_display_device.c_str(), *position, error)) {
+        set_status(L"副屏摆放失败：" + error);
+        return;
+    }
+    if (announce) {
+        set_status(L"已将 WireView 副屏摆放到" +
+            selector_text(g_state.vdd_position_selector) +
+            L"；建议停止并重新开始会话，让画面与触控按新位置刷新。");
+    }
+    refresh_display_choices(g_state.owned_display_device);
 }
 
 void restore_stream_settings() {
     if (g_state.settings_file.empty() || g_state.resolution_selector == nullptr ||
         g_state.frame_rate_selector == nullptr ||
         g_state.vdd_mode_selector == nullptr ||
-        g_state.display_selector == nullptr) {
+        g_state.display_selector == nullptr ||
+        g_state.vdd_position_selector == nullptr ||
+        g_state.vdd_orientation_selector == nullptr) {
         return;
     }
     std::ifstream input(g_state.settings_file);
@@ -1221,6 +1506,21 @@ void restore_stream_settings() {
                     populate_vdd_mode_selector(std::to_wstring(parsed->refresh_hz));
                 }
             }
+        } else if (line == "edge_mapping=0") {
+            g_state.edge_mapping_enabled = false;
+        } else if (line == "edge_mapping=1") {
+            g_state.edge_mapping_enabled = true;
+        } else if (line.rfind("vdd_position=", 0U) == 0U) {
+            const auto position =
+                wireview::host::parse_vdd_position(line.substr(13U));
+            if (position) {
+                SendMessageW(g_state.vdd_position_selector, CB_SETCURSEL,
+                    static_cast<WPARAM>(vdd_position_combo_index(*position)), 0);
+            }
+        } else if (line == "vdd_orientation=portrait") {
+            SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, 1U, 0);
+        } else if (line == "vdd_orientation=landscape") {
+            SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, 0U, 0);
         } else if (line.rfind("display=", 0U) == 0U) {
             const std::string value = line.substr(8U);
             preferred_display.assign(value.begin(), value.end());
@@ -1300,6 +1600,48 @@ void load_control_ui_assets() {
     g_extend_screen_asset = load_control_ui_asset(L"extend-screen.png");
     g_display_only_asset = load_control_ui_asset(L"icon-display-only.png");
     g_touch_pen_asset = load_control_ui_asset(L"icon-touch-pen.png");
+}
+
+// R4 偏好（关闭行为/空闲退出）独立存盘，避免与流设置互相覆盖。
+void load_control_preferences() {
+    if (g_state.settings_file.empty()) {
+        return;
+    }
+    g_state.preferences_file =
+        g_state.settings_file.parent_path() / L"control-preferences.ini";
+    std::ifstream input(g_state.preferences_file);
+    if (!input) {
+        return;
+    }
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line == "close_exits=1") {
+            g_state.close_exits = true;
+        } else if (line.rfind("idle_exit_minutes=", 0U) == 0U) {
+            const int minutes = std::atoi(line.substr(18U).c_str());
+            g_state.idle_exit_minutes =
+                minutes < 0 ? 0 : (minutes > 1440 ? 1440 : minutes);
+        }
+    }
+}
+
+void save_control_preferences() {
+    if (g_state.preferences_file.empty()) {
+        return;
+    }
+    std::ostringstream output;
+    output << "close_exits=" << (g_state.close_exits ? 1 : 0) << '\n'
+           << "idle_exit_minutes=" << g_state.idle_exit_minutes << '\n';
+    (void)save_text_file_atomically(g_state.preferences_file, output.str());
+}
+
+void restart_idle_exit_timer(HWND window) {
+    g_state.idle_exit_ticks = 0;
+    if (g_state.idle_exit_minutes > 0) {
+        SetTimer(window, kIdleExitTimer, kIdleExitTimerPeriodMillis, nullptr);
+    } else {
+        KillTimer(window, kIdleExitTimer);
+    }
 }
 
 std::filesystem::path find_settings_file() {
@@ -1388,7 +1730,6 @@ void set_status(const std::wstring& text) {
         SetWindowTextW(g_state.simple_status, simple_text.c_str());
     }
     InvalidateRect(g_state.window, nullptr, FALSE);
-    InvalidateRect(g_state.simple_window, nullptr, FALSE);
     const std::size_t line_break = text.find(L'\n');
     update_tray_tooltip(
         L"WireView: " + text.substr(0U, line_break == std::wstring::npos
@@ -1582,7 +1923,7 @@ void begin_control_center_exit(HWND window) {
     // first prevents a blank, non-interactive top-level window from remaining
     // visible while Windows tears down Chromium or a VDD broker.
     ShowWindow(window, SW_HIDE);
-    for (HWND auxiliary : {g_state.simple_window, g_diagnostics_window, g_custom_mode_editor}) {
+    for (HWND auxiliary : {g_diagnostics_window, g_custom_mode_editor}) {
         if (auxiliary != nullptr && auxiliary != window && IsWindow(auxiliary) != FALSE) {
             DestroyWindow(auxiliary);
         }
@@ -1863,6 +2204,13 @@ std::optional<std::wstring> read_script_status() {
     const std::wstring requested_height = value_for(L"requested_height");
     const std::wstring requested_fps = value_for(L"requested_fps");
     const std::wstring transport = value_for(L"transport");
+    // Remember what the running session actually uses: the rotate restart
+    // must keep the same transport even when the USB-presence flag is stale
+    // (a cabled session whose cable dropped mid-rotate used to restart as
+    // ADB into a void, audit live finding).
+    if (transport == L"wifi" || transport == L"adb") {
+        g_state.last_session_transport_wifi = transport == L"wifi";
+    }
     const std::wstring client = value_for(L"client");
     const std::wstring reconnects = value_for(L"reconnects");
     const std::wstring first_frame_ms = value_for(L"first_frame_ms");
@@ -1954,7 +2302,9 @@ std::optional<std::wstring> read_script_status() {
 
     std::wstring formatted = L"状态：" + state_label + L" · " + input_label + L"\n" +
         L"目标：" + (display.empty() ? L"未知" : display) + L" · " + mode;
-    const std::wstring transport_label = transport == L"winusb" ? L"WinUSB" : L"ADB/TCP";
+    const std::wstring transport_label = transport == L"wifi"
+        ? L"WiFi 局域网"
+        : (transport == L"winusb" ? L"WinUSB" : L"ADB/TCP");
     formatted += L"\n连接：" + transport_label + L" · " +
         (client.empty() ? L"未握手" : client) +
         L" · 重连 " + (reconnects.empty() ? L"0" : reconnects) + L" 次";
@@ -2233,18 +2583,50 @@ std::wstring describe_vdd_failure(const std::wstring& detail) {
     return detail.empty() ? L"VDD 守护进程未返回具体错误。" : detail;
 }
 
+// Recovery records store bare PIDs and Windows reuses ids quickly; a live
+// handle on the id does not prove the recorded WireView process still exists.
+// Only a known WireView image name counts as "still running".
+bool is_wireview_process_image(HANDLE process) noexcept {
+    wchar_t image_path[1024]{};
+    DWORD length = static_cast<DWORD>(std::size(image_path));
+    if (QueryFullProcessImageNameW(process, 0U, image_path, &length) == FALSE) {
+        return false;
+    }
+    const wchar_t* last_separator = wcsrchr(image_path, L'\\');
+    const wchar_t* image_name = last_separator != nullptr ? last_separator + 1 : image_path;
+    return _wcsicmp(image_name, L"wireview_control.exe") == 0 ||
+        _wcsicmp(image_name, L"wireview_session.exe") == 0 ||
+        _wcsicmp(image_name, L"wireview_vdd_broker.exe") == 0;
+}
+
 [[nodiscard]] bool process_is_alive(DWORD process_id) noexcept {
     if (process_id == 0U) {
         return false;
     }
-    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+    HANDLE process = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, process_id);
     if (process == nullptr) {
         // Access denied is treated conservatively as an existing process.
         return GetLastError() == ERROR_ACCESS_DENIED;
     }
-    const bool alive = WaitForSingleObject(process, 0U) == WAIT_TIMEOUT;
+    const bool alive = WaitForSingleObject(process, 0U) == WAIT_TIMEOUT &&
+        is_wireview_process_image(process);
     CloseHandle(process);
     return alive;
+}
+
+// GetExitCodeProcess alone cannot distinguish "still running" from a child
+// that really exited with code 259 (STILL_ACTIVE). Confirm termination with a
+// zero-timeout wait first; only then fetch the real exit code.
+bool process_exited(HANDLE process, DWORD* exit_code) {
+    if (process == nullptr || WaitForSingleObject(process, 0U) != WAIT_OBJECT_0) {
+        return false;
+    }
+    DWORD code = 0U;
+    if (GetExitCodeProcess(process, &code) != FALSE && exit_code != nullptr) {
+        *exit_code = code;
+    }
+    return true;
 }
 
 [[nodiscard]] bool recovery_display_mapping_matches(
@@ -2476,9 +2858,13 @@ bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
     if (!requested_stream) {
         return false;
     }
-    g_state.pending_vdd_width = requested_stream->width;
-    g_state.pending_vdd_height = requested_stream->height;
+    g_state.pending_vdd_width = requested_stream->vdd_width;
+    g_state.pending_vdd_height = requested_stream->vdd_height;
     g_state.pending_vdd_refresh_hz = requested_stream->vdd_refresh_hz;
+    if (!ensure_custom_mode_available(requested_stream->vdd_width,
+            requested_stream->vdd_height, requested_stream->vdd_refresh_hz)) {
+        return false;
+    }
     const bool has_custom_mode = std::any_of(
         g_custom_modes.begin(), g_custom_modes.end(),
         [](const std::optional<CustomMode>& mode) { return mode.has_value(); });
@@ -2658,6 +3044,19 @@ void recover_stale_vdd_session(HWND window) {
 }
 
 void poll_vdd_broker(HWND window) {
+    // broker 状态分支会调 start_session（内含 CDS/UAC 泵消息）；泵期间嵌套
+    // 的 WM_TIMER 若重入本函数并赶上 broker 退出，外层会对已被嵌套 teardown
+    // 置空的句柄继续走第二遍 teardown，关掉嵌套刚创建的新 broker。同一时刻
+    // 只允许一个 poll（与 start_session 重入守卫同源）。
+    static bool poll_in_progress = false;
+    if (poll_in_progress) {
+        return;
+    }
+    struct PollGuard {
+        bool& flag;
+        ~PollGuard() { flag = false; }
+    } poll_guard{poll_in_progress};
+    poll_in_progress = true;
     if (g_state.vdd_broker_process == nullptr) {
         KillTimer(window, kVddTimer);
         return;
@@ -2678,6 +3077,7 @@ void poll_vdd_broker(HWND window) {
         g_state.owned_display_device = broker_status->display_device;
         g_state.owned_display_index = broker_status->display_index;
         refresh_display_choices(g_state.owned_display_device);
+        apply_selected_vdd_position(false);
         update_vdd_configuration_controls();
         if (g_state.pending_vdd_width != 0U && g_state.pending_vdd_height != 0U &&
             g_state.pending_vdd_refresh_hz != 0U) {
@@ -2709,8 +3109,7 @@ void poll_vdd_broker(HWND window) {
     }
 
     DWORD exit_code = STILL_ACTIVE;
-    if (GetExitCodeProcess(g_state.vdd_broker_process, &exit_code) != FALSE &&
-        exit_code == STILL_ACTIVE) {
+    if (!process_exited(g_state.vdd_broker_process, &exit_code)) {
         return;
     }
     log_control_event(L"vdd-broker-exit", L"退出代码 " + std::to_wstring(exit_code) +
@@ -2741,7 +3140,11 @@ void poll_vdd_broker(HWND window) {
     } else if (removal_requested) {
         set_status(L"WireView 创建的副屏已安全移除。");
         if (recreate_for_simple_extension) {
-            set_status(L"原 WireView 副屏已不再附加到 Windows，正在重新创建扩展屏幕……");
+            // Visibility only (audit A2 N4): when a copy request was queued
+            // behind the same removal, recreate wins and the copy intent is
+            // dropped — say so instead of failing silently.
+            set_status(std::wstring(L"原 WireView 副屏已不再附加，正在重新创建扩展屏幕……") +
+                (start_after_removal ? L"\n复制请求已取消：扩展重建优先。" : L""));
             begin_simple_extension(recreate_for_simple_extension_input);
         } else if (start_after_removal) {
             if (!select_primary_display()) {
@@ -2815,6 +3218,8 @@ void update_session_action_controls() {
 }
 
 void stop_session() {
+    // 会话结束即回收边缘映射守护进程（未运行时空操作）。
+    wireview::host::edge_mapping_shutdown();
     // 在关闭 Job 前读取会话启动器实时镜像的 Host 输出；关闭 Job 会同时终止
     // wireview_session 与 wireview_host，不能等到之后再向 status 文件索取最终结果。
     if (!g_state.host_diagnostics_file.empty()) {
@@ -2862,6 +3267,60 @@ void stop_session() {
     update_session_action_controls();
     update_vdd_configuration_controls();
     update_vdd_controls();
+    // The 500 ms status poll is armed by start_session; without this a manual
+    // stop leaves it firing (guarded, but wasted) until the next natural exit.
+    if (g_state.window != nullptr) {
+        KillTimer(g_state.window, kProcessTimer);
+    }
+}
+
+// 会话运行中按当前显示器拓扑重挂指针边缘映射（WM_DISPLAYCHANGE 防抖后调
+// 用）：守护进程在拓扑变化后会自行解挂并等待客户端重新发布局。
+void reapply_edge_mapping_for_topology() {
+    if (g_state.shell_process == nullptr || !g_state.edge_mapping_enabled ||
+        g_state.preview_active || g_state.profile_probe_active) {
+        return;
+    }
+    const auto mapped_vdd = std::find_if(
+        g_state.display_choices.begin(), g_state.display_choices.end(),
+        [](const DisplayChoice& choice) { return choice.parsec_vdd && !choice.primary; });
+    const auto mapped_primary = std::find_if(
+        g_state.display_choices.begin(), g_state.display_choices.end(),
+        [](const DisplayChoice& choice) { return choice.primary; });
+    if (mapped_vdd == g_state.display_choices.end() ||
+        mapped_primary == g_state.display_choices.end()) {
+        return;
+    }
+    std::wstring apply_error;
+    if (!wireview::host::edge_mapping_apply(
+            mapped_primary->device_name.c_str(),
+            mapped_vdd->device_name.c_str(), apply_error)) {
+        log_control_event(L"edge-mapping", L"重挂失败：" + apply_error);
+    } else {
+        log_control_event(L"edge-mapping", L"已按新显示器拓扑重挂指针映射");
+    }
+}
+
+// 平板侧边栏请求横竖屏切换（协议 type13 → host PostMessage 转达）：翻转
+// 方向选择器并按既有安全路径重启会话。会话中直接切 VDD 模式会让运行中
+// 的 DXGI/编码链路失效（R1 起禁止），重启虽多花一两秒但复用全部已验证逻辑。
+void handle_tablet_rotate_request(HWND window) {
+    if (g_state.shell_process == nullptr || g_state.preview_active ||
+        g_state.profile_probe_active || g_state.vdd_orientation_selector == nullptr) {
+        log_control_event(L"rotate", L"平板换向请求被忽略（无会话/预览/探测中/选择器缺失）");
+        return;
+    }
+    // A WiFi session must restart as WiFi even if a stale USB-presence flag
+    // says otherwise (the 2 s poll lags the physical cable).
+    g_state.rotate_restart_force_wifi = g_state.last_session_transport_wifi;
+    const LRESULT current = SendMessageW(
+        g_state.vdd_orientation_selector, CB_GETCURSEL, 0U, 0);
+    const WPARAM flipped = current == 1 ? 0U : 1U;
+    SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, flipped, 0);
+    populate_vdd_mode_selector();
+    set_status(L"平板请求切换横竖屏：正在以新方向重启会话…");
+    stop_session();
+    SetTimer(window, kRotateRestartTimer, 800U, nullptr);
 }
 
 std::optional<StreamSettings> selected_stream_settings() {
@@ -2891,8 +3350,19 @@ std::optional<StreamSettings> selected_stream_settings() {
     }
     settings.width = resolution->first;
     settings.height = resolution->second;
-    settings.vdd_width = resolution->first;
-    settings.vdd_height = resolution->second;
+    if (vdd_portrait_selected()) {
+        // 竖屏：交换宽高作为有效投屏分辨率与 VDD 显示模式。
+        settings.width = resolution->second;
+        settings.height = resolution->first;
+    }
+    settings.vdd_width = settings.width;
+    settings.vdd_height = settings.height;
+    settings.vdd_portrait = vdd_portrait_selected();
+    if (const auto position = selected_vdd_position()) {
+        const char* position_name = wireview::host::vdd_position_name(*position);
+        settings.vdd_position.assign(
+            position_name, position_name + std::char_traits<char>::length(position_name));
+    }
     const LRESULT display_index = SendMessageW(
         g_state.display_selector, CB_GETCURSEL, 0U, 0);
     if (display_index < 0 ||
@@ -2907,13 +3377,36 @@ std::optional<StreamSettings> selected_stream_settings() {
 
 bool start_session(
     HWND window, bool enable_input, bool device_preview = false, bool device_profile_probe = false) {
+    // ChangeDisplaySettingsExW / ComboBox 操作会泵消息，计时器与 poll 可能
+    // 把 start_session 重入进来；重入会重建 display_choices 并使外层迭代
+    // 器失效（真机崩溃实证）。同一时间只允许一个 start_session。
+    if (g_state.start_session_in_progress) {
+        // No longer silent (audit A2 claim 1): a swallowed restart/probe here
+        // used to leave the UI stale with no trace. set_status is safe at this
+        // point: it only updates child controls, the tray and the async
+        // WebView state post — nothing re-enters start_session.
+        log_control_event(L"start-session", L"重入的启动请求被忽略。");
+        set_status(L"会话启动正在进行中，已忽略重复请求。");
+        return false;
+    }
+    struct StartSessionGuard {
+        bool& flag;
+        ~StartSessionGuard() { flag = false; }
+    } start_guard{g_state.start_session_in_progress};
+    g_state.start_session_in_progress = true;
+    // A new session gets a fresh one-shot budget for the "custom slots full"
+    // editor prompt (see apply_detected_device_profile).
+    g_state.custom_mode_prompt_shown = false;
     if (!device_profile_probe && g_state.device_profile_requires_custom_mode) {
         set_status(L"请先在“编辑自定义分辨率”中替换或释放一个自定义槽，再开始 WireView。");
         show_custom_mode_editor(window);
         return false;
     }
     if (g_state.shell_process != nullptr) {
-        if (g_state.preview_active && !device_preview) {
+        if ((g_state.preview_active && !device_preview) ||
+            (g_state.profile_probe_active && !device_profile_probe)) {
+            // An unattended device-profile probe must not block a real
+            // session (audit P1-1): stop it like a preview.
             stop_session();
         } else {
             set_status(L"先停止当前 WireView 视频会话");
@@ -2952,8 +3445,120 @@ bool start_session(
                 L"或在简易模式点击“扩展屏幕”以重新创建 WireView 副屏。 ");
             return false;
         }
+        // 复用已有 WireView 副屏时，把它的显示模式同步为本次会话的
+        // 分辨率/刷新率。模式不一致会让 Windows 桌面被缩放进编码尺寸，
+        // 表现为画面拉伸（例如 VDD 停留在 1920x1080 而投屏 1200x1920）。
+        // 设备画像等程序化选路不会经过下拉框命令，因此这里兜底执行。
+        const auto target_choice = std::find_if(
+            g_state.display_choices.begin(), g_state.display_choices.end(),
+            [&settings](const DisplayChoice& choice) {
+                return choice.device_name == settings->display_device;
+            });
+        if (target_choice != g_state.display_choices.end() && target_choice->parsec_vdd &&
+            settings->vdd_width != 0U) {
+            // 后面的 ChangeDisplaySettingsExW 会泵消息，嵌套的 refresh 可能
+            // 重建 display_choices 使 target_choice 失效——先拷出设备名。
+            const std::wstring target_device = target_choice->device_name;
+            DEVMODEW current{};
+            current.dmSize = sizeof(current);
+            if (EnumDisplaySettingsW(
+                    target_device.c_str(), ENUM_CURRENT_SETTINGS, &current) != FALSE &&
+                (current.dmPelsWidth != settings->vdd_width ||
+                 current.dmPelsHeight != settings->vdd_height ||
+                 current.dmDisplayFrequency != settings->vdd_refresh_hz)) {
+                if (ensure_custom_mode_available(
+                        settings->vdd_width, settings->vdd_height, settings->vdd_refresh_hz)) {
+                    // 必须基于 ENUM_CURRENT_SETTINGS 的完整 DEVMODEW 修改字段；
+                    // 全新 DEVMODEW 缺少位置等字段，会把副屏整个挤出桌面。
+                    DEVMODEW updated{};
+                    updated.dmSize = sizeof(updated);
+                    bool mode_supported = false;
+                    for (DWORD mode_index = 0U;; ++mode_index) {
+                        DEVMODEW candidate{};
+                        candidate.dmSize = sizeof(candidate);
+                        if (EnumDisplaySettingsW(
+                                target_device.c_str(), mode_index, &candidate) == FALSE) {
+                            break;
+                        }
+                        if (candidate.dmPelsWidth == settings->vdd_width &&
+                            candidate.dmPelsHeight == settings->vdd_height &&
+                            candidate.dmDisplayFrequency == settings->vdd_refresh_hz) {
+                            mode_supported = true;
+                            break;
+                        }
+                    }
+                    if (!mode_supported) {
+                        set_status(L"副屏不支持 " +
+                            std::to_wstring(settings->vdd_width) + L"×" +
+                            std::to_wstring(settings->vdd_height) + L" @ " +
+                            std::to_wstring(settings->vdd_refresh_hz) +
+                            L" Hz，画面比例可能不正确。");
+                    } else if (EnumDisplaySettingsW(
+                                   target_device.c_str(),
+                                   ENUM_CURRENT_SETTINGS, &updated) != FALSE) {
+                        updated.dmPelsWidth = settings->vdd_width;
+                        updated.dmPelsHeight = settings->vdd_height;
+                        updated.dmDisplayFrequency = settings->vdd_refresh_hz;
+                        updated.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+                        const LONG switch_result = ChangeDisplaySettingsExW(
+                            target_device.c_str(), &updated, nullptr,
+                            CDS_UPDATEREGISTRY, nullptr);
+                        if (switch_result == DISP_CHANGE_SUCCESSFUL) {
+                            refresh_display_choices(target_device);
+                            set_status(L"已将副屏显示模式同步为 " +
+                                std::to_wstring(settings->vdd_width) + L"×" +
+                                std::to_wstring(settings->vdd_height) + L" @ " +
+                                std::to_wstring(settings->vdd_refresh_hz) + L" Hz。");
+                        } else {
+                            log_control_event(L"vdd-mode-sync", L"模式切换失败，代码 " +
+                                std::to_wstring(switch_result));
+                            set_status(L"副屏显示模式同步失败，画面比例可能不正确；"
+                                L"请检查副屏支持的显示模式。");
+                        }
+                    }
+                } else {
+                    set_status(L"副屏模式与投屏分辨率不一致，且自定义模式槽不可用；"
+                        L"画面比例可能不正确。");
+                }
+            }
+            // R2：扩展会话前应用指针跨屏边缘映射（默认开，设置面板可关）。
+            // 放在模式同步之后：布局必须按切换完成后的最终矩形生成。
+            if (g_state.edge_mapping_enabled) {
+                const auto edge_primary = std::find_if(
+                    g_state.display_choices.begin(), g_state.display_choices.end(),
+                    [](const DisplayChoice& choice) { return choice.primary; });
+                if (edge_primary != g_state.display_choices.end()) {
+                    std::wstring edge_error;
+                    if (!wireview::host::edge_mapping_apply(
+                            edge_primary->device_name.c_str(),
+                            target_device.c_str(), edge_error)) {
+                        // 映射失败不阻断会话，只提示；触控坐标仍按显示器拓扑注入。
+                        set_status(L"指针跨屏边缘映射未生效：" + edge_error);
+                    }
+                }
+            }
+        }
     }
     save_stream_settings(*settings);
+
+    // R3 WiFi 会话：目标设备必须在白名单且已知 IP（mDNS 或手动输入）。
+    // 预览/画像探测固定走 USB，不走 WiFi。
+    // USB presence wins: a cabled session is always the more reliable
+    // path, so an accidentally selected WiFi target must not hijack it
+    // (audit P0-2). WiFi engages only when no USB device is detected.
+    // USB presence wins for fresh starts, EXCEPT a rotate restart of a
+    // WiFi session, which keeps its transport (the USB flag can be stale).
+    const bool wifi_selected = !device_preview && !device_profile_probe &&
+        wireview::host::wifi_control::has_session_target() &&
+        (g_state.rotate_restart_force_wifi || !g_state.device_connected);
+    const bool wifi_session = wifi_selected;
+    std::vector<std::uint8_t> wifi_key;
+    std::wstring wifi_endpoint;
+    if (wifi_selected &&
+        !wireview::host::wifi_control::resolve_session_credential(
+            &wifi_endpoint, &wifi_key)) {
+        return false;
+    }
 
     std::error_code error;
     const auto temporary_directory = std::filesystem::temp_directory_path(error);
@@ -2976,7 +3581,8 @@ bool start_session(
         L"\" --host-diagnostics-file \"" + g_state.host_diagnostics_file.wstring() +
         // The preview deliberately remains bounded; normal mirroring has no
         // practical wall-clock limit and ends only when the user stops it.
-        L"\" --duration-seconds " + (device_preview ? L"300" : L"2147483647");
+        L"\" --duration-seconds " + (device_preview ? L"300"
+                        : (device_profile_probe ? L"120" : L"2147483647"));
     if (enable_input && !device_preview) {
         argument += L" --enable-input";
     }
@@ -2995,8 +3601,46 @@ bool start_session(
     if (!device_preview && !device_profile_probe) {
         argument += L" --display \"" + settings->display_device + L"\"";
     }
+    if (wifi_session) {
+        argument += L" --transport wifi \"" + wifi_endpoint + L"\"";
+    }
     std::vector<wchar_t> command(argument.begin(), argument.end());
     command.push_back(L'\0');
+
+    // WiFi 凭据经环境变量传递（不出现在命令行/进程列表），从当前进程环境
+    // 复制后追加三项；非 WiFi 会话传 nullptr 继承默认环境。
+    std::wstring wifi_environment;
+    if (wifi_session) {
+        wifi_environment.reserve(4096U);
+        LPWCH strings = GetEnvironmentStringsW();
+        if (strings != nullptr) {
+            for (wchar_t* cursor = strings; *cursor != L'\0';) {
+                const std::wstring existing_entry(cursor);
+                if (existing_entry.rfind(L"WIREVIEW_", 0U) != 0U) {
+                    wifi_environment.append(cursor);
+                    wifi_environment.push_back(L'\0');
+                }
+                while (*cursor != L'\0') {
+                    ++cursor;
+                }
+                ++cursor;
+            }
+            FreeEnvironmentStringsW(strings);
+        }
+        wifi_environment += L"WIREVIEW_WIFI_KEY=";
+        {
+            const std::string key_hex = wireview::host::to_hex(wifi_key);
+            wifi_environment.append(key_hex.begin(), key_hex.end());
+        }
+        wifi_environment.push_back(L'\0');
+        wifi_environment += L"WIREVIEW_WIFI_UUID=";
+        wifi_environment += wireview::host::wifi_control::pc_uuid();
+        wifi_environment.push_back(L'\0');
+        wifi_environment += L"WIREVIEW_WIFI_NAME=";
+        wifi_environment += wireview::host::wifi_control::host_display_name();
+        wifi_environment.push_back(L'\0');
+        wifi_environment.push_back(L'\0');
+    }
 
     HANDLE job = CreateJobObjectW(nullptr, nullptr);
     if (job == nullptr) {
@@ -3004,7 +3648,11 @@ bool start_session(
         return false;
     }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // BREAKAWAY_OK only permits children that explicitly ask for it (notably
+    // the shared adb server) to leave the job; kill-on-close still applies to
+    // every remaining member when the control center exits.
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     if (!SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
@@ -3027,8 +3675,8 @@ bool start_session(
             nullptr,
             nullptr,
             FALSE,
-            CREATE_NO_WINDOW,
-            nullptr,
+            CREATE_NO_WINDOW | (wifi_session ? CREATE_UNICODE_ENVIRONMENT : 0U),
+            wifi_session ? wifi_environment.data() : nullptr,
             working_directory.c_str(),
             &startup,
             &process)) {
@@ -3053,6 +3701,11 @@ bool start_session(
     g_state.shell_process = process.hProcess;
     g_state.preview_active = device_preview;
     g_state.profile_probe_active = device_profile_probe;
+    g_state.session_input_enabled = enable_input && !device_preview && !device_profile_probe;
+    // Record the transport at launch time (audit A2 N6): the status file is
+    // only polled every 500 ms, and a rotate request inside that window must
+    // already see the new session's real transport.
+    g_state.last_session_transport_wifi = wifi_session;
     EnableWindow(g_state.display_selector, FALSE);
     EnableWindow(g_state.refresh_displays_button, FALSE);
     EnableWindow(g_state.resolution_selector, FALSE);
@@ -3112,7 +3765,7 @@ void poll_device_detection(HWND window) {
         return;
     }
     DWORD exit_code = STILL_ACTIVE;
-    if (!GetExitCodeProcess(g_state.device_probe_process, &exit_code) || exit_code == STILL_ACTIVE) {
+    if (!process_exited(g_state.device_probe_process, &exit_code)) {
         return;
     }
     CloseHandle(g_state.device_probe_process);
@@ -3123,7 +3776,6 @@ void poll_device_detection(HWND window) {
         reset_android_device_identity();
         if (was_connected) {
             InvalidateRect(g_state.window, nullptr, FALSE);
-            InvalidateRect(g_state.simple_window, nullptr, FALSE);
         }
         if (exit_code != g_state.last_auto_device_probe_exit && g_state.shell_process == nullptr) {
             const std::wstring reason = exit_code == 2U
@@ -3154,7 +3806,6 @@ void poll_device_detection(HWND window) {
     g_state.device_connected = true;
     if (!was_connected) {
         InvalidateRect(g_state.window, nullptr, FALSE);
-        InvalidateRect(g_state.simple_window, nullptr, FALSE);
     }
     if ((!g_state.auto_device_profile_attempted || g_state.device_profile_refresh_requested) &&
         g_state.shell_process == nullptr) {
@@ -4199,6 +4850,13 @@ void begin_simple_extension(bool enable_input) {
 }
 
 void begin_simple_copy(bool enable_input) {
+    // While the broker is still creating the extension VDD (process alive,
+    // owned display not yet attached), a copy start would later collide with
+    // the queued auto-start and strand the fresh VDD unused (audit A2 N2).
+    if (g_state.vdd_broker_process != nullptr && g_state.owned_display_device.empty()) {
+        set_status(L"正在创建副屏，请稍候…");
+        return;
+    }
     if (!g_state.owned_display_device.empty()) {
         g_state.start_after_vdd_removal = true;
         g_state.start_after_vdd_removal_input = enable_input;
@@ -4279,12 +4937,14 @@ std::wstring combo_options_as_json(HWND selector) {
     return json;
 }
 
+// -1 means "no selection"; publish it as-is instead of faking item 0. The
+// web option list compares indices strictly, so -1 selects nothing.
 int combo_selected_index(HWND selector) {
     if (selector == nullptr) {
-        return 0;
+        return -1;
     }
     const LRESULT selected = SendMessageW(selector, CB_GETCURSEL, 0U, 0);
-    return selected < 0 ? 0 : static_cast<int>(selected);
+    return selected < 0 ? -1 : static_cast<int>(selected);
 }
 
 std::wstring web_diagnostics_text() {
@@ -4334,7 +4994,7 @@ void publish_web_state() {
         }
         json += L"\"" + std::wstring(key) + L"\":" + (value ? L"true" : L"false");
     };
-    const auto add_number = [&json](std::wstring_view key, std::size_t value) {
+    const auto add_number = [&json](std::wstring_view key, long long value) {
         if (json.size() > 1U) {
             json += L',';
         }
@@ -4361,13 +5021,53 @@ void publish_web_state() {
     add_string(L"displayName", selected_display == nullptr ? L"--" : selected_display->device_name);
     add_bool(L"parsecAvailable", g_state.parsec_vdd_available);
     add_number(L"parsecVersion", g_state.parsec_vdd_version);
-    add_number(L"parsecDisplayCount", g_state.parsec_display_count);
+    add_number(L"parsecDisplayCount", static_cast<long long>(g_state.parsec_display_count));
     add_array(L"displays", combo_options_as_json(g_state.display_selector));
     add_array(L"resolutions", combo_options_as_json(g_state.resolution_selector));
     add_array(L"vddModes", combo_options_as_json(g_state.vdd_mode_selector));
-    add_number(L"selectedDisplay", static_cast<std::size_t>(combo_selected_index(g_state.display_selector)));
-    add_number(L"selectedResolution", static_cast<std::size_t>(combo_selected_index(g_state.resolution_selector)));
-    add_number(L"selectedVddMode", static_cast<std::size_t>(combo_selected_index(g_state.vdd_mode_selector)));
+    add_number(L"selectedDisplay", combo_selected_index(g_state.display_selector));
+    add_number(L"selectedResolution", combo_selected_index(g_state.resolution_selector));
+    add_number(L"selectedVddMode", combo_selected_index(g_state.vdd_mode_selector));
+    add_array(L"positions", combo_options_as_json(g_state.vdd_position_selector));
+    add_array(L"orientations", combo_options_as_json(g_state.vdd_orientation_selector));
+    add_number(L"selectedPosition", combo_selected_index(g_state.vdd_position_selector));
+    add_number(L"selectedOrientation", combo_selected_index(g_state.vdd_orientation_selector));
+    add_bool(L"edgeMapping", g_state.edge_mapping_enabled);
+    // R3 WiFi：开关、配对进度、已发现设备与白名单。
+    add_bool(L"closeExits", g_state.close_exits);
+    add_number(L"idleExitMinutes", g_state.idle_exit_minutes);
+    add_bool(L"wifiEnabled", wireview::host::wifi_control::enabled());
+    add_bool(L"wifiPairingActive", wireview::host::wifi_control::pairing_active());
+    {
+        const auto target = wireview::host::wifi_control::target_info();
+        add_string(L"wifiTargetId", target.android_id);
+        add_string(L"wifiTargetName", target.device_name);
+        add_string(L"wifiTargetIp", target.ip);
+    }
+    {
+        std::wstring devices_json;
+        for (const auto& device : wireview::host::wifi_control::devices()) {
+            if (!devices_json.empty()) {
+                devices_json += L',';
+            }
+            devices_json += L"{\"id\":\"" + json_escape(device.android_id) +
+                L"\",\"name\":\"" + json_escape(device.device_name) +
+                L"\",\"ip\":\"" + json_escape(device.ip) + L"\"}";
+        }
+        add_array(L"wifiDevices", L"[" + devices_json + L"]");
+    }
+    {
+        std::wstring whitelist_json;
+        for (const auto& entry : wireview::host::wifi_control::whitelist_entries()) {
+            if (!whitelist_json.empty()) {
+                whitelist_json += L',';
+            }
+            whitelist_json += L"{\"id\":\"" + json_escape(entry.android_id) +
+                L"\",\"name\":\"" + json_escape(entry.device_name) +
+                L"\",\"pairedAt\":\"" + json_escape(entry.paired_at) + L"\"}";
+        }
+        add_array(L"wifiWhitelist", L"[" + whitelist_json + L"]");
+    }
     add_string(L"diagnostics", web_diagnostics_text());
     json += L"}";
     g_webview_host->post_json(json);
@@ -4449,9 +5149,98 @@ void handle_web_message(std::wstring_view message) {
         request_vdd_removal();
     } else if (message == L"recover-vdd") {
         recover_stale_vdd_session(g_state.window);
+    } else if (message == L"edge-mapping-on" || message == L"edge-mapping-off") {
+        g_state.edge_mapping_enabled = message == L"edge-mapping-on";
+        if (!g_state.edge_mapping_enabled) {
+            // 立即关停：用户不想用就马上恢复系统默认鼠标行为。
+            wireview::host::edge_mapping_shutdown();
+            set_status(L"指针跨屏边缘映射已关闭。");
+        } else if (g_state.shell_process != nullptr) {
+            const auto mapped_vdd = std::find_if(
+                g_state.display_choices.begin(), g_state.display_choices.end(),
+                [](const DisplayChoice& choice) { return choice.parsec_vdd && !choice.primary; });
+            const auto mapped_primary = std::find_if(
+                g_state.display_choices.begin(), g_state.display_choices.end(),
+                [](const DisplayChoice& choice) { return choice.primary; });
+            if (mapped_vdd != g_state.display_choices.end() &&
+                mapped_primary != g_state.display_choices.end()) {
+                std::wstring apply_error;
+                if (wireview::host::edge_mapping_apply(
+                        mapped_primary->device_name.c_str(),
+                        mapped_vdd->device_name.c_str(), apply_error)) {
+                    set_status(L"指针跨屏边缘映射已开启并应用。");
+                } else {
+                    set_status(L"指针跨屏边缘映射开启失败：" + apply_error);
+                }
+            }
+        } else {
+            set_status(L"指针跨屏边缘映射已开启，将在下次会话生效。");
+        }
+    } else if (message == L"close-exits-toggle") {
+        g_state.close_exits = !g_state.close_exits;
+        save_control_preferences();
+        set_status(g_state.close_exits
+            ? L"关闭窗口 = 彻底退出已开启。"
+            : L"关闭窗口 = 最小化到托盘（默认）。");
+    } else if (message.starts_with(L"idle-exit-minutes|")) {
+        int minutes = _wtoi(std::wstring(message.substr(18U)).c_str());
+        if (minutes < 0) {
+            minutes = 0;
+        }
+        if (minutes > 1440) {
+            minutes = 1440;
+        }
+        g_state.idle_exit_minutes = minutes;
+        g_state.idle_exit_ticks = 0;
+        save_control_preferences();
+        restart_idle_exit_timer(g_state.window);
+        set_status(minutes > 0
+            ? (L"空闲自动退出已开启：" + std::to_wstring(minutes) + L" 分钟无会话将自动退出。")
+            : L"空闲自动退出已关闭。");
+    } else if (message == L"wifi-toggle") {
+        wireview::host::wifi_control::set_enabled(
+            g_state.window, !wireview::host::wifi_control::enabled());
+    } else if (message == L"wifi-refresh") {
+        wireview::host::wifi_control::on_discover_tick();
+        set_status(L"已刷新 WiFi 设备搜索结果。");
+    } else if (message.starts_with(L"wifi-pair-ip|")) {
+        // 手动 IP 兜底：直接对输入的 IP 发起配对。
+        const std::wstring ip(message.substr(13U));
+        if (!ip.empty()) {
+            wireview::host::wifi_control::begin_pairing(ip);
+        }
+    } else if (message == L"wifi-pair-cancel") {
+        // 取消进行中的配对：不碰 socket，握手返回后丢弃结果。
+        wireview::host::wifi_control::cancel_pairing();
+    } else if (message.starts_with(L"wifi-pair|")) {
+        // 从已发现设备列表发起配对。
+        const int index = _wtoi(std::wstring(message.substr(10U)).c_str());
+        const auto devices = wireview::host::wifi_control::devices();
+        if (index >= 0 && static_cast<std::size_t>(index) < devices.size() &&
+            !devices[static_cast<std::size_t>(index)].ip.empty()) {
+            wireview::host::wifi_control::begin_pairing(
+                devices[static_cast<std::size_t>(index)].ip);
+        }
+    } else if (message.starts_with(L"wifi-select|")) {
+        wireview::host::wifi_control::select_target(
+            std::wstring(message.substr(12U)));
+        set_status(L"WiFi 会话目标已更新；设备不在线时需先开启 WiFi 投屏等待发现。");
+    } else if (message.starts_with(L"wifi-remove|")) {
+        wireview::host::wifi_control::remove_from_whitelist(
+            std::wstring(message.substr(12U)));
     } else {
         int index{};
-        if (parse_web_selector_index(message, L"select-display|", g_state.display_selector, index)) {
+        if (parse_web_selector_index(
+                message, L"select-position|", g_state.vdd_position_selector, index)) {
+            SendMessageW(g_state.vdd_position_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+            apply_selected_vdd_position(true);
+        } else if (parse_web_selector_index(
+                       message, L"select-orientation|", g_state.vdd_orientation_selector, index)) {
+            SendMessageW(g_state.vdd_orientation_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+            populate_vdd_mode_selector();
+            (void)apply_selected_mode_to_parsec_vdd();
+            update_recommendation();
+        } else if (parse_web_selector_index(message, L"select-display|", g_state.display_selector, index)) {
             SendMessageW(g_state.display_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
             update_vdd_controls();
             update_recommendation();
@@ -4484,6 +5273,7 @@ void hide_native_controls_for_web() {
              g_state.simple_stop_button, g_state.simple_display_settings_button,
              g_state.display_selector, g_state.refresh_displays_button,
              g_state.resolution_selector, g_state.vdd_mode_selector,
+             g_state.vdd_position_selector, g_state.vdd_orientation_selector,
              g_state.frame_rate_selector, g_state.start_mirror_button,
              g_state.start_input_button, g_state.full_display_only_button,
              g_state.stop_button, g_state.display_settings_button,
@@ -4500,161 +5290,6 @@ void hide_native_controls_for_web() {
     }
 }
 #endif
-
-LRESULT CALLBACK simple_window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    switch (message) {
-        case WM_CREATE: {
-            g_state.simple_window = window;
-            enable_dark_title_bar(window);
-            g_state.simple_mirror_button = CreateWindowW(
-                L"BUTTON", L"复制屏幕", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                24, 278, 548, 232, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSimpleMirrorButton)),
-                nullptr, nullptr);
-            g_state.simple_extend_button = CreateWindowW(
-                L"BUTTON", L"扩展屏幕", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                588, 278, 548, 232, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSimpleExtendButton)),
-                nullptr, nullptr);
-            g_state.simple_display_only_button = CreateWindowW(
-                L"BUTTON", L"仅显示", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                24, 566, 556, 64, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInputDisplayOnlyButton)),
-                nullptr, nullptr);
-            g_state.simple_input_button = CreateWindowW(
-                L"BUTTON", L"触控与手写笔", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                580, 566, 556, 64, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInputEnabledButton)),
-                nullptr, nullptr);
-            g_state.simple_stop_button = CreateWindowW(
-                L"BUTTON", L"■  停止 WireView", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                24, 650, 230, 44, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStopButton)),
-                nullptr, nullptr);
-            g_state.simple_display_settings_button = CreateWindowW(
-                L"BUTTON", L"Windows 显示设置", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                270, 650, 250, 44, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDisplaySettingsButton)),
-                nullptr, nullptr);
-            CreateWindowW(
-                L"BUTTON", L"切换到完整模式  →", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                886, 650, 250, 44, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSimpleReturnButton)),
-                nullptr, nullptr);
-            RECT simple_client{};
-            GetClientRect(window, &simple_client);
-            g_state.simple_status = CreateWindowW(
-                L"STATIC", L"准备就绪", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
-                62, simple_client.bottom - 54, simple_client.right - 110, 30,
-                window, nullptr, nullptr, nullptr);
-            for (HWND control : {g_state.simple_mirror_button, g_state.simple_extend_button,
-                     g_state.simple_display_only_button, g_state.simple_input_button,
-                     g_state.simple_stop_button, g_state.simple_display_settings_button,
-                     g_state.simple_status}) {
-                apply_control_theme(control, control == g_state.simple_status ? g_font_small : g_font_button);
-            }
-            for (HWND button : {g_state.simple_mirror_button, g_state.simple_extend_button,
-                     g_state.simple_display_only_button, g_state.simple_input_button,
-                     g_state.simple_stop_button, g_state.simple_display_settings_button,
-                     GetDlgItem(window, kSimpleReturnButton)}) {
-                enable_owner_draw_button_feedback(button);
-            }
-            layout_simple_controls(window);
-            set_status(g_state.current_status.empty() ? L"准备就绪。" : g_state.current_status);
-            update_session_action_controls();
-            return 0;
-        }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_PAINT: {
-            PAINTSTRUCT paint{};
-            HDC dc = BeginPaint(window, &paint);
-            paint_window_buffered(window, dc, paint_simple_window);
-            EndPaint(window, &paint);
-            return 0;
-        }
-        case WM_DRAWITEM:
-            if (paint_owner_draw_button(
-                    *reinterpret_cast<const DRAWITEMSTRUCT*>(lparam))) {
-                return TRUE;
-            }
-            break;
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wparam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, kColorTextMuted);
-            return reinterpret_cast<LRESULT>(g_background_brush);
-        }
-        case WM_COMMAND:
-            log_control_event(L"simple-command", L"id=" +
-                std::to_wstring(LOWORD(wparam)) + L" notify=" + std::to_wstring(HIWORD(wparam)));
-            switch (LOWORD(wparam)) {
-                case kSimpleReturnButton:
-                    return_to_full_mode();
-                    return 0;
-                case kSimpleMirrorButton:
-                    begin_simple_copy(g_state.session_input_enabled);
-                    return 0;
-                case kSimpleExtendButton:
-                    begin_simple_extension(g_state.session_input_enabled);
-                    return 0;
-                case kInputDisplayOnlyButton:
-                    g_state.session_input_enabled = false;
-                    InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.window, nullptr, FALSE);
-                    return 0;
-                case kInputEnabledButton:
-                    g_state.session_input_enabled = true;
-                    InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.window, nullptr, FALSE);
-                    return 0;
-                case kStopButton:
-                    notify_android_of_user_stop();
-                    stop_session();
-                    set_status(L"WireView 已停止。");
-                    return 0;
-                case kDisplaySettingsButton:
-                    open_windows_display_settings();
-                    return 0;
-            }
-            break;
-        case WM_CLOSE:
-            // 简易窗口关闭时仅隐藏到托盘，保持简易模式以便托盘恢复。
-            ShowWindow(window, SW_HIDE);
-            return 0;
-        case WM_GETMINMAXINFO: {
-            auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
-            info->ptMinTrackSize.x = 980;
-            info->ptMinTrackSize.y = 700;
-            return 0;
-        }
-        case WM_SIZE:
-            if (wparam != SIZE_MINIMIZED) {
-                layout_simple_controls(window);
-                InvalidateRect(window, nullptr, FALSE);
-            }
-            return 0;
-        case WM_DPICHANGED: {
-            const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-            SetWindowPos(window, nullptr, suggested->left, suggested->top,
-                suggested->right - suggested->left, suggested->bottom - suggested->top,
-                SWP_NOZORDER | SWP_NOACTIVATE);
-            return 0;
-        }
-        case WM_DESTROY:
-            g_state.simple_window = nullptr;
-            g_state.simple_status = nullptr;
-            g_state.simple_mirror_button = nullptr;
-            g_state.simple_input_button = nullptr;
-            g_state.simple_extend_button = nullptr;
-            g_state.simple_extend_input_button = nullptr;
-            g_state.simple_display_only_button = nullptr;
-            g_state.simple_stop_button = nullptr;
-            g_state.simple_display_settings_button = nullptr;
-            return 0;
-    }
-    return DefWindowProcW(window, message, wparam, lparam);
-}
 
 void open_simple_mode(HWND full_window) {
     g_state.simple_mode = true;
@@ -4955,6 +5590,14 @@ void show_diagnostics_window(HWND owner) {
 }
 
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (g_taskbar_created_message != 0U && message == g_taskbar_created_message) {
+        // The taskbar was recreated (Explorer restart): re-register the tray
+        // icon, otherwise a window hidden to the tray has no entry point left.
+        if (g_state.tray_added) {
+            add_tray_icon(window);
+        }
+        return 0;
+    }
     switch (message) {
         case WM_CREATE: {
             enable_dark_title_bar(window);
@@ -5068,6 +5711,26 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 g_state.frame_rate_selector, CB_ADDSTRING, 0U,
                 reinterpret_cast<LPARAM>(L"120（实验）"));
             SendMessageW(g_state.frame_rate_selector, CB_SETCURSEL, 0U, 0);
+            g_state.vdd_position_selector = CreateWindowW(
+                L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
+                    CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                838, 210, 168, 180,
+                window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVddPositionSelector)),
+                nullptr,
+                nullptr);
+            populate_vdd_position_selector();
+            g_state.vdd_orientation_selector = CreateWindowW(
+                L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
+                    CBS_OWNERDRAWFIXED | CBS_HASSTRINGS,
+                1018, 210, 108, 180,
+                window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kVddOrientationSelector)),
+                nullptr,
+                nullptr);
+            populate_vdd_orientation_selector();
             CreateWindowW(
                 L"BUTTON", L"刷新设备",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
@@ -5077,6 +5740,25 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 nullptr,
                 nullptr);
             restore_stream_settings();
+            // R3：WiFi 模块接管身份文件、白名单、发现与配对线程。
+            wireview::host::wifi_control::attach_hooks(
+                {set_status,
+#ifdef WIREVIEW_WEBVIEW_UI
+                 publish_web_state,
+#else
+                 nullptr,
+#endif
+                 [] { return g_state.window; },
+                 [] { return g_state.session_launcher_path; }});
+            wireview::host::wifi_control::load_identity(
+                g_state.settings_file.parent_path());
+            load_control_preferences();
+            restart_idle_exit_timer(window);
+            if (wireview::host::wifi_control::enabled()) {
+                // 开关恢复：mDNS 启动 + 发现定时器（与 set_enabled 相同路径，
+                // 但不覆盖持久化状态）。
+                wireview::host::wifi_control::resume_enabled(window);
+            }
             g_state.recommendation = CreateWindowW(
                 L"STATIC", L"", WS_CHILD,
                 0, 0, 1, 1,
@@ -5337,6 +6019,18 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
             }
+            if (LOWORD(wparam) == kVddPositionSelector && HIWORD(wparam) == CBN_SELCHANGE) {
+                apply_selected_vdd_position(true);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
+            if (LOWORD(wparam) == kVddOrientationSelector && HIWORD(wparam) == CBN_SELCHANGE) {
+                populate_vdd_mode_selector();
+                (void)apply_selected_mode_to_parsec_vdd();
+                update_recommendation();
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
             switch (LOWORD(wparam)) {
                 case kPreviewDeviceButton:
                     start_session(window, false, true);
@@ -5374,12 +6068,10 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 case kInputDisplayOnlyButton:
                     g_state.session_input_enabled = false;
                     InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.simple_window, nullptr, FALSE);
                     return 0;
                 case kInputEnabledButton:
                     g_state.session_input_enabled = true;
                     InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.simple_window, nullptr, FALSE);
                     return 0;
                 case kSimpleDisplayOnlyButton:
                     g_state.session_input_enabled = false;
@@ -5440,6 +6132,22 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     std::to_wstring(GetLastError()));
             }
             return 0;
+        case wireview::host::wifi_control::kWifiPairingDoneMessageId: {
+            wireview::host::wifi_control::on_pairing_done(window, wparam, lparam);
+            return 0;
+        }
+        case WM_DISPLAYCHANGE:
+            // 显示拓扑变化（模式切换 / VDD 重建 / 唤醒）：防抖后重挂边缘映射。
+            if (g_state.shell_process != nullptr && g_state.edge_mapping_enabled) {
+                SetTimer(window, kEdgeRemapTimer, 1'200U, nullptr);
+            }
+            return 0;
+        case wireview::host::kControlCenterRotateMessage:
+            if (wparam == wireview::host::kControlCenterRotateRequest) {
+                handle_tablet_rotate_request(window);
+                return 0;
+            }
+            break;
         case WM_POWERBROADCAST:
             update_recommendation();
             return TRUE;
@@ -5459,6 +6167,59 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
 #endif
                 return 0;
             }
+            if (wparam == kRotateRestartTimer) {
+                KillTimer(window, kRotateRestartTimer);
+                if (g_state.profile_probe_active || g_state.preview_active) {
+                    // A transient probe/preview won the 800 ms window: it
+                    // carries no orientation, so restarting it with the new
+                    // direction would silently upgrade it to a full session.
+                    // The selector already holds the new orientation and the
+                    // next real session picks it up.
+                    set_status(L"换向已记录；当前为设备探测/预览，将在下次会话生效。");
+                } else if (g_state.shell_process == nullptr) {
+                    if (!start_session(window, g_state.session_input_enabled)) {
+                        set_status(L"换向重启失败：会话未能启动。");
+                    }
+                } else {
+                    // Another path (manual start / VDD-ready auto-start) won
+                    // the 800 ms window; stop it and restart so the new
+                    // orientation actually applies.
+                    set_status(L"检测到会话已在运行，正在按新方向重启…");
+                    stop_session();
+                    if (!start_session(window, g_state.session_input_enabled)) {
+                        set_status(L"换向重启失败：会话未能启动。");
+                    }
+                }
+                // The hint applies to exactly one restart.
+                g_state.rotate_restart_force_wifi = false;
+                return 0;
+            }
+            if (wparam == wireview::host::wifi_control::kWifiDiscoverTimerId) {
+                wireview::host::wifi_control::on_discover_tick();
+                return 0;
+            }
+            if (wparam == kIdleExitTimer) {
+                // R4: idle means no session running; a live session (or the
+                // preview/probe variants) keeps the control center alive.
+                if (g_state.idle_exit_minutes > 0) {
+                    if (g_state.shell_process != nullptr) {
+                        g_state.idle_exit_ticks = 0;
+                    } else {
+                        ++g_state.idle_exit_ticks;
+                        if (g_state.idle_exit_ticks >= g_state.idle_exit_minutes) {
+                            log_control_event(L"exit-request",
+                                L"空闲超时，控制中心自动退出。 ");
+                            begin_control_center_exit(window);
+                        }
+                    }
+                }
+                return 0;
+            }
+            if (wparam == kEdgeRemapTimer) {
+                KillTimer(window, kEdgeRemapTimer);
+                reapply_edge_mapping_for_topology();
+                return 0;
+            }
             if (wparam == kProcessTimer && g_state.shell_process != nullptr) {
                 if (const auto script_status = read_script_status();
                     script_status && *script_status != g_state.last_script_status) {
@@ -5466,8 +6227,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     set_status(*script_status);
                 }
                 DWORD exit_code = STILL_ACTIVE;
-                if (!GetExitCodeProcess(g_state.shell_process, &exit_code) ||
-                    exit_code != STILL_ACTIVE) {
+                if (process_exited(g_state.shell_process, &exit_code)) {
                     const bool completed_profile_probe = g_state.profile_probe_active;
                     const std::wstring final_status = read_script_status().value_or(
                         g_state.last_script_status);
@@ -5513,7 +6273,13 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             return 0;
         }
         case WM_CLOSE:
-            ShowWindow(window, SW_HIDE);
+            // Default: minimise to the tray so the next mirror starts fast.
+            // The R4 preference flips the close button into a real exit.
+            if (g_state.close_exits) {
+                begin_control_center_exit(window);
+            } else {
+                ShowWindow(window, SW_HIDE);
+            }
             return 0;
         case kTrayMessage:
             if (lparam == WM_LBUTTONDBLCLK) {
@@ -5541,9 +6307,6 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
         case WM_DESTROY:
             g_state.exiting = true;
             log_control_event(L"destroy", L"收到 WM_DESTROY，开始停止会话、VDD 与 WebView。 ");
-            if (g_state.simple_window != nullptr && IsWindow(g_state.simple_window) != FALSE) {
-                DestroyWindow(g_state.simple_window);
-            }
 #ifdef WIREVIEW_WEBVIEW_UI
             if (g_webview_host) {
                 log_control_event(L"destroy", L"正在关闭 WebView2 控制器。 ");
@@ -5576,6 +6339,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
+    _CrtSetReportHookW2(_CRT_RPTHOOK_INSTALL, assertion_stack_hook);
     int argument_count = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argument_count);
     if (arguments != nullptr && argument_count == 2 &&
@@ -5635,6 +6399,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     initialize_ui_theme();
     load_control_ui_assets();
 
+    // Explorer restarts broadcast this registered message; remembering the id
+    // lets the window procedure re-add the tray icon afterwards.
+    g_taskbar_created_message = RegisterWindowMessageW(L"TaskbarCreated");
     const WNDCLASSW window_class{
         .lpfnWndProc = window_procedure,
         .hInstance = instance,
@@ -5643,16 +6410,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         .lpszClassName = L"WireViewControlWindow",
     };
     if (RegisterClassW(&window_class) == 0U) {
-        return 1;
-    }
-    const WNDCLASSW simple_window_class{
-        .lpfnWndProc = simple_window_procedure,
-        .hInstance = instance,
-        .hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)),
-        .hbrBackground = g_background_brush,
-        .lpszClassName = L"WireViewSimpleWindow",
-    };
-    if (RegisterClassW(&simple_window_class) == 0U) {
         return 1;
     }
     const WNDCLASSW custom_mode_class{

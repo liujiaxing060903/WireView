@@ -1,14 +1,22 @@
 add_executable(wireview_host
     src/annex_b_stream.cpp
+    src/bitrate_governor.cpp
     src/desktop_encoder.cpp
     src/development_transport.cpp
+    src/display_layout.cpp
     src/idd_frame_relay.cpp
     src/idd_frame_relay_pipe.cpp
     src/input_injector.cpp
     src/main.cpp
+    src/mdns_browser.cpp
     src/parsec_vdd.cpp
     src/reliable_byte_stream.cpp
+    src/socket_stream.cpp
+    src/tablet_commands.cpp
     src/usb_accessory_discovery.cpp
+    src/wifi_crypto.cpp
+    src/wifi_link.cpp
+    src/wifi_whitelist.cpp
     src/winusb_byte_stream.cpp
     src/windows_video.cpp
 )
@@ -16,8 +24,17 @@ add_executable(wireview_host
 # 保留原生 GDI 控制中心，供未安装 Evergreen Runtime 的旧系统回退使用。
 add_executable(wireview_control_legacy WIN32
     src/control_main.cpp
+    src/display_layout.cpp
+    src/edge_mapping.cpp
+    src/mdns_browser.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
+    src/reliable_byte_stream.cpp
+    src/socket_stream.cpp
+    src/wifi_control.cpp
+    src/wifi_crypto.cpp
+    src/wifi_link.cpp
+    src/wifi_whitelist.cpp
     src/wireview_control.rc
 )
 
@@ -25,8 +42,17 @@ add_executable(wireview_control_legacy WIN32
 # control_main.cpp 持有；WEBVIEW 宏只替换其可见的控制中心表面。
 add_executable(wireview_control WIN32
     src/control_main.cpp
+    src/display_layout.cpp
+    src/edge_mapping.cpp
+    src/mdns_browser.cpp
     src/parsec_vdd_custom_modes.cpp
     src/parsec_vdd.cpp
+    src/reliable_byte_stream.cpp
+    src/socket_stream.cpp
+    src/wifi_control.cpp
+    src/wifi_crypto.cpp
+    src/wifi_link.cpp
+    src/wifi_whitelist.cpp
     src/webview_host.cpp
     src/wireview_control.rc
 )
@@ -55,13 +81,17 @@ endif()
 
 foreach(control_target IN ITEMS wireview_control wireview_control_legacy)
     target_link_libraries(${control_target} PRIVATE
-        setupapi shell32 user32 advapi32 dwmapi uxtheme msimg32 comctl32 gdiplus)
+        wireview_protocol
+        setupapi shell32 user32 advapi32 dwmapi uxtheme msimg32 comctl32 gdiplus dbghelp
+        ws2_32 bcrypt crypt32)
     target_compile_features(${control_target} PRIVATE cxx_std_20)
 endforeach()
 
 target_compile_definitions(wireview_control PRIVATE WIREVIEW_WEBVIEW_UI=1)
 target_include_directories(wireview_control PRIVATE ${WIREVIEW2_INCLUDE_DIR})
 target_link_libraries(wireview_control PRIVATE ${WIREVIEW2_LOADER_LIB} ole32)
+# 断言崩溃栈自诊断（assertion_stack_hook）需要 dbghelp 的符号解析。
+target_link_libraries(wireview_control PRIVATE dbghelp)
 
 # 控制中心使用的主视觉与输入模式图标。保留为独立 PNG，既能避免 16px 图标失真，
 # 也方便后续替换为用户提供的设备素材。
@@ -146,6 +176,7 @@ target_link_libraries(wireview_host PRIVATE
     d3d10_1
     d3dcompiler
     dxgi
+    dwmapi
     mf
     mfplat
     mfuuid
@@ -160,7 +191,7 @@ target_link_libraries(wireview_host PRIVATE
 target_compile_features(wireview_host PRIVATE cxx_std_20)
 
 if(MSVC)
-    target_compile_options(wireview_host PRIVATE /W4 /WX /permissive-)
+    target_compile_options(wireview_host PRIVATE /W4 /WX /permissive- /utf-8)
     target_compile_options(wireview_control PRIVATE /W4 /WX /permissive- /utf-8)
     target_compile_options(wireview_control_legacy PRIVATE /W4 /WX /permissive- /utf-8)
     target_compile_options(wireview_session PRIVATE /W4 /WX /permissive- /utf-8)
@@ -169,6 +200,33 @@ if(MSVC)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(wireview_bitrate_governor_tests
+        src/bitrate_governor.cpp
+        tests/bitrate_governor_tests.cpp
+    )
+    target_include_directories(wireview_bitrate_governor_tests PRIVATE src)
+    target_compile_features(wireview_bitrate_governor_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(wireview_bitrate_governor_tests PRIVATE /W4 /WX /permissive-)
+    endif()
+    add_test(
+        NAME wireview_bitrate_governor_tests
+        COMMAND wireview_bitrate_governor_tests)
+
+    # R3 WiFi 鉴权原语（CNG 封装）与 RFC 测试向量。wifi_crypto.cpp 为纯
+    # ASCII 源文件，供 wireview_host / wireview_control 与本测试共用。
+    add_executable(wireview_wifi_crypto_tests
+        src/wifi_crypto.cpp
+        tests/wifi_crypto_tests.cpp
+    )
+    target_include_directories(wireview_wifi_crypto_tests PRIVATE src)
+    target_compile_features(wireview_wifi_crypto_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_wifi_crypto_tests PRIVATE bcrypt crypt32)
+    if(MSVC)
+        target_compile_options(wireview_wifi_crypto_tests PRIVATE /W4 /WX /permissive-)
+    endif()
+    add_test(NAME wireview_wifi_crypto_tests COMMAND wireview_wifi_crypto_tests)
+
     add_executable(wireview_idd_frame_relay_tests
         src/idd_frame_relay.cpp
         tests/idd_frame_relay_tests.cpp
@@ -220,6 +278,56 @@ if(BUILD_TESTING)
     add_test(
         NAME wireview_reliable_byte_stream_tests
         COMMAND wireview_reliable_byte_stream_tests)
+
+    add_executable(wireview_display_layout_tests
+        src/display_layout.cpp
+        tests/display_layout_tests.cpp
+    )
+    target_include_directories(wireview_display_layout_tests PRIVATE src)
+    target_compile_features(wireview_display_layout_tests PRIVATE cxx_std_20)
+    # 纯逻辑测试，但 display_layout.cpp 里的 apply_vdd_position 引用
+    # user32 的 DisplayConfig API，链接 user32 即可。
+    target_link_libraries(wireview_display_layout_tests PRIVATE user32)
+    if(MSVC)
+        target_compile_options(
+            wireview_display_layout_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(
+        NAME wireview_display_layout_tests
+        COMMAND wireview_display_layout_tests)
+
+    add_executable(wireview_edge_mapping_tests
+        src/edge_mapping.cpp
+        tests/edge_mapping_tests.cpp
+    )
+    target_include_directories(wireview_edge_mapping_tests PRIVATE src)
+    target_compile_features(wireview_edge_mapping_tests PRIVATE cxx_std_20)
+    # build_zones_layout_xml 是纯函数；edge_mapping.cpp 其余部分引用
+    # user32/kernel32 的显示器与管道 API，链接 user32 即可。
+    target_link_libraries(wireview_edge_mapping_tests PRIVATE user32)
+    if(MSVC)
+        target_compile_options(
+            wireview_edge_mapping_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(
+        NAME wireview_edge_mapping_tests
+        COMMAND wireview_edge_mapping_tests)
+
+    add_executable(wireview_tablet_commands_tests
+        src/tablet_commands.cpp
+        tests/tablet_commands_tests.cpp
+    )
+    target_include_directories(wireview_tablet_commands_tests PRIVATE src)
+    target_compile_features(wireview_tablet_commands_tests PRIVATE cxx_std_20)
+    # codec 函数是纯逻辑；tablet_commands.cpp 其余部分引用 user32/dwmapi。
+    target_link_libraries(wireview_tablet_commands_tests PRIVATE user32 dwmapi)
+    if(MSVC)
+        target_compile_options(
+            wireview_tablet_commands_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(
+        NAME wireview_tablet_commands_tests
+        COMMAND wireview_tablet_commands_tests)
 
     add_executable(wireview_winusb_byte_stream_tests
         src/winusb_byte_stream.cpp

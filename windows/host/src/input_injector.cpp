@@ -252,13 +252,36 @@ bool WindowsInputInjector::inject_touch_batch(const wireview::protocol::InputBat
         report_injection_failure("Synthetic pointer input is unavailable on this Windows version");
         return false;
     }
+
+    // Stage the whole batch against a copy of the contact map: the member
+    // state must stay untouched until the injection below succeeds. The old
+    // write-as-you-go flow aborted midway (contact limit, device creation,
+    // rejected frame) with half of the batch already applied, and those
+    // stale contacts were re-sent as ghost touches on every later batch.
+    std::map<std::uint16_t, TouchContact> staged_touches = active_touches_;
     std::vector<std::uint16_t> released_pointer_ids;
+    std::optional<std::uint16_t> frame_primary = primary_touch_id_;
     for (const InputRecord& record : batch.records) {
         if (record.tool != InputTool::finger) {
             continue;
         }
         const auto action = record.action;
         if (action == InputAction::hover) {
+            // A hover for a contact still held down is an Android
+            // tool-switch transition: refresh its coordinates so the
+            // contact does not freeze at stale ones. Keep the staged
+            // action untouched - rewriting a fresh down to a move here
+            // would drop the contact before it was ever injected. Hovers
+            // for pointers that are unknown or already released this batch
+            // stay skipped.
+            const auto held = staged_touches.find(record.pointer_id);
+            if (held != staged_touches.end() &&
+                held->second.action != static_cast<std::uint8_t>(InputAction::up) &&
+                held->second.action != static_cast<std::uint8_t>(InputAction::cancel)) {
+                held->second.normalized_x = record.normalized_x;
+                held->second.normalized_y = record.normalized_y;
+                held->second.pressure = record.pressure;
+            }
             continue;
         }
         TouchContact contact{
@@ -268,21 +291,21 @@ bool WindowsInputInjector::inject_touch_batch(const wireview::protocol::InputBat
             .action = static_cast<std::uint8_t>(action),
         };
         if ((action == InputAction::down || action == InputAction::move) &&
-            active_touches_.size() >= 10U &&
-            !active_touches_.contains(record.pointer_id)) {
+            staged_touches.size() >= 10U &&
+            !staged_touches.contains(record.pointer_id)) {
             std::cerr << "WireView touch contact limit exceeded\n";
             return false;
         }
-        active_touches_[record.pointer_id] = contact;
-        if (!primary_touch_id_) {
-            primary_touch_id_ = record.pointer_id;
+        staged_touches[record.pointer_id] = contact;
+        if (!frame_primary) {
+            frame_primary = record.pointer_id;
         }
         if (action == InputAction::up || action == InputAction::cancel) {
             released_pointer_ids.push_back(record.pointer_id);
         }
     }
 
-    if (active_touches_.empty()) {
+    if (staged_touches.empty()) {
         return true;
     }
     if (touch_device_ == nullptr) {
@@ -294,45 +317,71 @@ bool WindowsInputInjector::inject_touch_batch(const wireview::protocol::InputBat
         }
     }
 
-    std::vector<POINTER_TYPE_INFO> infos;
-    infos.reserve(active_touches_.size());
-    for (const auto& [pointer_id, contact] : active_touches_) {
+    const auto make_touch_info = [this](
+        std::uint16_t pointer_id, const TouchContact& contact, InputAction action,
+        bool primary) {
         const POINT location = map_to_synthetic_pointer_location(
             contact.normalized_x, contact.normalized_y, target_);
         POINTER_TYPE_INFO info{};
         info.type = PT_TOUCH;
         info.touchInfo.pointerInfo.pointerType = PT_TOUCH;
         info.touchInfo.pointerInfo.pointerId = pointer_id;
-        info.touchInfo.pointerInfo.pointerFlags = pointer_flags(
-            static_cast<InputAction>(contact.action),
-            primary_touch_id_ && *primary_touch_id_ == pointer_id);
+        info.touchInfo.pointerInfo.pointerFlags = pointer_flags(action, primary);
         info.touchInfo.pointerInfo.ptPixelLocation = location;
         info.touchInfo.touchFlags = TOUCH_FLAG_NONE;
         info.touchInfo.touchMask = TOUCH_MASK_CONTACTAREA | TOUCH_MASK_PRESSURE;
         info.touchInfo.rcContact = RECT{
             location.x - 2, location.y - 2, location.x + 2, location.y + 2};
         info.touchInfo.pressure = map_pressure(contact.pressure);
-        infos.push_back(info);
-    }
-    const auto release_contacts = [this, &released_pointer_ids] {
-        for (const std::uint16_t pointer_id : released_pointer_ids) {
-            active_touches_.erase(pointer_id);
-        }
-        if (primary_touch_id_ && !active_touches_.contains(*primary_touch_id_)) {
-            primary_touch_id_ = active_touches_.empty()
-                ? std::nullopt
-                : std::optional<std::uint16_t>(active_touches_.begin()->first);
-        }
+        return info;
     };
+
+    std::vector<POINTER_TYPE_INFO> infos;
+    infos.reserve(staged_touches.size());
+    for (const auto& [pointer_id, contact] : staged_touches) {
+        infos.push_back(make_touch_info(
+            pointer_id, contact, static_cast<InputAction>(contact.action),
+            frame_primary && *frame_primary == pointer_id));
+    }
     if (!api.inject_input(
             static_cast<HSYNTHETICPOINTERDEVICE>(touch_device_),
             infos.data(),
             static_cast<UINT32>(infos.size()))) {
         report_injection_failure("InjectSyntheticPointerInput(touch)");
-        release_contacts();
+        // The frame was rejected wholesale, so the OS still holds every
+        // contact from the last successful batch. Push one last best-effort
+        // UP frame for each of them, then drop the map: an empty map cannot
+        // breed ghost touches on later batches, unlike leftover state.
+        std::vector<POINTER_TYPE_INFO> cancels;
+        cancels.reserve(active_touches_.size());
+        for (const auto& [pointer_id, contact] : active_touches_) {
+            cancels.push_back(make_touch_info(
+                pointer_id, contact, InputAction::up,
+                primary_touch_id_ && *primary_touch_id_ == pointer_id));
+        }
+        if (!cancels.empty()) {
+            (void)api.inject_input(
+                static_cast<HSYNTHETICPOINTERDEVICE>(touch_device_),
+                cancels.data(),
+                static_cast<UINT32>(cancels.size()));
+        }
+        active_touches_.clear();
+        primary_touch_id_.reset();
         return false;
     }
-    release_contacts();
+
+    // Commit on success only: publish the staged map, retire released
+    // contacts, and normalize the survivors to move for the next batch.
+    active_touches_ = std::move(staged_touches);
+    primary_touch_id_ = frame_primary;
+    for (const std::uint16_t pointer_id : released_pointer_ids) {
+        active_touches_.erase(pointer_id);
+    }
+    if (primary_touch_id_ && !active_touches_.contains(*primary_touch_id_)) {
+        primary_touch_id_ = active_touches_.empty()
+            ? std::nullopt
+            : std::optional<std::uint16_t>(active_touches_.begin()->first);
+    }
     for (auto& [pointer_id, contact] : active_touches_) {
         contact.action = static_cast<std::uint8_t>(InputAction::move);
     }

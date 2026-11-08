@@ -21,6 +21,15 @@ struct DesktopStreamCallbacks {
     // true asks for an IDR frame immediately, for example after the Android
     // decoder reports it had to discard a dependent H.264 frame.
     std::function<bool()> consume_keyframe_request;
+    // Called by the encoder thread every frame. Returning a non-zero bitrate
+    // retargets the hardware encoder (adaptive WiFi transport); zero keeps
+    // the current target.
+    std::function<std::uint32_t()> consume_bitrate_command;
+    // Polled on every iteration of the encode loop (including idle ones).
+    // Returning true aborts the session: the sender keepalive uses this to
+    // end a static-desktop session whose link died - without it the abort
+    // would only surface when the next frame happened to flow.
+    std::function<bool()> should_abort;
 };
 
 struct DesktopCaptureArea {

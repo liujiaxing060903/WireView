@@ -1,11 +1,15 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <thread>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +36,8 @@ struct Options {
     bool enable_input{false};
     bool device_preview{false};
     bool device_profile_probe{false};
+    // R3 WiFi：非空即 WiFi 模式（格式 ip:port），跳过全部 ADB 编排。
+    std::wstring wifi_endpoint;
 };
 
 struct ProcessResult {
@@ -40,16 +46,30 @@ struct ProcessResult {
     bool started{false};
 };
 
+// Full CommandLineToArgvW-compatible quoting: every run of backslashes
+// that directly precedes a double quote (or ends the argument) must be
+// doubled so the child recovers the original characters. The previous
+// simplified version mangled arguments such as C:\dir\ or values
+// containing \", shifting every later argument of the child command line.
 std::wstring quote_argument(const std::wstring& value) {
     std::wstring quoted{L"\""};
+    std::size_t backslashes{};
     for (const wchar_t character : value) {
-        if (character == L'\"') {
-            quoted += L"\\\"";
-        } else {
-            quoted += character;
+        if (character == L'\\') {
+            ++backslashes;
+            continue;
         }
+        if (character == L'\"') {
+            quoted.append(backslashes + 1U, L'\\');
+            quoted.push_back(character);
+        } else {
+            quoted.append(backslashes, L'\\');
+            quoted.push_back(character);
+        }
+        backslashes = 0U;
     }
-    quoted += L"\"";
+    quoted.append(backslashes * 2U, L'\\');
+    quoted += L'\"';
     return quoted;
 }
 
@@ -90,6 +110,38 @@ std::string to_utf8(const std::wstring& value) {
     return result;
 }
 
+// Widens narrow ASCII diagnostics (exception messages) back to wide text
+// for the status file.
+std::wstring widen_ascii(std::string_view value) {
+    std::wstring result(value.size(), L'\0');
+    for (std::size_t index = 0U; index < value.size(); ++index) {
+        result[index] = static_cast<wchar_t>(static_cast<unsigned char>(value[index]));
+    }
+    return result;
+}
+
+// Append-only diagnostics for the reverse supervisor. The supervisor used
+// to fail silently, which made "replug never recovers" undiagnosable: the
+// only evidence was a missing mapping. One line per state change plus a
+// periodic heartbeat lands here, next to the other WireView logs.
+void log_supervisor_line(const std::filesystem::path& status_file,
+    const std::string& line) {
+    if (status_file.empty()) {
+        return;
+    }
+    const std::filesystem::path directory = status_file.parent_path();
+    std::error_code make_error;
+    std::filesystem::create_directories(directory, make_error);
+    const std::filesystem::path log_file = directory / L"reverse-supervisor.log";
+    std::ofstream stream(log_file, std::ios::app);
+    if (!stream) {
+        return;
+    }
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+    stream << seconds << ' ' << line << '\n';
+}
+
 std::filesystem::path find_adb() {
     std::vector<std::filesystem::path> candidates;
     const auto executable_directory = current_executable().parent_path();
@@ -128,11 +180,22 @@ void write_status(const Options& options, const std::wstring& state,
     if (options.status_file.empty()) {
         return;
     }
+    // The status file is the session's only feedback channel; every failure
+    // below leaves a debugger-visible trace so a stalled control center can
+    // be diagnosed instead of polling a stale state forever without a hint.
     std::error_code error;
-    std::filesystem::create_directories(options.status_file.parent_path(), error);
+    if (!std::filesystem::create_directories(options.status_file.parent_path(), error) &&
+        error) {
+        OutputDebugStringA(("WireView session: creating the status directory failed (error " +
+            std::to_string(error.value()) + "): " +
+            to_utf8(options.status_file.parent_path().wstring()) + "\n").c_str());
+        error.clear();
+    }
     const auto temporary = options.status_file.wstring() + L".tmp";
     std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
     if (!stream) {
+        OutputDebugStringA(("WireView session: opening the status temporary file failed: " +
+            to_utf8(temporary) + "\n").c_str());
         return;
     }
     const std::wstring status = L"version=1\nstate=" + state + L"\nmessage=" + message +
@@ -141,19 +204,177 @@ void write_status(const Options& options, const std::wstring& state,
         L"\nrequested_width=" + std::to_wstring(options.width) +
         L"\nrequested_height=" + std::to_wstring(options.height) +
         L"\nrequested_fps=" + std::to_wstring(options.frame_rate) +
-        L"\ntransport=adb" +
+        L"\ntransport=" + (options.wifi_endpoint.empty() ? L"adb" : L"wifi") +
         L"\nreconnect_count=" + std::to_wstring(reconnect_count) +
         L"\ndiagnostics=" + diagnostics + L"\n";
     stream << to_utf8(status);
     stream.close();
     std::filesystem::rename(temporary, options.status_file, error);
     if (error) {
+        // The control center may briefly hold the target file open while
+        // polling; remove and rename once more before giving up with a trace.
+        OutputDebugStringA(("WireView session: publishing the status file failed (error " +
+            std::to_string(error.value()) + "), retrying: " +
+            to_utf8(options.status_file.wstring()) + "\n").c_str());
+        error.clear();
         std::filesystem::remove(options.status_file, error);
         error.clear();
         std::filesystem::rename(temporary, options.status_file, error);
+        if (error) {
+            OutputDebugStringA(("WireView session: the status file rename retry failed (error " +
+                std::to_string(error.value()) + "): " +
+                to_utf8(options.status_file.wstring()) + "\n").c_str());
+        }
     }
 }
 
+// adb.exe is the machine-wide Android debug bridge server: once started it
+// outlives WireView and is shared with other tools on the machine. When
+// this session runs inside the control center's kill-on-close job, every
+// spawned adb (and the detached server it forks) would be terminated with
+// the session, so adb launches request CREATE_BREAKAWAY_FROM_JOB. The
+// host executable never matches this predicate and always stays in the job.
+bool is_adb_executable(const std::filesystem::path& executable) {
+    constexpr std::wstring_view kAdbFileName = L"adb.exe";
+    const std::wstring filename = executable.filename().wstring();
+    if (filename.size() != kAdbFileName.size()) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < kAdbFileName.size(); ++index) {
+        const auto lowered = static_cast<wchar_t>(towlower(filename[index]));
+        if (lowered != kAdbFileName[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<wchar_t> build_command_line(const std::filesystem::path& executable,
+    const std::vector<std::wstring>& arguments) {
+    std::wstring command = quote_argument(executable.wstring());
+    for (const auto& argument : arguments) {
+        command += L" ";
+        command += quote_argument(argument);
+    }
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    return buffer;
+}
+
+BOOL spawn_child_process(const std::filesystem::path& executable, wchar_t* command_line,
+    const std::filesystem::path& working_directory, STARTUPINFOW* startup,
+    PROCESS_INFORMATION* process) {
+    const bool wants_breakaway = is_adb_executable(executable);
+    const std::wstring directory = working_directory.empty()
+        ? std::wstring{}
+        : working_directory.wstring();
+    const wchar_t* directory_argument = directory.empty() ? nullptr : directory.c_str();
+    const DWORD base_flags = CREATE_NO_WINDOW;
+    BOOL created = FALSE;
+    if (wants_breakaway) {
+        // adb escapes the kill-on-close job so the system singleton adb
+        // server survives a session stop (it would otherwise take down
+        // Android Studio and every other adb user on the machine).
+        created = CreateProcessW(executable.c_str(), command_line, nullptr, nullptr, TRUE,
+            base_flags | CREATE_BREAKAWAY_FROM_JOB, nullptr, directory_argument, startup,
+            process);
+        if (!created) {
+            // A job created without JOB_OBJECT_LIMIT_BREAKAWAY_OK refuses
+            // the escape (for example a session launched by an older
+            // control center); degrade to a regular in-job child. A retry
+            // for unrelated failure causes just fails again harmlessly.
+            created = CreateProcessW(executable.c_str(), command_line, nullptr, nullptr,
+                TRUE, base_flags, nullptr, directory_argument, startup, process);
+        }
+    } else {
+        created = CreateProcessW(executable.c_str(), command_line, nullptr, nullptr, TRUE,
+            base_flags, nullptr, directory_argument, startup, process);
+    }
+    return created;
+}
+
+// Bounded variant for housekeeping adb calls: a hung adbd half-open
+// pipe must not freeze the caller (audit P1 - the reverse supervisor
+// join used to wait forever on such a freeze). The child is killed on
+// timeout; its remaining output is drained afterwards (the pipe closes
+// on death).
+ProcessResult run_capture_bounded(
+    const std::filesystem::path& executable,
+    const std::vector<std::wstring>& arguments,
+    const std::filesystem::path& working_directory = {},
+    const std::filesystem::path& live_output_file = {},
+    DWORD timeout_milliseconds = 15'000U) {
+    (void)live_output_file;  // the bounded path never mirrors live output
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    HANDLE read_pipe{};
+    HANDLE write_pipe{};
+    if (!CreatePipe(&read_pipe, &write_pipe, &security, 0U)) {
+        return {};
+    }
+    SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0U);
+    std::vector<wchar_t> command_buffer = build_command_line(executable, arguments);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = write_pipe;
+    startup.hStdError = write_pipe;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION process{};
+    const BOOL created = spawn_child_process(executable, command_buffer.data(),
+        working_directory, &startup, &process);
+    CloseHandle(write_pipe);
+    if (!created) {
+        CloseHandle(read_pipe);
+        return {};
+    }
+    const auto deadline = GetTickCount64() + timeout_milliseconds;
+    // Drain the pipe concurrently: children that write more than the pipe
+    // capacity (e.g. "dumpsys activity activities") would otherwise block
+    // on a full pipe, miss the deadline and get killed with the output
+    // still stuck in the kernel buffer.
+    std::string bytes;
+    std::thread pipe_reader([&bytes, read_pipe] {
+        char buffer[1024];
+        DWORD read = 0U;
+        while (ReadFile(read_pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0U) {
+            bytes.append(buffer, read);
+        }
+    });
+    while (WaitForSingleObject(process.hProcess, 200) == WAIT_TIMEOUT) {
+        if (GetTickCount64() >= deadline) {
+            TerminateProcess(process.hProcess, 1U);
+            WaitForSingleObject(process.hProcess, 5'000U);
+            break;
+        }
+    }
+    ProcessResult result{};
+    result.started = true;
+    GetExitCodeProcess(process.hProcess, &result.exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    // Closing the read end first is essential when this run spawned the adb
+    // server: the resident server inherits the pipe handles, so the write
+    // end never runs dry and the reader's ReadFile would block forever.
+    // Cancel the pending synchronous read first (documented for sync
+    // handles since Windows 8), then close - the failed ReadFile releases
+    // the reader thread and the join completes; the collected bytes are
+    // already safe in 'bytes'.
+    (void)CancelIoEx(read_pipe, nullptr);
+    CloseHandle(read_pipe);
+    pipe_reader.join();
+    if (!bytes.empty()) {
+        const int length = MultiByteToWideChar(CP_UTF8, 0, bytes.data(),
+            static_cast<int>(bytes.size()), nullptr, 0);
+        if (length > 0) {
+            result.output.resize(static_cast<std::size_t>(length));
+            MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()),
+                result.output.data(), length);
+        }
+    }
+    return result;
+}
 ProcessResult run_capture(const std::filesystem::path& executable,
     const std::vector<std::wstring>& arguments, const std::filesystem::path& working_directory = {},
     const std::filesystem::path& live_output_file = {}) {
@@ -166,13 +387,7 @@ ProcessResult run_capture(const std::filesystem::path& executable,
         return {};
     }
     SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0U);
-    std::wstring command = quote_argument(executable.wstring());
-    for (const auto& argument : arguments) {
-        command += L" ";
-        command += quote_argument(argument);
-    }
-    std::vector<wchar_t> command_buffer(command.begin(), command.end());
-    command_buffer.push_back(L'\0');
+    std::vector<wchar_t> command_buffer = build_command_line(executable, arguments);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -180,9 +395,8 @@ ProcessResult run_capture(const std::filesystem::path& executable,
     startup.hStdError = write_pipe;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION process{};
-    const std::wstring directory = working_directory.empty() ? L"" : working_directory.wstring();
-    const BOOL created = CreateProcessW(executable.c_str(), command_buffer.data(), nullptr, nullptr,
-        TRUE, CREATE_NO_WINDOW, nullptr, directory.empty() ? nullptr : directory.c_str(), &startup, &process);
+    const BOOL created = spawn_child_process(executable, command_buffer.data(),
+        working_directory, &startup, &process);
     CloseHandle(write_pipe);
     if (!created) {
         CloseHandle(read_pipe);
@@ -249,7 +463,13 @@ bool parse_unsigned(std::wstring_view value, std::uint32_t* target) {
         if (character < L'0' || character > L'9') {
             return false;
         }
-        result = result * 10U + static_cast<std::uint32_t>(character - L'0');
+        const std::uint32_t digit = static_cast<std::uint32_t>(character - L'0');
+        // Reject values that would wrap around uint32_t; without this a
+        // --duration-seconds of 4294967297 would silently become 1 second.
+        if (result > (UINT32_MAX - digit) / 10U) {
+            return false;
+        }
+        result = result * 10U + digit;
     }
     *target = result;
     return true;
@@ -287,6 +507,23 @@ bool parse_arguments(int argc, wchar_t** argv, Options* options) {
             options->device_preview = true;
         } else if (argument == L"--device-profile-probe") {
             options->device_profile_probe = true;
+        } else if (argument == L"--transport" && require_value(&value)) {
+            if (value != L"wifi") {
+                return false;
+            }
+            // WiFi 端点随 --transport 之后传入（见下）。
+            if (index + 1 >= argc || argv[index + 1][0] == L'-') {
+                return false;
+            }
+            options->wifi_endpoint = argv[++index];
+            // The downstream WiFi transport is IPv4-only (it fills a
+            // sockaddr_in). An endpoint with more than one colon is an
+            // IPv6 literal or malformed; reject it here, at parse time,
+            // instead of failing later with a misleading ip:port split.
+            if (std::count(options->wifi_endpoint.begin(), options->wifi_endpoint.end(),
+                    L':') > 1) {
+                throw std::invalid_argument("IPv6 endpoints are not supported; use IPv4:port");
+            }
         } else {
             return false;
         }
@@ -297,11 +534,18 @@ bool parse_arguments(int argc, wchar_t** argv, Options* options) {
 
 ProcessResult run_host(const Options& options, const std::filesystem::path& host,
     std::uint32_t session_seconds, std::uint32_t reconnect_count) {
+    (void)reconnect_count;  // the reconnecting entry tracks its own interruptions
     std::vector<std::wstring> arguments;
     if (options.device_profile_probe) {
         arguments.push_back(L"--probe-device-profile");
     } else if (options.device_preview) {
-        arguments.insert(arguments.end(), {L"--device-preview", std::to_wstring(session_seconds)});
+        // The host rejects --device-preview durations above 1800 seconds,
+        // while sessions default to an "until stopped" duration. Clamp the
+        // forwarded preview duration to that CLI contract; the mirror and
+        // reconnect paths below have no such cap.
+        constexpr std::uint32_t kMaximumPreviewSeconds = 1'800U;
+        arguments.insert(arguments.end(), {L"--device-preview",
+            std::to_wstring((std::min)(session_seconds, kMaximumPreviewSeconds))});
     } else {
         arguments.insert(arguments.end(), {L"--stream-desktop", std::to_wstring(session_seconds)});
         arguments.push_back(L"--display");
@@ -313,15 +557,35 @@ ProcessResult run_host(const Options& options, const std::filesystem::path& host
         }
         arguments.insert(arguments.end(), {L"--frame-rate", std::to_wstring(options.frame_rate)});
         if (!options.device_preview) {
-            arguments.insert(arguments.end(), {L"--transport", L"adb"});
+            if (!options.wifi_endpoint.empty()) {
+                // R3 WiFi：PC 作为客户端直连平板；凭据经环境变量传递。
+                // 会话用重连入口：通道故障自动重拨，不再整场终止。
+                const auto colon = options.wifi_endpoint.rfind(L':');
+                if (colon == std::wstring::npos || colon == 0U ||
+                    colon + 1U >= options.wifi_endpoint.size()) {
+                    return ProcessResult{};
+                }
+                arguments[0] = L"--reconnect-desktop";
+                arguments.insert(arguments.end(), {L"--transport", L"wifi"});
+                arguments.insert(arguments.end(), {L"--remote-ip", options.wifi_endpoint.substr(0U, colon)});
+                arguments.insert(arguments.end(), {L"--remote-port", options.wifi_endpoint.substr(colon + 1U)});
+            } else {
+                // USB 会话用重连入口：adb reverse 抖动/平板短暂断开时自动
+                // 恢复（监督线程保 reverse 映射，host 循环重 accept）。
+                arguments[0] = L"--reconnect-desktop";
+                arguments.insert(arguments.end(), {L"--transport", L"adb"});
+            }
         }
     }
     if (!options.enable_input && !options.device_preview && !options.device_profile_probe) {
         arguments.push_back(L"--input-log-only");
     }
     arguments.insert(arguments.end(), {L"--status-file", options.status_file.wstring()});
-    if (!options.device_profile_probe && !options.device_preview) {
-        arguments.insert(arguments.end(), {L"--reconnect-count", std::to_wstring(reconnect_count)});
+    // The reconnecting entry tracks interruptions itself; reconnect_count is
+    // only consumed by the single-shot --stream-desktop path.
+    if (!options.device_profile_probe && !options.device_preview &&
+        options.wifi_endpoint.empty()) {
+        // (kept for the winusb/legacy single-shot variants; harmless)
     }
     return run_capture(host, arguments, host.parent_path(), options.host_diagnostics_file);
 }
@@ -373,9 +637,14 @@ std::wstring compact_host_diagnostics(std::wstring output) {
         compact.substr(compact.size() - kTailCharacters);
 }
 
-std::wstring host_failure_message(const ProcessResult& result) {
+std::wstring host_failure_message(const ProcessResult& result, bool wifi_session = false) {
     const std::wstring detail = last_output_line(result.output);
-    if (detail.find(L"No WireView client connected before the timeout") != std::wstring::npos) {
+    if (detail.find(L"No WireView client connected before the timeout") != std::wstring::npos ||
+        detail.find(L"connect timed out") != std::wstring::npos ||
+        detail.find(L"connect failed") != std::wstring::npos) {
+        if (wifi_session) {
+            return L"电脑端无法通过 WiFi 连接平板：请确认两端在同一局域网、平板已开启 WiFi 投屏开关，且 IP 正确（可用重新配对更新）。";
+        }
         return L"Android 端 WireView 未在 5 分钟内连接到 Windows Host；请保持应用在前台，并检查 USB 调试和 ADB reverse。";
     }
     if (detail.find(L"client did not return HELLO_ACK") != std::wstring::npos) {
@@ -394,9 +663,26 @@ int run(const Options& options) {
         write_status(options, L"error", L"未找到 wireview_host.exe；请重新解压完整的 WireView 发布包。", 0U);
         return 2;
     }
+    // R3 WiFi 模式：没有 ADB 设备编排（reverse/启动应用/设备检测都不适用），
+    // PC 直接作为客户端连接平板端点，凭据经环境变量传递。
+    if (!options.wifi_endpoint.empty()) {
+        write_status(options, L"starting", L"正在通过 WiFi 连接平板…", 0U);
+        const ProcessResult host_result = run_host(options, host, options.duration_seconds, 0U);
+        if (host_result.exit_code == 0U) {
+            write_status(options, L"stopped", L"WireView WiFi 会话已结束。", 0U,
+                compact_host_diagnostics(host_result.output));
+            return 0;
+        }
+        write_status(options, L"error", host_failure_message(host_result, true), 0U,
+            compact_host_diagnostics(host_result.output));
+        return static_cast<int>(host_result.exit_code);
+    }
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(options.duration_seconds);
     std::uint32_t reconnect_count{};
+    // Consecutive "adb devices" polls that listed nothing; drives the
+    // server re-enumeration / restart ladder below.
+    std::uint32_t empty_device_streak{};
     while (std::chrono::steady_clock::now() < deadline) {
         const auto adb = find_adb();
         if (adb.empty()) {
@@ -404,32 +690,47 @@ int run(const Options& options) {
             Sleep(1000U);
             continue;
         }
-        const auto device_query = run_capture(adb, {L"devices"});
+        const auto device_query = run_capture_bounded(adb, {L"devices"});
         const auto devices = device_query.started ? connected_devices(device_query.output) : std::vector<std::wstring>{};
         if (devices.size() != 1U) {
             if (device_query.output.find(L"\tunauthorized") != std::wstring::npos) {
                 write_status(options, L"waiting_authorization", L"设备未授权 USB 调试。请在 Android 设备上允许此电脑。", reconnect_count);
             } else if (devices.empty()) {
+                // The adb server itself silently loses devices: the USB link
+                // and even an in-flight session keep working while "adb
+                // devices" lists nothing (observed live). Trusting that list
+                // forever wedges recovery after every server hiccup, so ask
+                // the server to re-enumerate, then force a restart.
+                ++empty_device_streak;
+                if (empty_device_streak == 5U) {
+                    (void)run_capture_bounded(
+                        adb, {L"reconnect", L"offline"}, {}, {}, 10'000U);
+                } else if (empty_device_streak >= 10U) {
+                    (void)run_capture_bounded(adb, {L"kill-server"}, {}, {}, 10'000U);
+                    empty_device_streak = 0U;
+                }
                 write_status(options, L"waiting_device", L"未检测到已授权的 Android 设备。请检查 USB 数据线、端口和 USB 调试授权。", reconnect_count);
             } else {
+                empty_device_streak = 0U;
                 write_status(options, L"waiting_device", L"检测到多台 Android 设备；请仅保留一台设备连接。", reconnect_count);
             }
             Sleep(1000U);
             continue;
         }
+        empty_device_streak = 0U;
         const auto& serial = devices.front();
-        const auto package = run_capture(adb, {L"-s", serial, L"shell", L"pm", L"path", std::wstring(kPackageName)});
+        const auto package = run_capture_bounded(adb, {L"-s", serial, L"shell", L"pm", L"path", std::wstring(kPackageName)});
         if (!package.started || package.exit_code != 0U || package.output.find(L"package:") == std::wstring::npos) {
             write_status(options, L"error", L"未检测到 WireView Android 应用；请先安装 APK。", reconnect_count);
             return 3;
         }
-        const auto reverse = run_capture(adb, {L"-s", serial, L"reverse", std::wstring(kReversePort), std::wstring(kReversePort)});
+        const auto reverse = run_capture_bounded(adb, {L"-s", serial, L"reverse", std::wstring(kReversePort), std::wstring(kReversePort)});
         if (!reverse.started || reverse.exit_code != 0U) {
             write_status(options, L"waiting", L"ADB 端口映射失败，正在重试。", reconnect_count);
             Sleep(1000U);
             continue;
         }
-        const auto launch = run_capture(adb, {L"-s", serial, L"shell", L"am", L"start", L"-n", std::wstring(kActivityName)});
+        const auto launch = run_capture_bounded(adb, {L"-s", serial, L"shell", L"am", L"start", L"-n", std::wstring(kActivityName)});
         if (!launch.started || launch.exit_code != 0U) {
             write_status(options, L"waiting", L"无法启动 WireView Android 应用，正在重试。", reconnect_count);
             Sleep(1000U);
@@ -441,12 +742,74 @@ int run(const Options& options) {
             deadline - std::chrono::steady_clock::now()).count();
         const auto session_seconds = static_cast<std::uint32_t>(
             std::max<std::int64_t>(1, remaining));
+        // R3：host 重连会话运行期间监督 adb reverse 映射。拔线会让 adbd
+        // 清掉全部 reverse；重插后若不重建，host 的 listener 永远等不到
+        // 连接。每 2s 先查 reverse --list，缺失才重建（直接重跑 reverse
+        // 会先删旧映射，踢断正在工作的连接）。
+        std::atomic_bool reverse_supervisor_running{true};
+        std::thread reverse_supervisor([&]() {
+            const std::string serial_narrow = to_utf8(serial);
+            bool last_mapped = true;
+            while (reverse_supervisor_running.load()) {
+                const auto listing = run_capture_bounded(
+                    adb, {L"-s", serial, L"reverse", L"--list"},
+                    {}, {}, 15'000U);
+                const bool mapped = listing.started && listing.exit_code == 0U &&
+                    listing.output.find(std::wstring(kReversePort)) != std::wstring::npos;
+                bool rebuild_ok = true;
+                if (!mapped) {
+                    const auto rebuild = run_capture_bounded(
+                        adb, {L"-s", serial, L"reverse",
+                              std::wstring(kReversePort), std::wstring(kReversePort)},
+                        {}, {}, 15'000U);
+                    rebuild_ok = rebuild.started && rebuild.exit_code == 0U;
+                }
+                // Log on state flips only: a periodic heartbeat would grow
+                // the file without bound on long sessions.
+                if (mapped != last_mapped) {
+                    last_mapped = mapped;
+                    log_supervisor_line(options.status_file,
+                        "serial=" + serial_narrow +
+                        " mapped=" + (mapped ? "1" : "0") +
+                        (mapped ? "" : (rebuild_ok ? " rebuild=ok" : " rebuild=failed")) +
+                        " list_exit=" + std::to_string(listing.exit_code) +
+                        " list_started=" + (listing.started ? "1" : "0"));
+                }
+                for (int tick = 0; tick < 20 && reverse_supervisor_running.load(); ++tick) {
+                    Sleep(100U);
+                }
+            }
+        });
         const ProcessResult host_result = run_host(options, host, session_seconds, reconnect_count);
+        reverse_supervisor_running.store(false);
+        if (reverse_supervisor.joinable()) {
+            // The supervisor may be parked inside a bounded adb call
+            // (15 s worst case); the join still completes because the
+            // bounded call kills the child on timeout.
+            reverse_supervisor.join();
+        }
         if (options.device_profile_probe) {
             return host_result.exit_code == 0U ? 0 : 4;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
             break;
+        }
+        if (host_result.exit_code == 2U) {
+            // The host gave up its in-process accept loop: no tablet showed
+            // up for several rounds, which for the adb listener means the
+            // reverse mapping is gone (a yanked or glitched cable clears
+            // it) and the tablet cannot dial in until it is re-established.
+            // Hand control back to this loop - it re-detects the device,
+            // re-runs adb reverse and relaunches the host, the same
+            // recovery path the pre-reconnect sessions used. am start on a
+            // foreground activity is a harmless bring-to-front, not a
+            // restart. Every other exit code stays terminal: a real host
+            // failure must not be disguised as a waiting state.
+            write_status(options, L"waiting",
+                L"正在重设 ADB 端口映射并等待平板重新连接……", reconnect_count,
+                compact_host_diagnostics(host_result.output));
+            Sleep(500U);
+            continue;
         }
         // 会话一旦断开即结束。不要在设备端被用户划掉后台后再次通过 ADB 拉起应用，
         // 也不要把拔线后的会话伪装成仍可继续的自动重连。
@@ -463,7 +826,7 @@ int detect_single_adb_device(bool require_wireview_app) {
     if (adb.empty()) {
         return 2;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     if (!query.started || query.exit_code != 0U) {
         return 2;
     }
@@ -480,7 +843,7 @@ int detect_single_adb_device(bool require_wireview_app) {
     if (!require_wireview_app) {
         return 0;
     }
-    const auto process = run_capture(adb, {L"-s", devices.front(), L"shell", L"pidof",
+    const auto process = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"pidof",
         std::wstring(kPackageName)});
     const bool app_running = process.started && process.exit_code == 0U &&
         std::any_of(process.output.begin(), process.output.end(), [](wchar_t character) {
@@ -492,7 +855,7 @@ int detect_single_adb_device(bool require_wireview_app) {
     // “划掉后台”时 Android 进程可能短暂仍在，pidof 因而不能代表活动仍可用。
     // 若系统提供 resumed/top-resumed 行，则要求当前前台确实是 WireView；旧系统或
     // 厂商删减 dumpsys 输出时安全地退回到 pidof，避免错误拒绝正常设备。
-    const auto activities = run_capture(adb, {L"-s", devices.front(), L"shell", L"dumpsys",
+    const auto activities = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"dumpsys",
         L"activity", L"activities"});
     if (!activities.started || activities.exit_code != 0U) {
         return 0;
@@ -523,14 +886,14 @@ int notify_android_stop() {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.WIREVIEW_STOPPED"});
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
@@ -540,15 +903,39 @@ int notify_android_host_exited() {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.HOST_EXITED"});
+    return result.started && result.exit_code == 0U ? 0 : 1;
+}
+
+int notify_pairing_approved(wchar_t** argv) {
+    // R3：把配对 PIN 经 USB（adb broadcast）投递给平板。线缆本身是带外信道，
+    // WiFi 侧攻击者看不到该值；投递失败时用户仍可手输 PIN。
+    const std::wstring pin = argv[2];
+    if (pin.empty() || pin.size() > 32U) {
+        return 1;
+    }
+    const auto adb = find_adb();
+    if (adb.empty()) {
+        return 1;
+    }
+    const auto query = run_capture_bounded(adb, {L"devices"});
+    const auto devices = query.started && query.exit_code == 0U
+        ? connected_devices(query.output)
+        : std::vector<std::wstring>{};
+    if (devices.size() != 1U) {
+        return 1;
+    }
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+        L"-a", L"com.wireview.receiver.action.WIREVIEW_PAIRING_APPROVED",
+        L"--es", L"pin", pin});
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
 
@@ -557,14 +944,14 @@ int notify_android_device_identified() {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.DEVICE_IDENTIFIED"});
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
@@ -574,14 +961,14 @@ int notify_android_vdd_created(wchar_t** argv) {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.VDD_CREATED",
         L"--ei", L"stream_width", argv[2],
         L"--ei", L"stream_height", argv[3],
@@ -605,11 +992,32 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const bool notify_host_exited = argc == 2 && std::wstring_view(argv[1]) == L"--notify-host-exited";
     const bool notify_identified = argc == 2 && std::wstring_view(argv[1]) == L"--notify-device-identified";
     const bool notify_vdd = argc == 5 && std::wstring_view(argv[1]) == L"--notify-vdd-created";
+    const bool notify_pairing = argc == 3 && std::wstring_view(argv[1]) == L"--notify-pairing-approved";
     Options options;
-    const bool valid = !detect_device && !notify_stop && !notify_host_exited && !notify_identified && !notify_vdd && parse_arguments(argc, argv, &options);
+    bool valid = false;
+    try {
+        valid = !detect_device && !notify_stop && !notify_host_exited && !notify_identified &&
+            !notify_vdd && !notify_pairing && parse_arguments(argc, argv, &options);
+    } catch (const std::exception& error) {
+        // Argument validation (for example IPv6 WiFi endpoints) reports
+        // specific reasons by exception; surface them through the status
+        // file when it was already parsed, and never let them escape
+        // wWinMain as a silent std::terminate.
+        OutputDebugStringA((std::string("WireView session: ") + error.what() + "\n").c_str());
+        if (!options.status_file.empty()) {
+            write_status(options, L"error", widen_ascii(error.what()), 0U);
+        }
+        LocalFree(argv);
+        return 1;
+    }
     if (detect_device) {
         LocalFree(argv);
         return require_wireview_app || argc == 2 ? detect_single_adb_device(require_wireview_app) : 1;
+    }
+    if (notify_pairing) {
+        const int result = notify_pairing_approved(argv);
+        LocalFree(argv);
+        return result;
     }
     if (notify_stop) {
         LocalFree(argv);

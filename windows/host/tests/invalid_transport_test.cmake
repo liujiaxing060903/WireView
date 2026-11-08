@@ -15,7 +15,7 @@ endif()
 set(combined "${output}\n${error}")
 string(FIND
     "${combined}"
-    "desktop stream transport must be adb or winusb"
+    "desktop stream transport must be adb, winusb, or wifi"
     expected_error)
 if(expected_error EQUAL -1)
     message(FATAL_ERROR "invalid desktop transport returned the wrong error: ${combined}")

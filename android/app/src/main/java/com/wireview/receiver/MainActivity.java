@@ -1,21 +1,28 @@
 package com.wireview.receiver;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbManager;
+import android.net.nsd.NsdManager;
+import android.net.nsd.NsdServiceInfo;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.InputFilter;
+import android.text.InputType;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -26,6 +33,8 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -33,6 +42,8 @@ import android.widget.TextView;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public final class MainActivity extends Activity implements ConnectionClient.Listener, VideoDecoder.Listener {
     private static final String TAG = "WireViewUsb";
@@ -48,6 +59,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             "com.wireview.receiver.action.VDD_CREATED";
     private static final String ACTION_DEVICE_IDENTIFIED =
             "com.wireview.receiver.action.DEVICE_IDENTIFIED";
+    private static final String ACTION_PAIRING_APPROVED =
+            "com.wireview.receiver.action.WIREVIEW_PAIRING_APPROVED";
+    private static final String NSD_SERVICE_TYPE = "_wireview._tcp.";
 
     private TextView statusView;
     private TextView deviceInfoView;
@@ -56,10 +70,19 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     private FrameLayout videoContainer;
     private SurfaceView displaySurface;
     private AspectPreviewView previewView;
-    private ConnectionClient connection;
+    // volatile：主线程写（重插/换 transport），连接线程与解码 worker 读
+    // （sendPong/遥测/requestKeyframe），避免读到 stale 引用错发旧会话（A8 N7）。
+    private volatile ConnectionClient connection;
     private boolean activityStarted;
     private boolean usbPermissionRequested;
     private boolean usbReceiverRegistered;
+    // R3 WiFi: tablet-side switch state; survives ConnectionClient rebuilds.
+    private boolean wifiSwitchOn;
+    private Button wifiToggleButton;
+    private TextView wifiHintView;
+    private NsdManager nsdManager;
+    private NsdManager.RegistrationListener nsdListener;
+    private boolean nsdRegistered;
     private UsbAccessory activeAccessory;
     private int lastAccessoryCount = -1;
     private boolean ignoreEnumeratedAccessoryUntilAttach;
@@ -102,6 +125,17 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 runOnUiThread(MainActivity.this::showDeviceIdentifiedNotice);
                 return;
             }
+            if (ACTION_PAIRING_APPROVED.equals(intent.getAction())) {
+                String pin = intent.getStringExtra("pin");
+                PersistentDiagnosticLog.record(
+                        "MainActivity",
+                        "received pairing approval over USB (pin "
+                                + (pin == null ? "missing" : "present") + ")");
+                if (pin != null && !pin.isEmpty()) {
+                    connection.setApprovedPairingToken(pin);
+                }
+                return;
+            }
             if (UsbManager.ACTION_USB_ACCESSORY_DETACHED.equals(intent.getAction())) {
                 UsbAccessory accessory = accessoryExtra(intent);
                 Log.i(TAG, "Android USB accessory detached: " + accessory);
@@ -121,7 +155,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 ignoredDetachedAccessoryLogged = false;
                 setIntent(new Intent(MainActivity.this, MainActivity.class));
                 connection.close();
-                connection = new ConnectionClient(MainActivity.this);
+                connection = new ConnectionClient(
+                        MainActivity.this,
+                        getApplicationContext(),
+                        new TcpTransportConnector("127.0.0.1", ConnectionClient.DEVELOPMENT_PORT),
+                        wifiSwitchOn);
                 if (activityStarted) {
                     connection.start();
                 }
@@ -154,6 +192,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         }
     };
     private VideoDecoder videoDecoder;
+    private SidebarController sidebar;
     private CodecProbe.Result selectedDecoder;
     private int requestedStreamFrameRate = 60;
     // Once the app has reached the host, keep the user-facing state stable while
@@ -323,6 +362,36 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // R3 WiFi 投屏开关：手动开启后本机监听局域网连接并广播 mDNS 服务。
+        // 默认关；会话中整个面板隐藏，不影响视频显示。
+        LinearLayout wifiRow = new LinearLayout(this);
+        wifiRow.setOrientation(LinearLayout.HORIZONTAL);
+        wifiRow.setGravity(Gravity.CENTER_VERTICAL);
+        wifiToggleButton = new Button(this);
+        wifiToggleButton.setText("WiFi 投屏：关");
+        wifiToggleButton.setOnClickListener(view -> setWifiSwitch(!wifiSwitchOn));
+        wifiRow.addView(
+                wifiToggleButton,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+        wifiHintView = new TextView(this);
+        wifiHintView.setTextColor(Color.rgb(190, 196, 205));
+        wifiHintView.setTextSize(13.0f);
+        wifiHintView.setPadding(dp(12), 0, 0, 0);
+        wifiHintView.setText("同一局域网内与电脑配对使用");
+        wifiRow.addView(
+                wifiHintView,
+                new LinearLayout.LayoutParams(
+                        0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        1.0f));
+        connectionPanel.addView(
+                wifiRow,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+
         displaySurface = new SurfaceView(this);
         displaySurface.setBackgroundColor(Color.BLACK);
         // Keep decoded video above the app window. This remains the most stable
@@ -349,7 +418,13 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
 
         setContentView(root);
         Log.i(TAG, "Activity created: action=" + getIntent().getAction());
-        connection = new ConnectionClient(this);
+        wifiSwitchOn = getPreferences(Context.MODE_PRIVATE)
+                .getBoolean("wifi_switch_on", false);
+        connection = new ConnectionClient(
+                this,
+                getApplicationContext(),
+                new TcpTransportConnector("127.0.0.1", ConnectionClient.DEVELOPMENT_PORT),
+                wifiSwitchOn);
         registerUsbPermissionReceiver();
         adoptOrRequestAccessory(getIntent());
 
@@ -374,6 +449,50 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 videoDecoder.setSurface(null);
             }
         });
+
+        // 平板贴边侧边栏：子窗口悬浮于视频 Surface 之上，按钮经协议 type13
+        // 发送控制命令（返回/键盘/横竖屏/应用切换），窗口列表由 type14 驱动。
+        sidebar = new SidebarController(this, new SidebarController.Callbacks() {
+            @Override
+            public void onEscape() {
+                PersistentDiagnosticLog.record("Sidebar", "send control: escape");
+                connection.sendControlCommand(new byte[]{1});
+            }
+
+            @Override
+            public void onImeText(byte[] payload) {
+                connection.sendControlCommand(payload);
+            }
+
+            @Override
+            public void onImeKey(byte[] payload) {
+                connection.sendControlCommand(payload);
+            }
+
+            @Override
+            public void onRotateOrientation() {
+                PersistentDiagnosticLog.record("Sidebar", "send control: rotate");
+                connection.sendControlCommand(new byte[]{3});
+            }
+
+            @Override
+            public void onRequestWindowList() {
+                PersistentDiagnosticLog.record("Sidebar", "send control: window list");
+                connection.sendControlCommand(new byte[]{4});
+            }
+
+            @Override
+            public void onMoveWindow(int token, int index, int targetArea) {
+                PersistentDiagnosticLog.record("Sidebar", "send control: move window "
+                        + index + " -> area " + targetArea);
+                ByteBuffer payload = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN);
+                payload.put((byte) 5);
+                payload.putInt(token);
+                payload.putInt(index);
+                payload.put((byte) targetArea);
+                connection.sendControlCommand(payload.array());
+            }
+        });
     }
 
     @Override
@@ -382,6 +501,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         PersistentDiagnosticLog.record("MainActivity", "onStart");
         activityStarted = true;
         connection.start();
+        if (wifiSwitchOn) {
+            // The connection loop re-opens the WiFi listener on its own; the
+            // NSD advertisement follows the switch state, not the connection.
+            startNsdRegistration();
+        }
         inputHandler.removeCallbacks(pollUsbAccessory);
         inputHandler.post(pollUsbAccessory);
     }
@@ -390,6 +514,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     protected void onStop() {
         PersistentDiagnosticLog.record("MainActivity", "onStop");
         activityStarted = false;
+        stopNsdRegistration();
         inputHandler.removeCallbacks(pollUsbAccessory);
         discardPendingPenMove();
         connection.close();
@@ -414,8 +539,204 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             unregisterReceiver(usbPermissionReceiver);
             usbReceiverRegistered = false;
         }
+        if (sidebar != null) {
+            sidebar.detach();
+            sidebar = null;
+        }
         videoDecoder.close();
         super.onDestroy();
+    }
+
+    // ---- R3 WiFi mode: tablet-side switch, NSD advertisement, pairing UI.
+
+    private void setWifiSwitch(boolean enabled) {
+        if (wifiSwitchOn == enabled) {
+            return;
+        }
+        wifiSwitchOn = enabled;
+        getPreferences(Context.MODE_PRIVATE)
+                .edit().putBoolean("wifi_switch_on", enabled).apply();
+        connection.setWifiEnabled(enabled);
+        if (enabled) {
+            startNsdRegistration();
+        } else {
+            stopNsdRegistration();
+        }
+        PersistentDiagnosticLog.record(
+                "MainActivity", "wifi switch " + (enabled ? "on" : "off"));
+        refreshWifiRow();
+        onStatusChanged(connection.isWifiEnabled()
+                ? "WiFi 投屏已开启，等待电脑端连接"
+                : "WiFi 投屏已关闭");
+    }
+
+    private void refreshWifiRow() {
+        if (wifiToggleButton != null) {
+            wifiToggleButton.setText(wifiSwitchOn ? "WiFi 投屏：开" : "WiFi 投屏：关");
+        }
+        if (wifiHintView != null) {
+            if (!wifiSwitchOn) {
+                wifiHintView.setText("同一局域网内与电脑配对使用");
+            } else if (nsdRegistered) {
+                wifiHintView.setText("已在本局域网广播，等待电脑端");
+            } else {
+                wifiHintView.setText("正在加入局域网发现…");
+            }
+        }
+    }
+
+    private void startNsdRegistration() {
+        if (nsdRegistered || Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) {
+            return;
+        }
+        if (nsdManager == null) {
+            nsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
+        }
+        if (nsdManager == null) {
+            PersistentDiagnosticLog.record("MainActivity", "NSD service unavailable");
+            return;
+        }
+        String androidId = WifiPairing.androidId(getApplicationContext());
+        NsdServiceInfo info = new NsdServiceInfo();
+        String modelName = Build.MODEL == null ? "WireView" : Build.MODEL;
+        info.setServiceName(modelName);
+        info.setServiceType(NSD_SERVICE_TYPE);
+        info.setPort(WifiServerConnector.DEFAULT_PORT);
+        info.setAttribute("v", "1");
+        info.setAttribute("id", androidId);
+        info.setAttribute("name", modelName);
+        if (nsdListener == null) {
+            nsdListener = new NsdManager.RegistrationListener() {
+                @Override
+                public void onServiceRegistered(NsdServiceInfo serviceInfo) {
+                    PersistentDiagnosticLog.record(
+                            "MainActivity",
+                            "NSD registered: " + serviceInfo.getServiceName());
+                    nsdRegistered = true;
+                    runOnUiThread(MainActivity.this::refreshWifiRow);
+                }
+
+                @Override
+                public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
+                    PersistentDiagnosticLog.record(
+                            "MainActivity",
+                            "NSD registration failed: " + errorCode);
+                    nsdRegistered = false;
+                    runOnUiThread(MainActivity.this::refreshWifiRow);
+                }
+
+                @Override
+                public void onServiceUnregistered(NsdServiceInfo serviceInfo) {
+                    PersistentDiagnosticLog.record("MainActivity", "NSD unregistered");
+                    nsdRegistered = false;
+                }
+
+                @Override
+                public void onUnregistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
+                    PersistentDiagnosticLog.record(
+                            "MainActivity",
+                            "NSD unregistration failed: " + errorCode);
+                    nsdRegistered = false;
+                }
+            };
+        }
+        try {
+            nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, nsdListener);
+            nsdRegistered = true; // Optimistic; the failure callback corrects it.
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            PersistentDiagnosticLog.record(
+                    "MainActivity", "NSD register call failed: " + error);
+        }
+        refreshWifiRow();
+    }
+
+    private void stopNsdRegistration() {
+        if (!nsdRegistered || nsdManager == null || nsdListener == null) {
+            return;
+        }
+        try {
+            nsdManager.unregisterService(nsdListener);
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            PersistentDiagnosticLog.record(
+                    "MainActivity", "NSD unregister call failed: " + error);
+        }
+        nsdRegistered = false;
+        refreshWifiRow();
+    }
+
+    @Override
+    public String requestPairingPin(String pcName) {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final String[] submitted = new String[1];
+        // 超时/中断后由连接线程主动撤下对话框，并丢弃迟到的提交输入，
+        // 防止对话框泄漏、叠框和 PIN 静默写入已失效的 latch（A8 N5）。
+        final AlertDialog[] dialogHolder = new AlertDialog[1];
+        final boolean[] pairingExpired = new boolean[1];
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) {
+                latch.countDown();
+                return;
+            }
+            final EditText pinInput = new EditText(this);
+            pinInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+            pinInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(6)});
+            pinInput.setHint("6 位数字");
+            dialogHolder[0] = new AlertDialog.Builder(this)
+                    .setTitle("WireView 配对")
+                    .setMessage("电脑 " + (pcName == null ? "" : pcName)
+                            + " 请求配对。\n请输入电脑上显示的 6 位 PIN。")
+                    .setView(pinInput)
+                    .setPositiveButton("配对", (dialog, which) -> {
+                        if (pairingExpired[0]) {
+                            // 迟到输入：连接线程已按超时返回，丢弃。
+                            return;
+                        }
+                        submitted[0] = pinInput.getText().toString().trim();
+                        latch.countDown();
+                    })
+                    .setNegativeButton("取消", (dialog, which) -> latch.countDown())
+                    .setOnCancelListener(dialog -> latch.countDown())
+                    .show();
+        });
+        boolean expired = false;
+        try {
+            // Generous ceiling: the PC side times its own AUTH read at
+            // 130 s during pairing, so this only bounds the dialog leak if
+            // the user walks away.
+            expired = !latch.await(120, TimeUnit.SECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            expired = true;
+        }
+        if (expired) {
+            pairingExpired[0] = true;
+            final AlertDialog dialog = dialogHolder[0];
+            if (dialog != null) {
+                runOnUiThread(() -> {
+                    try {
+                        dialog.dismiss();
+                    } catch (RuntimeException dismissError) {
+                        // Activity 已销毁等极端场景下 dismiss 失败可接受。
+                        PersistentDiagnosticLog.record(
+                                "MainActivity",
+                                "pairing dialog dismiss failed",
+                                dismissError);
+                    }
+                });
+            }
+        }
+        return submitted[0];
+    }
+
+    @Override
+    public void onWifiPairingStateChanged(boolean paired, String pcName) {
+        runOnUiThread(() -> {
+            if (wifiHintView != null) {
+                wifiHintView.setText(paired
+                        ? "已配对：" + (pcName == null ? "电脑" : pcName)
+                        : "同一局域网内与电脑配对使用");
+            }
+        });
     }
 
     private void registerUsbPermissionReceiver() {
@@ -425,6 +746,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         filter.addAction(ACTION_HOST_EXITED);
         filter.addAction(ACTION_VDD_CREATED);
         filter.addAction(ACTION_DEVICE_IDENTIFIED);
+        filter.addAction(ACTION_PAIRING_APPROVED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             // The permission result is filled and delivered by the system USB service.
             registerReceiver(usbPermissionReceiver, filter, Context.RECEIVER_EXPORTED);
@@ -519,7 +841,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         connection.close();
         connection = new ConnectionClient(
                 this,
-                new UsbAccessoryTransportConnector(getApplicationContext(), accessory));
+                getApplicationContext(),
+                new UsbAccessoryTransportConnector(getApplicationContext(), accessory),
+                wifiSwitchOn);
         if (activityStarted) {
             connection.start();
         }
@@ -550,13 +874,17 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         }
         runOnUiThread(() -> {
             if (status.startsWith("已连接") || status.startsWith("握手成功")) {
+                // 心跳类：维持既有折叠行为——高频心跳统一落定为"已连接"，
+                // 且不覆盖显式通知（idleNoticeActive）。
                 awaitingHostReconnect = false;
                 inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
                 hasSeenHostConnection = true;
                 if (idleNoticeActive) {
                     return;
                 }
+                statusView.setText("已连接");
             } else if (status.startsWith("等待电脑端") && hasSeenHostConnection) {
+                // 短暂断线宽限：3 秒内保持"已连接"，到期仍未恢复才如实提示。
                 if (idleNoticeActive) {
                     return;
                 }
@@ -566,12 +894,15 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
                 inputHandler.postDelayed(showWaitingAfterReconnectGrace, 3_000L);
                 statusView.setText("已连接");
-                refreshDeviceInfo();
+            } else if (idleNoticeActive) {
+                // 显式通知（停止/已创建副屏/主机退出等）不被任何非心跳状态
+                // 覆盖——保护移到 setText 之前，对所有非心跳前缀生效（A8 主张3）。
                 return;
+            } else {
+                // 其余状态原文显示：WiFi 开关反馈、解码失败、配对结果、
+                // 授权提示等，不再被兜底折叠成"已连接"而静默丢失。
+                statusView.setText(status);
             }
-            statusView.setText(hasSeenHostConnection
-                    ? "已连接"
-                    : "等待电脑端\n请连接 USB 并在电脑打开 WireView 控制中心。");
             refreshDeviceInfo();
         });
     }
@@ -596,6 +927,15 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             explicitStopNoticeActive = false;
             requestedStreamFrameRate = frameRate;
             applyPreferredDisplayRefreshRate();
+            // 窗口方向跟随流方向：横竖屏切换后 Windows 端显示模式已变，
+            // 但 fullSensor 在平板平放时不会跟随传感器翻转，窗口与显示
+            // 坐标系错位会让触摸映射全部失效（真机实测）。
+            int wanted = width > height
+                    ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    : ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+            if (getRequestedOrientation() != wanted) {
+                setRequestedOrientation(wanted);
+            }
             refreshDeviceInfo();
             previewView.setVisibility(View.GONE);
             configuredVideoWidth = width;
@@ -826,6 +1166,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         int height = Short.toUnsignedInt(input.getShort());
         int frameRate = Short.toUnsignedInt(input.getShort());
         runOnUiThread(() -> {
+            // 预览同样整面板隐藏（含 wifiRow），触摸截获问题与视频会话一致；
+            // 退出预览由 setStreamingPresentation(false) 恢复面板可见。
+            connectionPanel.setVisibility(View.GONE);
             statusView.setVisibility(View.GONE);
             deviceInfoView.setVisibility(View.GONE);
             versionView.setVisibility(View.GONE);
@@ -846,9 +1189,23 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     }
 
     private void setStreamingPresentation(boolean streaming) {
+        // 会话中隐藏整个连接面板（含 wifiRow，不只三行）：面板壳会被
+        // zOrderOnTop 的视频 Surface 视觉盖住，但 view 树的触摸命中不受
+        // Surface 层级影响，残留的 WiFi 开关行会停在屏幕中央截获触摸并
+        // 误切传输开关（A8 主张7/N1）。三行的可见性同步维护，退出会话
+        // 时面板与三行一并恢复 VISIBLE。
+        connectionPanel.setVisibility(streaming ? View.GONE : View.VISIBLE);
         statusView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         deviceInfoView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         versionView.setVisibility(streaming ? View.GONE : View.VISIBLE);
+        if (sidebar != null) {
+            // 侧边栏只在视频会话期间出现；断流即整窗隐藏。
+            if (streaming) {
+                sidebar.show();
+            } else {
+                sidebar.hide();
+            }
+        }
         getWindow().getDecorView().setSystemUiVisibility(streaming
                 ? View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -867,6 +1224,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         if (!streaming) {
             requestedStreamFrameRate = 60;
             applyPreferredDisplayRefreshRate();
+            // 会话结束恢复传感器跟随（fullSensor 是清单声明的常态）。
+            if (getRequestedOrientation()
+                    != ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR) {
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+            }
             if (previewView != null) {
                 previewView.setVisibility(View.GONE);
             }
@@ -916,6 +1278,14 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     }
 
     private boolean dispatchCapturedInput(MotionEvent event, View viewport) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            Log.d("WireViewSidebar", "surface touch action=" + event.getActionMasked()
+                    + " x=" + (int) event.getX() + " y=" + (int) event.getY());
+        }
+        if (sidebar != null) {
+            // 点按视频区域 = 点在侧边栏外：展开的面板自动收回。
+            sidebar.onOutsideTouch();
+        }
         byte[] input = InputBatch.fromMotionEvent(event, viewport);
         if (input == null) {
             return false;
@@ -985,10 +1355,14 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         } else if (packet.header.type == Protocol.TYPE_VIDEO_CHUNK) {
             videoDecoder.queueFrame(packet);
         } else if (packet.header.type == Protocol.TYPE_STOP_STREAM) {
+            // showExplicitStopNotice 内部已调用 videoDecoder.stopStream()；
+            // 连接线程不再直调第二次（幂等但多余，还会多一次状态回调，
+            // A8 主张2）。
             runOnUiThread(this::showExplicitStopNotice);
-            videoDecoder.stopStream();
         } else if (packet.header.type == Protocol.TYPE_DEVICE_PREVIEW) {
             showDevicePreview(packet.payload);
+        } else if (packet.header.type == Protocol.TYPE_WINDOW_LIST) {
+            sidebar.handleWindowList(packet.payload);
         }
     }
 }

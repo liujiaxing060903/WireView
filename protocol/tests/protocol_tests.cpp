@@ -1,3 +1,4 @@
+#include "wireview/auth_messages.hpp"
 #include "wireview/input.hpp"
 #include "wireview/protocol.hpp"
 
@@ -191,6 +192,138 @@ void input_batch_test() {
         "truncated input record must be rejected");
 }
 
+void auth_message_test() {
+    using namespace wireview::protocol;
+
+    AuthChallenge challenge{};
+    challenge.mode = AuthMode::pairing;
+    challenge.nonce_pc.fill(0xa5U);
+    challenge.pc_uuid = {0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x07U, 0x08U,
+                         0x09U, 0x0aU, 0x0bU, 0x0cU, 0x0dU, 0x0eU, 0x0fU, 0x10U};
+    challenge.host_name = "DESKTOP-ABC123";
+    const auto challenge_bytes = encode_auth_challenge(challenge);
+    const auto parsed_challenge = parse_auth_challenge(challenge_bytes);
+    check(parsed_challenge.has_value(), "auth challenge should round trip");
+    if (parsed_challenge) {
+        check(parsed_challenge->mode == AuthMode::pairing, "challenge mode should survive");
+        check(parsed_challenge->nonce_pc == challenge.nonce_pc, "challenge nonce should survive");
+        check(parsed_challenge->pc_uuid == challenge.pc_uuid, "challenge pc uuid should survive");
+        check(parsed_challenge->host_name == challenge.host_name, "challenge name should survive");
+    }
+    check(!parse_auth_challenge({}).has_value(), "empty challenge must be rejected");
+    check(!parse_auth_challenge(challenge_bytes).has_value() ||
+              parse_auth_challenge(challenge_bytes)->host_name == challenge.host_name,
+          "challenge parse is deterministic");
+
+    AuthResponse response{};
+    response.status = AuthStatus::ok;
+    response.nonce_tablet.fill(0x5aU);
+    response.android_id = "0123456789abcdef";
+    response.device_name = "Xiaomi Pad 4";
+    response.mac.fill(0x77U);
+    const auto response_bytes = encode_auth_response(response);
+    const auto parsed_response = parse_auth_response(response_bytes);
+    check(parsed_response.has_value(), "auth response should round trip");
+    if (parsed_response) {
+        check(parsed_response->status == AuthStatus::ok, "response status should survive");
+        check(parsed_response->android_id == response.android_id, "response android id should survive");
+        check(parsed_response->device_name == response.device_name, "response name should survive");
+        check(parsed_response->nonce_tablet == response.nonce_tablet, "response nonce should survive");
+        check(parsed_response->mac == response.mac, "response mac should survive");
+    }
+    check(!parse_auth_response({}).has_value(), "empty response must be rejected");
+
+    // v2 response: schema 2 with one capability byte; only a v2 challenge
+    // flag can make a tablet emit this, so the parser must accept exactly
+    // this shape and nothing else.
+    const auto response_v2_bytes = encode_auth_response(response, true);
+    const auto parsed_v2_response = parse_auth_response(response_v2_bytes);
+    check(parsed_v2_response.has_value(), "v2 auth response should round trip");
+    if (parsed_v2_response) {
+        check(parsed_v2_response->v2, "v2 response must be flagged");
+        check(parsed_v2_response->mac == response.mac, "v2 response mac should survive");
+    }
+    auto bad_caps = response_v2_bytes;
+    bad_caps.back() = 0x02U;
+    check(!parse_auth_response(bad_caps).has_value(), "unknown v2 caps must be rejected");
+    auto v2_trailing = response_v2_bytes;
+    v2_trailing.push_back(0U);
+    check(!parse_auth_response(v2_trailing).has_value(), "v2 trailing bytes must be rejected");
+    check(!parse_auth_response(response_bytes).has_value() ||
+              !parse_auth_response(response_bytes)->v2,
+          "legacy response must not be flagged as v2");
+
+    AuthResultPayload result{};
+    result.result = AuthResult::pairing_complete;
+    result.message = "DESKTOP-ABC123";
+    result.credential.fill(0x33U);
+    const auto result_bytes = encode_auth_result(result);
+    const auto parsed_result = parse_auth_result(result_bytes);
+    check(parsed_result.has_value(), "auth result with credential should round trip");
+    if (parsed_result) {
+        check(parsed_result->result == AuthResult::pairing_complete, "result kind should survive");
+        check(parsed_result->message == result.message, "result message should survive");
+        check(parsed_result->credential == result.credential, "result credential should survive");
+    }
+
+    AuthResultPayload rejection{};
+    rejection.result = AuthResult::rejected;
+    rejection.message = "device is not paired";
+    const auto rejection_bytes = encode_auth_result(rejection);
+    const auto parsed_rejection = parse_auth_result(rejection_bytes);
+    check(parsed_rejection.has_value(), "auth rejection should round trip");
+    if (parsed_rejection) {
+        // A rejection carries no credential bytes: the payload ends after the
+        // message, and parsing must not silently accept trailing garbage.
+        check(parsed_rejection->credential.front() == 0U, "rejection must not carry a credential");
+        const auto trailing = rejection_bytes;
+        AuthResultPayload trailing_result{};
+        trailing_result.result = AuthResult::accepted;
+        trailing_result.message = "x";
+        auto trailing_bytes = encode_auth_result(trailing_result);
+        trailing_bytes.push_back(0U);
+        check(!parse_auth_result(trailing_bytes).has_value(),
+              "trailing bytes after an accepted result must be rejected");
+    }
+
+    // v2 result: the legacy fields plus exactly one 32 byte tag.
+    AuthResultPayload tagged{};
+    tagged.result = AuthResult::pairing_complete;
+    tagged.message = "DESKTOP-ABC123";
+    tagged.credential.fill(0x44U);
+    tagged.v2 = true;
+    tagged.tag.fill(0x99U);
+    const auto tagged_bytes = encode_auth_result(tagged);
+    const auto parsed_tagged = parse_auth_result(tagged_bytes);
+    check(parsed_tagged.has_value(), "v2 tagged result should round trip");
+    if (parsed_tagged) {
+        check(parsed_tagged->v2, "tagged result must be flagged");
+        check(parsed_tagged->credential == tagged.credential, "masked credential should survive");
+        check(parsed_tagged->tag == tagged.tag, "result tag should survive");
+    }
+    auto short_tag = tagged_bytes;
+    short_tag.pop_back();
+    check(!parse_auth_result(short_tag).has_value(), "a truncated tag must be rejected");
+    auto long_tag = tagged_bytes;
+    long_tag.push_back(0U);
+    check(!parse_auth_result(long_tag).has_value(), "bytes after the tag must be rejected");
+    check(!parsed_result->v2, "legacy result must not be flagged as v2");
+
+    // Oversized strings must be rejected before allocation.
+    AuthChallenge oversized{};
+    oversized.host_name.assign(kMaxAuthHostName + 1U, 'x');
+    const auto oversized_bytes = encode_auth_challenge(oversized);
+    check(!parse_auth_challenge(oversized_bytes).has_value(),
+          "oversized host name must be rejected");
+}
+
+void auth_constants_test() {
+    using namespace wireview::protocol;
+    check(kAuthNonceSize == 16U, "nonce size is part of the wire contract");
+    check(kAuthKeySize == kAuthMacSize, "key and MAC sizes must match (HMAC-SHA256)");
+    check(kAuthPbkdf2Iterations >= 10'000U, "PIN derivation must stay costed");
+}
+
 }  // namespace
 
 int main() {
@@ -199,6 +332,8 @@ int main() {
     stream_fragmentation_test();
     validation_test();
     input_batch_test();
+    auth_message_test();
+    auth_constants_test();
 
     if (failures != 0) {
         std::cerr << failures << " protocol test(s) failed\n";

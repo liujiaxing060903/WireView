@@ -58,6 +58,11 @@ final class TcpTransportConnector implements TransportConnector {
         }
 
         @Override
+        public void setReadTimeout(int timeoutMillis) throws IOException {
+            socket.setSoTimeout(timeoutMillis);
+        }
+
+        @Override
         public String displayName() {
             return "ADB/TCP";
         }

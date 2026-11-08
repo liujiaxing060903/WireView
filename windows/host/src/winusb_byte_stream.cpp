@@ -253,6 +253,14 @@ struct WinUsbByteStream::Impl final {
             if (error == ERROR_OPERATION_ABORTED && closing.load(std::memory_order_acquire)) {
                 return true;
             }
+            if (error == ERROR_SEM_TIMEOUT) {
+                // The input pipe carries a 10s PIPE_TRANSFER_TIMEOUT; an
+                // idle peer (handshake wait, paused telemetry) used to be
+                // misread as a dead link and killed the session. Treat the
+                // timeout as "no data this round": read_pending is already
+                // false, so the next begin_read() restarts the transfer.
+                return false;
+            }
             throw_windows_error("WinUsb_GetOverlappedResult(read)", error);
         }
         read_pending = false;

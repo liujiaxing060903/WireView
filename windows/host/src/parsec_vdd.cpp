@@ -629,7 +629,7 @@ std::string ParsecVddSession::wait_for_display(std::chrono::milliseconds timeout
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     } while (std::chrono::steady_clock::now() < deadline);
-    throw std::runtime_error(
+    throw VddAttachError(
         "Parsec VDD created a display but WireView did not find a uniquely new attached "
         "Windows display before the timeout; driver index " + std::to_string(display_index_) +
         "; attached displays after request: " + display_summary(displays_after_start) +

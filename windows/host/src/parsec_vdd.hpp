@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,15 @@ struct ParsecVddProbe {
     bool available{false};
     std::uint32_t version{};
     std::string detail;
+};
+
+// Thrown by ParsecVddSession::wait_for_display when the driver accepted the
+// ADD request but no uniquely new attached Windows display appeared before
+// the timeout. The VDD broker keys its one-shot remove-and-retry recovery
+// on this concrete type; do not downgrade the throw to a plain
+// std::runtime_error without updating the broker's detection.
+struct VddAttachError final : std::runtime_error {
+    using std::runtime_error::runtime_error;
 };
 
 // Queries the signed external Parsec VDD if it is already installed. This

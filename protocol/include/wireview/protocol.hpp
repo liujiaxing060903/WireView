@@ -30,6 +30,19 @@ enum class PacketType : std::uint8_t {
     pong = 10,
     error = 11,
     device_preview = 12,
+    // Android -> PC: tablet sidebar control commands (ESC / IME text / IME
+    // keys / orientation rotation / window list request / move window).
+    control_command = 13,
+    // PC -> Android: window list reply for the tablet application switcher.
+    window_list = 14,
+    // 15 was ime_control (PC -> Android auto show/hide of the tablet IME
+    // bar); the UIA auto-detect was removed at R2 close. R3 WiFi reuses no
+    // retired numbers for new meanings: the WiFi link authentication
+    // handshake uses fresh types 15..17 below (both ends ship from this
+    // repository, so there is no cross-version ambiguity).
+    auth_challenge = 15,  // PC -> tablet: start one authentication or pairing.
+    auth_response = 16,   // tablet -> PC: identity + HMAC proof.
+    auth_result = 17,     // PC -> tablet: accept / reject / credential.
 };
 
 enum class PacketFlag : std::uint8_t {
@@ -37,6 +50,10 @@ enum class PacketFlag : std::uint8_t {
     keyframe = 1U << 0U,
     final_chunk = 1U << 1U,
     acknowledgement_required = 1U << 2U,
+    // AUTH_CHALLENGE only: the PC speaks the v2 AUTH integrity layer. A
+    // tablet that answers schema 2 gets a tagged (and, when pairing, masked)
+    // AUTH_RESULT; older tablets answer schema 1 and keep the legacy bytes.
+    auth_v2 = 1U << 3U,
 };
 
 constexpr PacketFlag operator|(PacketFlag left, PacketFlag right) noexcept {

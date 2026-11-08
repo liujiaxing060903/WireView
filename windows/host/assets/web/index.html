@@ -13,6 +13,9 @@
       <div class="header-actions">
         <button id="settings-toggle" class="icon-button" type="button" title="设置" aria-label="设置" aria-expanded="false">⚙</button>
         <section id="settings-panel" class="settings-panel" aria-hidden="true">
+          <!-- Scrollable body wrapper: keeps the absolutely-positioned
+               support QR popup (below) outside the clipping container. -->
+          <div class="settings-panel-body">
           <div class="settings-panel-heading">
             <div>
               <span class="settings-eyebrow">设置</span>
@@ -28,6 +31,42 @@
             <div class="developer-email"><code>S_Znnn@163.com</code><button id="copy-developer-email" type="button">复制邮箱</button></div>
           </div>
           <button id="support-developer" class="settings-action support-action" type="button">❤　支持开发者</button>
+          <div class="settings-toggle-row">
+            <span><strong>暗色模式</strong><small>当前已开启</small></span>
+            <button id="theme-toggle" class="toggle is-on" type="button" role="switch" aria-checked="true" aria-label="切换暗色模式"><i></i></button>
+          </div>
+          <div class="settings-toggle-row">
+            <span><strong>指针跨屏边缘映射</strong><small id="edge-mapping-hint">副屏边缘全区域可进入，画面无拉伸时推荐开启</small></span>
+            <button id="edge-mapping-toggle" class="toggle is-on" type="button" role="switch" aria-checked="true" aria-label="切换指针跨屏边缘映射"><i></i></button>
+          </div>
+          <div class="settings-toggle-row">
+            <span><strong>WiFi 局域网投屏</strong><small id="wifi-mode-hint">与平板接入同一局域网后开启，配对一次长期有效</small></span>
+            <button id="wifi-mode-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-label="切换 WiFi 局域网投屏"><i></i></button>
+          </div>
+          <div id="wifi-pairing-row" class="settings-toggle-row" hidden>
+            <span><small id="wifi-target-line">目标：未选择</small>
+            <div class="wifi-manual" style="margin:6px 0 0">
+              <input id="wifi-settings-ip" placeholder="平板 IP（如 192.168.137.45）" aria-label="平板 IP">
+              <button id="wifi-settings-pair" type="button">配对</button>
+              <button id="wifi-settings-cancel" type="button" data-command="wifi-pair-cancel" hidden>取消配对</button>
+            </div></span>
+          </div>
+          <div class="settings-toggle-row">
+            <span><strong>关闭窗口 = 彻底退出</strong><small id="close-exit-hint">关闭后不再最小化到托盘</small></span>
+            <button id="close-exit-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-label="切换关闭行为"><i></i></button>
+          </div>
+          <div class="settings-toggle-row">
+            <span><strong>空闲自动退出</strong><small id="idle-exit-hint">无会话持续一段时间后自动退出</small></span>
+            <select id="idle-exit-select" aria-label="空闲自动退出时间">
+              <option value="0">关闭</option>
+              <option value="5">5 分钟</option>
+              <option value="10">10 分钟</option>
+              <option value="30">30 分钟</option>
+              <option value="60">60 分钟</option>
+              <option value="120">120 分钟</option>
+            </select>
+          </div>
+          </div>
           <div id="support-content" class="support-content" hidden>
             <span class="support-confetti" aria-hidden="true"></span>
             <img id="support-qr" src="ui/developer-support.png" alt="S+Zn 的赞赏码">
@@ -38,10 +77,6 @@
                 <button id="support-scan-help" type="button" aria-pressed="false">扫码有问题？</button>
               </div>
             </div>
-          </div>
-          <div class="settings-toggle-row">
-            <span><strong>暗色模式</strong><small>当前已开启</small></span>
-            <button id="theme-toggle" class="toggle is-on" type="button" role="switch" aria-checked="true" aria-label="切换暗色模式"><i></i></button>
           </div>
         </section>
       </div>
