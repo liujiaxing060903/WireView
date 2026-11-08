@@ -145,7 +145,7 @@ void write_status(const Options& options, const std::wstring& state,
         L"\nrequested_width=" + std::to_wstring(options.width) +
         L"\nrequested_height=" + std::to_wstring(options.height) +
         L"\nrequested_fps=" + std::to_wstring(options.frame_rate) +
-        L"\ntransport=adb" +
+        L"\ntransport=" + (options.wifi_endpoint.empty() ? L"adb" : L"wifi") +
         L"\nreconnect_count=" + std::to_wstring(reconnect_count) +
         L"\ndiagnostics=" + diagnostics + L"\n";
     stream << to_utf8(status);
@@ -158,6 +158,80 @@ void write_status(const Options& options, const std::wstring& state,
     }
 }
 
+// Bounded variant for housekeeping adb calls: a hung adbd half-open
+// pipe must not freeze the caller (audit P1 - the reverse supervisor
+// join used to wait forever on such a freeze). The child is killed on
+// timeout; its remaining output is drained afterwards (the pipe closes
+// on death).
+ProcessResult run_capture_bounded(
+    const std::filesystem::path& executable,
+    const std::vector<std::wstring>& arguments,
+    const std::filesystem::path& working_directory = {},
+    const std::filesystem::path& live_output_file = {},
+    DWORD timeout_milliseconds = 15'000U) {
+    (void)live_output_file;  // the bounded path never mirrors live output
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+    HANDLE read_pipe{};
+    HANDLE write_pipe{};
+    if (!CreatePipe(&read_pipe, &write_pipe, &security, 0U)) {
+        return {};
+    }
+    SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0U);
+    std::wstring command = quote_argument(executable.wstring());
+    for (const auto& argument : arguments) {
+        command += L" ";
+        command += quote_argument(argument);
+    }
+    std::vector<wchar_t> command_buffer(command.begin(), command.end());
+    command_buffer.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = write_pipe;
+    startup.hStdError = write_pipe;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION process{};
+    const std::wstring directory = working_directory.empty() ? L"" : working_directory.wstring();
+    const BOOL created = CreateProcessW(executable.c_str(), command_buffer.data(), nullptr, nullptr,
+        TRUE, CREATE_NO_WINDOW, nullptr, directory.empty() ? nullptr : directory.c_str(), &startup, &process);
+    CloseHandle(write_pipe);
+    if (!created) {
+        CloseHandle(read_pipe);
+        return {};
+    }
+    const auto deadline = GetTickCount64() + timeout_milliseconds;
+    while (WaitForSingleObject(process.hProcess, 200) == WAIT_TIMEOUT) {
+        if (GetTickCount64() >= deadline) {
+            TerminateProcess(process.hProcess, 1U);
+            WaitForSingleObject(process.hProcess, 5'000U);
+            break;
+        }
+    }
+    ProcessResult result{};
+    result.started = true;
+    GetExitCodeProcess(process.hProcess, &result.exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    std::string bytes;
+    char buffer[1024];
+    DWORD read{};
+    while (ReadFile(read_pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0U) {
+        bytes.append(buffer, read);
+    }
+    CloseHandle(read_pipe);
+    if (!bytes.empty()) {
+        const int length = MultiByteToWideChar(CP_UTF8, 0, bytes.data(),
+            static_cast<int>(bytes.size()), nullptr, 0);
+        if (length > 0) {
+            result.output.resize(static_cast<std::size_t>(length));
+            MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()),
+                result.output.data(), length);
+        }
+    }
+    return result;
+}
 ProcessResult run_capture(const std::filesystem::path& executable,
     const std::vector<std::wstring>& arguments, const std::filesystem::path& working_directory = {},
     const std::filesystem::path& live_output_file = {}) {
@@ -501,14 +575,16 @@ int run(const Options& options) {
         std::atomic_bool reverse_supervisor_running{true};
         std::thread reverse_supervisor([&]() {
             while (reverse_supervisor_running.load()) {
-                const auto listing = run_capture(
-                    adb, {L"-s", serial, L"reverse", L"--list"});
+                const auto listing = run_capture_bounded(
+                    adb, {L"-s", serial, L"reverse", L"--list"},
+                    {}, {}, 15'000U);
                 const bool mapped = listing.started && listing.exit_code == 0U &&
                     listing.output.find(std::wstring(kReversePort)) != std::wstring::npos;
                 if (!mapped) {
-                    (void)run_capture(
+                    (void)run_capture_bounded(
                         adb, {L"-s", serial, L"reverse",
-                              std::wstring(kReversePort), std::wstring(kReversePort)});
+                              std::wstring(kReversePort), std::wstring(kReversePort)},
+                        {}, {}, 15'000U);
                 }
                 for (int tick = 0; tick < 20 && reverse_supervisor_running.load(); ++tick) {
                     Sleep(100U);
@@ -518,6 +594,9 @@ int run(const Options& options) {
         const ProcessResult host_result = run_host(options, host, session_seconds, reconnect_count);
         reverse_supervisor_running.store(false);
         if (reverse_supervisor.joinable()) {
+            // The supervisor may be parked inside a bounded adb call
+            // (15 s worst case); the join still completes because the
+            // bounded call kills the child on timeout.
             reverse_supervisor.join();
         }
         if (options.device_profile_probe) {

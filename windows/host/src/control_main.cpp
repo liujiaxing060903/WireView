@@ -3262,7 +3262,10 @@ bool start_session(
         return false;
     }
     if (g_state.shell_process != nullptr) {
-        if (g_state.preview_active && !device_preview) {
+        if ((g_state.preview_active && !device_preview) ||
+            (g_state.profile_probe_active && !device_profile_probe)) {
+            // An unattended device-profile probe must not block a real
+            // session (audit P1-1): stop it like a preview.
             stop_session();
         } else {
             set_status(L"先停止当前 WireView 视频会话");
@@ -3399,7 +3402,11 @@ bool start_session(
 
     // R3 WiFi 会话：目标设备必须在白名单且已知 IP（mDNS 或手动输入）。
     // 预览/画像探测固定走 USB，不走 WiFi。
+    // USB presence wins: a cabled session is always the more reliable
+    // path, so an accidentally selected WiFi target must not hijack it
+    // (audit P0-2). WiFi engages only when no USB device is detected.
     const bool wifi_selected = !device_preview && !device_profile_probe &&
+        !g_state.device_connected &&
         wireview::host::wifi_control::has_session_target();
     const bool wifi_session = wifi_selected;
     std::vector<std::uint8_t> wifi_key;
@@ -3431,7 +3438,8 @@ bool start_session(
         L"\" --host-diagnostics-file \"" + g_state.host_diagnostics_file.wstring() +
         // The preview deliberately remains bounded; normal mirroring has no
         // practical wall-clock limit and ends only when the user stops it.
-        L"\" --duration-seconds " + (device_preview ? L"300" : L"2147483647");
+        L"\" --duration-seconds " + (device_preview ? L"300"
+                        : (device_profile_probe ? L"120" : L"2147483647"));
     if (enable_input && !device_preview) {
         argument += L" --enable-input";
     }
@@ -3464,8 +3472,11 @@ bool start_session(
         LPWCH strings = GetEnvironmentStringsW();
         if (strings != nullptr) {
             for (wchar_t* cursor = strings; *cursor != L'\0';) {
-                wifi_environment.append(cursor);
-                wifi_environment.push_back(L'\0');
+                const std::wstring existing_entry(cursor);
+                if (existing_entry.rfind(L"WIREVIEW_", 0U) != 0U) {
+                    wifi_environment.append(cursor);
+                    wifi_environment.push_back(L'\0');
+                }
                 while (*cursor != L'\0') {
                     ++cursor;
                 }
@@ -3517,7 +3528,7 @@ bool start_session(
             nullptr,
             nullptr,
             FALSE,
-            CREATE_NO_WINDOW,
+            CREATE_NO_WINDOW | (wifi_session ? CREATE_UNICODE_ENVIRONMENT : 0U),
             wifi_session ? wifi_environment.data() : nullptr,
             working_directory.c_str(),
             &startup,

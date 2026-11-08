@@ -27,6 +27,10 @@ namespace {
 // creates its own session per attempt.
 std::mutex g_mutex;
 std::atomic_bool g_pairing_active{false};
+
+std::mutex& impl_mutex() {
+    return g_mutex;
+}
 bool g_enabled = false;
 std::wstring g_pc_uuid;
 std::filesystem::path g_settings_directory;
@@ -185,24 +189,32 @@ void attach_hooks(const UiHooks& hooks) {
 }
 
 void load_identity(const std::filesystem::path& settings_directory) {
-    std::lock_guard lock(g_mutex);
-    g_settings_directory = settings_directory;
-    std::ifstream input(identity_file());
-    if (input) {
-        std::string line;
-        while (std::getline(input, line)) {
-            if (line.rfind("wifi_pc_uuid=", 0U) == 0U) {
-                const std::string value = line.substr(13U);
-                g_pc_uuid.assign(value.begin(), value.end());
-            } else if (line == "wifi_enabled=1") {
-                g_enabled = true;
+    {
+        std::lock_guard lock(g_mutex);
+        g_settings_directory = settings_directory;
+        std::ifstream input(identity_file());
+        if (input) {
+            std::string line;
+            while (std::getline(input, line)) {
+                if (line.rfind("wifi_pc_uuid=", 0U) == 0U) {
+                    const std::string value = line.substr(13U);
+                    g_pc_uuid.assign(value.begin(), value.end());
+                } else if (line == "wifi_enabled=1") {
+                    g_enabled = true;
+                }
             }
         }
+        if (g_pc_uuid.empty()) {
+            const std::vector<std::uint8_t> bytes = random_bytes(16U);
+            g_pc_uuid = ascii_to_wide(to_hex(bytes));
+            save_identity_locked();
+        }
     }
-    if (g_pc_uuid.empty()) {
-        const std::vector<std::uint8_t> bytes = random_bytes(16U);
-        g_pc_uuid = ascii_to_wide(to_hex(bytes));
-        save_identity_locked();
+    // One whitelisted tablet means one obvious session target: selecting it
+    // here spares the user a trip to the full-page whitelist card. Multiple
+    // devices keep the explicit selection.
+    if (whitelist().entries().size() == 1U) {
+        select_target(ascii_to_wide(whitelist().entries().front().android_id));
     }
 }
 
@@ -270,11 +282,13 @@ std::vector<DiscoveredDevice> devices() {
 
 std::vector<WhitelistItem> whitelist_entries() {
     std::vector<WhitelistItem> result;
+    std::lock_guard lock(g_mutex);
     for (const auto& entry : whitelist().entries()) {
         result.push_back(WhitelistItem{
             ascii_to_wide(entry.android_id),
             ascii_to_wide(entry.device_name),
-            ascii_to_wide(entry.paired_at)});
+            ascii_to_wide(entry.paired_at),
+            ascii_to_wide(entry.last_ip)});
     }
     return result;
 }
@@ -296,35 +310,84 @@ void select_target(const std::wstring& android_id) {
             break;
         }
     }
+    if (g_selected_ip.empty()) {
+        // mDNS may be unavailable on this network; fall back to the last
+        // address the tablet was actually reached on.
+        for (const auto& entry : whitelist().entries()) {
+            if (ascii_to_wide(entry.android_id) == android_id &&
+                !entry.last_ip.empty()) {
+                g_selected_ip = ascii_to_wide(entry.last_ip);
+                break;
+            }
+        }
+    }
 }
 
 bool has_session_target() {
     std::lock_guard lock(g_mutex);
-    return !g_selected_id.empty() && !g_selected_ip.empty();
+    // ID only: the address is recovered at session start (mDNS snapshot,
+    // then the whitelist's last-known IP). Requiring the IP here made the
+    // extend flow silently fall back to ADB whenever discovery had not
+    // produced an address yet (audit P0-1).
+    return !g_selected_id.empty();
 }
 
 bool resolve_session_credential(
     std::wstring* endpoint,
     std::vector<std::uint8_t>* key) {
     std::wstring android_id;
+    std::wstring ip;
+    std::vector<std::uint8_t> sealed_key;
     {
         std::lock_guard lock(g_mutex);
         android_id = g_selected_id;
+        ip = g_selected_ip;
     }
-    const auto* entry = whitelist().find(utf8_string(android_id));
-    if (entry == nullptr) {
-        notify_status(L"所选 WiFi 设备不在白名单中，请先配对。");
-        return false;
+    std::string android_id_utf8 = utf8_string(android_id);
+    // Whitelist access is serialised with g_mutex: the pairing thread
+    // upserts under the same lock (audit P1 data race).
+    std::vector<std::uint8_t> plain_key;
+    {
+        std::lock_guard lock(g_mutex);
+        const auto* entry = whitelist().find(android_id_utf8);
+        if (entry == nullptr) {
+            notify_status(L"所选 WiFi 设备不在白名单中，请先配对。");
+            return false;
+        }
+        try {
+            plain_key = WifiWhitelist::unseal(*entry);
+        } catch (const std::runtime_error&) {
+            notify_status(L"读取已配对凭据失败（DPAPI）：请删除该白名单条目后重新配对。");
+            return false;
+        }
+        // Address recovery order: this round's selection, the mDNS
+        // snapshot, then the last IP a session actually dialled.
+        if (ip.empty()) {
+            for (const auto& device : browser().snapshot()) {
+                if (ascii_to_wide(device.android_id) == android_id &&
+                    !device.ip.empty()) {
+                    ip = ascii_to_wide(device.ip);
+                    break;
+                }
+            }
+        }
+        if (ip.empty() && entry->last_ip.empty() == false) {
+            ip = ascii_to_wide(entry->last_ip);
+        }
+        if (ip.empty()) {
+            notify_status(L"所选 WiFi 设备当前不在线：请确认平板的 WiFi 投屏开关已打开，"
+                L"或使用完整模式 WiFi 卡片的手动 IP 配对。");
+            return false;
+        }
+        // Remember the dial target so a session started without a fresh
+        // discovery (hotspot networks without usable mDNS) still works.
+        whitelist().update_last_ip(android_id_utf8, utf8_string(ip));
+        std::wstring save_error;
+        whitelist().save(&save_error);
+        key->swap(plain_key);
+        *endpoint = ip + L":" + std::to_wstring(kTabletPort);
+        return true;
     }
-    try {
-        *key = WifiWhitelist::unseal(*entry);
-    } catch (const std::runtime_error&) {
-        notify_status(L"读取已配对凭据失败（DPAPI）：请删除该白名单条目后重新配对。");
-        return false;
-    }
-    std::lock_guard lock(g_mutex);
-    *endpoint = g_selected_ip + L":" + std::to_wstring(kTabletPort);
-    return true;
 }
 
 void begin_pairing(const std::wstring& ip) {
@@ -369,7 +432,12 @@ void begin_pairing(const std::wstring& ip) {
             const WifiPeerInfo peer = perform_wifi_handshake(
                 stream, identity, wireview::protocol::AuthMode::pairing, {},
                 bundle->first, true, &credential);
-            whitelist().upsert(peer.android_id, peer.device_name, credential);
+            {
+                std::lock_guard lock(impl_mutex());
+                whitelist().upsert(peer.android_id, peer.device_name, credential);
+                std::wstring save_error;
+                whitelist().save(&save_error);
+            }
             paired = true;
             result->first = utf8_to_wide(peer.device_name);
         } catch (const std::exception& error) {
@@ -384,8 +452,11 @@ void begin_pairing(const std::wstring& ip) {
 }
 
 bool remove_from_whitelist(const std::wstring& android_id) {
-    if (!whitelist().remove(utf8_string(android_id))) {
-        return false;
+    {
+        std::lock_guard lock(g_mutex);
+        if (!whitelist().remove(utf8_string(android_id))) {
+            return false;
+        }
     }
     std::wstring error;
     if (!whitelist().save(&error)) {
@@ -405,14 +476,41 @@ void resume_enabled(HWND window) {
     if (!on) {
         return;
     }
+    ensure_mdns_firewall_rule();
     if (browser().start()) {
         SetTimer(window, kWifiDiscoverTimerId, 1000U, nullptr);
+    } else {
+        notify_status(L"WiFi 投屏已恢复开启；mDNS 自动发现不可用，会话将使用上次成功的 IP 直连。");
     }
 }
 
 void on_discover_tick() {
     if (!enabled()) {
         return;
+    }
+    // Keep the session target's address fresh: the dial always uses the
+    // latest discovery result for the selected device.
+    {
+        std::lock_guard lock(g_mutex);
+        if (!g_selected_id.empty()) {
+            g_selected_ip.clear();
+            for (const auto& device : browser().snapshot()) {
+                if (ascii_to_wide(device.android_id) == g_selected_id &&
+                    !device.ip.empty()) {
+                    g_selected_ip = ascii_to_wide(device.ip);
+                    break;
+                }
+            }
+            if (g_selected_ip.empty()) {
+                for (const auto& entry : whitelist().entries()) {
+                    if (ascii_to_wide(entry.android_id) == g_selected_id &&
+                        !entry.last_ip.empty()) {
+                        g_selected_ip = ascii_to_wide(entry.last_ip);
+                        break;
+                    }
+                }
+            }
+        }
     }
     notify_publish();
 }

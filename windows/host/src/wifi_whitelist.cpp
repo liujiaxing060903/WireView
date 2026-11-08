@@ -91,6 +91,8 @@ void WifiWhitelist::load() {
             entry.device_name = line_value(line);
         } else if (field == "paired_at") {
             entry.paired_at = line_value(line);
+        } else if (field == "last_ip") {
+            entry.last_ip = line_value(line);
         } else if (field == "key") {
             try {
                 entry.sealed_key = from_hex(line_value(line));
@@ -123,6 +125,7 @@ bool WifiWhitelist::save(std::wstring* error) const {
                << sanitize_text(entry.device_name) << '\n'
                << "device." << index << ".paired_at="
                << sanitize_text(entry.paired_at) << '\n'
+               << "device." << index << ".last_ip=" << sanitize_text(entry.last_ip) << '\n'
                << "device." << index << ".key=" << to_hex(entry.sealed_key) << '\n';
     }
     if (error != nullptr) {
@@ -161,10 +164,26 @@ void WifiWhitelist::upsert(
             return candidate.android_id == entry.android_id;
         });
     if (existing != entries_.end()) {
+        // Re-pairing must not lose the last-known address: carry it over
+        // before replacing the entry.
+        entry.last_ip = existing->last_ip;
         *existing = std::move(entry);
         return;
     }
     entries_.push_back(std::move(entry));
+}
+
+void WifiWhitelist::update_last_ip(
+    std::string_view android_id,
+    std::string_view ip) {
+    const auto match = std::find_if(
+        entries_.begin(), entries_.end(),
+        [android_id](const WifiWhitelistEntry& entry) {
+            return entry.android_id == android_id;
+        });
+    if (match != entries_.end()) {
+        match->last_ip = std::string(ip);
+    }
 }
 
 bool WifiWhitelist::remove(std::string_view android_id) {

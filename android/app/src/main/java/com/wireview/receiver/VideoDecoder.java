@@ -488,9 +488,14 @@ final class VideoDecoder implements AutoCloseable {
             return;
         }
         lastHealthReportNanos = now;
+        // queuedFrames is a cumulative counter (monotonic); the PC-side
+        // adaptive bitrate reads the queued field as CURRENT DEPTH, so
+        // report the in-flight size instead (audit P1: the mismatch made
+        // every healthy second look congested and pinned the bitrate to
+        // the floor).
         listener.onDecoderHealth(
                 receivedFrames,
-                queuedFrames,
+                pendingFrameTimings.size(),
                 droppedFrames + backlogDrops.get(),
                 decoderErrors,
                 codec != null,

@@ -15,6 +15,11 @@ struct WifiWhitelistEntry {
     std::string android_id;    // ASCII hex identity reported by the tablet.
     std::string device_name;   // UTF-8 display name.
     std::string paired_at;     // Human readable timestamp.
+    // Last IP the tablet was successfully reached on. mDNS discovery may be
+    // unavailable on some networks (AP isolation, hotspot quirks); the
+    // session dial then uses this address, matching the auto-reconnect
+    // promise (a tablet that does not change networks keeps working).
+    std::string last_ip;
     std::vector<std::uint8_t> sealed_key;  // DPAPI blob of the 32-byte key.
 };
 
@@ -40,6 +45,10 @@ public:
         const std::string& android_id,
         const std::string& device_name,
         std::span<const std::uint8_t> plaintext_key);
+
+    // Records the address a session actually dialled, for networks where
+    // mDNS discovery is unavailable.
+    void update_last_ip(std::string_view android_id, std::string_view ip);
 
     bool remove(std::string_view android_id);
 

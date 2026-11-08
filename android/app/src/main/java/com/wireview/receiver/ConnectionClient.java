@@ -156,24 +156,44 @@ final class ConnectionClient implements AutoCloseable {
         return defaultConnector;
     }
 
+    /** The transport chosen for one connection round. */
+    private static final class RoundConnection {
+        final TransportConnection connection;
+        final boolean isWifi;
+
+        RoundConnection(TransportConnection connection, boolean isWifi) {
+            this.connection = connection;
+            this.isWifi = isWifi;
+        }
+    }
+
     /**
      * Picks this round's transport. With the WiFi switch on, USB still gets
      * a quick probe first: a listening host takes the connection instantly
      * (USB recovery), and only when it is gone does the loop park in the
      * WiFi accept waiting for a dial-in.
+     *
+     * <p>The probe result must NOT be opened inside try-with-resources:
+     * returning it from there closes the socket before the caller uses it
+     * (audit P0 - the closed connection turned every USB recovery round
+     * into a deterministic failure loop). The opened connection is handed
+     * to the caller unconsumed; the caller owns closing it.</p>
      */
-    private TransportConnection nextConnection(TransportConnector loopConnector)
+    private RoundConnection nextConnection(TransportConnector loopConnector)
             throws IOException {
-        if (loopConnector instanceof WifiServerConnector && wifiRequested) {
-            try (TransportConnection probe = usbProbeConnector.open()) {
-                // open() returning means the USB host is listening; hand the
-                // live connection straight to the session.
-                return probe;
+        if (loopConnector instanceof WifiServerConnector && wifiRequested
+                && defaultConnector instanceof TcpTransportConnector) {
+            try {
+                TransportConnection probe = usbProbeConnector.open();
+                // A live probe connection IS the session (the PC-side host
+                // accepted it); USB recovery takes over this round.
+                return new RoundConnection(probe, false);
             } catch (IOException usbDown) {
-                // Fall through to the WiFi accept.
+                // USB host gone: fall through to the WiFi accept.
             }
         }
-        return loopConnector.open();
+        return new RoundConnection(loopConnector.open(),
+                loopConnector instanceof WifiServerConnector);
     }
 
     private void connectionLoop() {
@@ -185,11 +205,21 @@ final class ConnectionClient implements AutoCloseable {
                 PersistentDiagnosticLog.record("ConnectionClient", "opening USB transport");
             }
             final TransportConnector loopConnector = nextConnector();
-            try (TransportConnection activeConnection = nextConnection(loopConnector)) {
+            final RoundConnection round;
+            try {
+                round = nextConnection(loopConnector);
+            } catch (IOException openFailure) {
+                if (running.get()) {
+                    publishStatus(waitingStatus());
+                    sleepBeforeRetry();
+                }
+                continue;
+            }
+            try (TransportConnection activeConnection = round.connection) {
                 connection = activeConnection;
                 InputStream input = activeConnection.inputStream();
                 OutputStream output = activeConnection.outputStream();
-                wifiTransport = loopConnector instanceof WifiServerConnector;
+                wifiTransport = round.isWifi;
                 if (wifiTransport) {
                     // The WiFi handshake is adversarial: bound the AUTH and
                     // HELLO exchange so a half-open or hostile dial cannot

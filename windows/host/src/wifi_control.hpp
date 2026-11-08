@@ -24,6 +24,7 @@ struct WhitelistItem {
     std::wstring android_id;
     std::wstring device_name;
     std::wstring paired_at;
+    std::wstring last_ip;
 };
 
 // Shared message/timer identifiers (WndProc and this module both use them).

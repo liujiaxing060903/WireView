@@ -416,6 +416,8 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
 
         setContentView(root);
         Log.i(TAG, "Activity created: action=" + getIntent().getAction());
+        wifiSwitchOn = getPreferences(Context.MODE_PRIVATE)
+                .getBoolean("wifi_switch_on", false);
         connection = new ConnectionClient(
                 this,
                 getApplicationContext(),
@@ -550,6 +552,8 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             return;
         }
         wifiSwitchOn = enabled;
+        getPreferences(Context.MODE_PRIVATE)
+                .edit().putBoolean("wifi_switch_on", enabled).apply();
         connection.setWifiEnabled(enabled);
         if (enabled) {
             startNsdRegistration();
@@ -685,8 +689,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                     .show();
         });
         try {
-            // Generous ceiling: the PC side times its own AUTH read at 5 s,
-            // so this only bounds the dialog leak if the user walks away.
+            // Generous ceiling: the PC side times its own AUTH read at
+            // 130 s during pairing, so this only bounds the dialog leak if
+            // the user walks away.
             latch.await(120, TimeUnit.SECONDS);
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
