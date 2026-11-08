@@ -674,6 +674,9 @@ int run(const Options& options) {
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(options.duration_seconds);
     std::uint32_t reconnect_count{};
+    // Consecutive "adb devices" polls that listed nothing; drives the
+    // server re-enumeration / restart ladder below.
+    std::uint32_t empty_device_streak{};
     while (std::chrono::steady_clock::now() < deadline) {
         const auto adb = find_adb();
         if (adb.empty()) {
@@ -687,13 +690,28 @@ int run(const Options& options) {
             if (device_query.output.find(L"\tunauthorized") != std::wstring::npos) {
                 write_status(options, L"waiting_authorization", L"设备未授权 USB 调试。请在 Android 设备上允许此电脑。", reconnect_count);
             } else if (devices.empty()) {
+                // The adb server itself silently loses devices: the USB link
+                // and even an in-flight session keep working while "adb
+                // devices" lists nothing (observed live). Trusting that list
+                // forever wedges recovery after every server hiccup, so ask
+                // the server to re-enumerate, then force a restart.
+                ++empty_device_streak;
+                if (empty_device_streak == 5U) {
+                    (void)run_capture_bounded(
+                        adb, {L"reconnect", L"offline"}, {}, {}, 10'000U);
+                } else if (empty_device_streak >= 10U) {
+                    (void)run_capture_bounded(adb, {L"kill-server"}, {}, {}, 10'000U);
+                    empty_device_streak = 0U;
+                }
                 write_status(options, L"waiting_device", L"未检测到已授权的 Android 设备。请检查 USB 数据线、端口和 USB 调试授权。", reconnect_count);
             } else {
+                empty_device_streak = 0U;
                 write_status(options, L"waiting_device", L"检测到多台 Android 设备；请仅保留一台设备连接。", reconnect_count);
             }
             Sleep(1000U);
             continue;
         }
+        empty_device_streak = 0U;
         const auto& serial = devices.front();
         const auto package = run_capture_bounded(adb, {L"-s", serial, L"shell", L"pm", L"path", std::wstring(kPackageName)});
         if (!package.started || package.exit_code != 0U || package.output.find(L"package:") == std::wstring::npos) {
