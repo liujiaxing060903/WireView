@@ -37,6 +37,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -61,10 +62,7 @@ constexpr int kVddModeSelector = 1015;
 constexpr int kIdentifyDeviceButton = 1016;
 constexpr int kSimpleModeToggle = 1017;
 constexpr int kSimpleMirrorButton = 1018;
-constexpr int kSimpleInputButton = 1019;
 constexpr int kSimpleExtendButton = 1020;
-constexpr int kSimpleExtendInputButton = 1021;
-constexpr int kSimpleReturnButton = 1022;
 constexpr int kDisplaySettingsButton = 1023;
 constexpr int kInputDisplayOnlyButton = 1024;
 constexpr int kInputEnabledButton = 1025;
@@ -92,7 +90,12 @@ constexpr UINT_PTR kDeviceDetectTimer = 3;
 constexpr UINT_PTR kRotateRestartTimer = 4;
 constexpr UINT_PTR kIdleExitTimer = 6;
 constexpr UINT kIdleExitTimerPeriodMillis = 60'000U;
-constexpr UINT_PTR kEdgeRemapTimer = 5;
+// Timer id 5 is owned by wifi_control's discovery timer on the same window;
+// sharing it would make SetTimer silently rewrite the WiFi poll period. Keep
+// the edge-remap debounce on its own id (ids in use: 1,2,3,4,6,wifi=5).
+constexpr UINT_PTR kEdgeRemapTimer = 7;
+static_assert(kEdgeRemapTimer != wireview::host::wifi_control::kWifiDiscoverTimerId,
+    "kEdgeRemapTimer must not collide with the WiFi discovery timer id");
 constexpr UINT kTrayMessage = WM_APP + 1U;
 constexpr UINT kFinalizeControlExit = WM_APP + 2U;
 constexpr UINT kTrayRestore = 2001U;
@@ -169,7 +172,6 @@ struct ControlState {
     HWND window{nullptr};
     HWND title{nullptr};
     HWND status{nullptr};
-    HWND simple_window{nullptr};
     HWND simple_status{nullptr};
     HWND simple_mode_toggle{nullptr};
     HWND full_mode_toggle{nullptr};
@@ -252,6 +254,9 @@ struct ControlState {
     // Android 应用请求一次当前屏幕模式（分辨率、当前刷新率和最高刷新率）。
     bool device_profile_refresh_requested{false};
     bool device_profile_requires_custom_mode{false};
+    // One-shot per session: the 500 ms status poll must not reopen the
+    // custom-mode editor after the user closed it (slots still full).
+    bool custom_mode_prompt_shown{false};
     bool simple_mode{false};
     // WebView2 的页面选择状态。它不替代 VDD/会话后端，只用于在页面上解释
     // 当前准备启动复制还是扩展，并驱动简易模式的大卡片入口。
@@ -297,6 +302,9 @@ std::array<std::array<HWND, 3U>, 5U> g_custom_mode_edits{};
 HWND g_diagnostics_window{nullptr};
 HWND g_diagnostics_text{nullptr};
 bool g_popup_light_theme{false};
+// Registered "TaskbarCreated" message id: Explorer restarts wipe every tray
+// icon and rebroadcast it; we re-add ours so a hidden window stays reachable.
+UINT g_taskbar_created_message{0U};
 
 #ifdef WIREVIEW_WEBVIEW_UI
 std::unique_ptr<wireview::host::WebViewHost> g_webview_host;
@@ -646,19 +654,41 @@ struct StreamSettings {
 std::wstring selector_text(HWND selector);
 void refresh_diagnostics_output();
 
+// Settings files must survive a crash mid-write: a truncated ini silently
+// loses persisted state (identity, preferences, custom slots). Write the full
+// text to <file>.tmp, flush, then swap it in atomically so readers always see
+// either the previous file or the complete new one.
+bool save_text_file_atomically(const std::filesystem::path& path, const std::string& contents) {
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) {
+        return false;
+    }
+    const std::filesystem::path temporary = path.wstring() + L".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            return false;
+        }
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        output.flush();
+        if (!output) {
+            std::filesystem::remove(temporary, error);
+            return false;
+        }
+    }
+    if (MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) == FALSE) {
+        std::filesystem::remove(temporary, error);
+        return false;
+    }
+    return true;
+}
+
 void save_stream_settings(const StreamSettings& settings) {
     if (g_state.settings_file.empty()) {
         return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(g_state.settings_file.parent_path(), error);
-    if (error) {
-        return;
-    }
-    std::ofstream output(g_state.settings_file, std::ios::trunc);
-    if (!output) {
-        return;
-    }
+    std::ostringstream output;
     if (settings.width == 0U) {
         output << "resolution=auto\n";
     } else {
@@ -689,6 +719,7 @@ void save_stream_settings(const StreamSettings& settings) {
         }
         output << '\n';
     }
+    (void)save_text_file_atomically(g_state.settings_file, output.str());
 }
 
 std::wstring format_custom_mode(const CustomMode& mode) {
@@ -726,15 +757,7 @@ void save_custom_modes() {
     if (g_state.custom_modes_file.empty()) {
         return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(g_state.custom_modes_file.parent_path(), error);
-    if (error) {
-        return;
-    }
-    std::ofstream output(g_state.custom_modes_file, std::ios::trunc);
-    if (!output) {
-        return;
-    }
+    std::ostringstream output;
     output << "version=1\n";
     for (std::size_t index = 0U; index < g_custom_modes.size(); ++index) {
         output << "slot" << (index + 1U) << '=';
@@ -744,6 +767,7 @@ void save_custom_modes() {
         }
         output << '\n';
     }
+    (void)save_text_file_atomically(g_state.custom_modes_file, output.str());
 }
 
 void load_custom_modes() {
@@ -1050,7 +1074,12 @@ void apply_detected_device_profile(
                 g_state.device_profile_note = L"已识别设备：" + profile +
                     L"。投屏分辨率列表没有对应项，且 5 个自定义模式槽均已占用；"
                     L"请先替换或释放一个槽，才能开始 WireView。";
-                show_custom_mode_editor(g_state.window);
+                // Poll-driven reopen loop guard: show the editor at most once
+                // per session (the note above keeps the explanation visible).
+                if (!g_state.custom_mode_prompt_shown) {
+                    g_state.custom_mode_prompt_shown = true;
+                    show_custom_mode_editor(g_state.window);
+                }
                 return;
             }
             *empty_slot = CustomMode{
@@ -1174,7 +1203,6 @@ void update_vdd_controls() {
         refresh_diagnostics_output();
     }
     InvalidateRect(g_state.window, nullptr, FALSE);
-    InvalidateRect(g_state.simple_window, nullptr, FALSE);
     const bool session_idle = g_state.shell_process == nullptr || g_state.preview_active;
     if (g_state.create_vdd_button != nullptr) {
         EnableWindow(
@@ -1601,15 +1629,10 @@ void save_control_preferences() {
     if (g_state.preferences_file.empty()) {
         return;
     }
-    std::error_code error;
-    std::filesystem::create_directories(
-        g_state.preferences_file.parent_path(), error);
-    std::ofstream output(g_state.preferences_file, std::ios::trunc);
-    if (!output) {
-        return;
-    }
+    std::ostringstream output;
     output << "close_exits=" << (g_state.close_exits ? 1 : 0) << '\n'
            << "idle_exit_minutes=" << g_state.idle_exit_minutes << '\n';
+    (void)save_text_file_atomically(g_state.preferences_file, output.str());
 }
 
 void restart_idle_exit_timer(HWND window) {
@@ -1707,7 +1730,6 @@ void set_status(const std::wstring& text) {
         SetWindowTextW(g_state.simple_status, simple_text.c_str());
     }
     InvalidateRect(g_state.window, nullptr, FALSE);
-    InvalidateRect(g_state.simple_window, nullptr, FALSE);
     const std::size_t line_break = text.find(L'\n');
     update_tray_tooltip(
         L"WireView: " + text.substr(0U, line_break == std::wstring::npos
@@ -1901,7 +1923,7 @@ void begin_control_center_exit(HWND window) {
     // first prevents a blank, non-interactive top-level window from remaining
     // visible while Windows tears down Chromium or a VDD broker.
     ShowWindow(window, SW_HIDE);
-    for (HWND auxiliary : {g_state.simple_window, g_diagnostics_window, g_custom_mode_editor}) {
+    for (HWND auxiliary : {g_diagnostics_window, g_custom_mode_editor}) {
         if (auxiliary != nullptr && auxiliary != window && IsWindow(auxiliary) != FALSE) {
             DestroyWindow(auxiliary);
         }
@@ -2559,18 +2581,50 @@ std::wstring describe_vdd_failure(const std::wstring& detail) {
     return detail.empty() ? L"VDD 守护进程未返回具体错误。" : detail;
 }
 
+// Recovery records store bare PIDs and Windows reuses ids quickly; a live
+// handle on the id does not prove the recorded WireView process still exists.
+// Only a known WireView image name counts as "still running".
+bool is_wireview_process_image(HANDLE process) noexcept {
+    wchar_t image_path[1024]{};
+    DWORD length = static_cast<DWORD>(std::size(image_path));
+    if (QueryFullProcessImageNameW(process, 0U, image_path, &length) == FALSE) {
+        return false;
+    }
+    const wchar_t* last_separator = wcsrchr(image_path, L'\\');
+    const wchar_t* image_name = last_separator != nullptr ? last_separator + 1 : image_path;
+    return _wcsicmp(image_name, L"wireview_control.exe") == 0 ||
+        _wcsicmp(image_name, L"wireview_session.exe") == 0 ||
+        _wcsicmp(image_name, L"wireview_vdd_broker.exe") == 0;
+}
+
 [[nodiscard]] bool process_is_alive(DWORD process_id) noexcept {
     if (process_id == 0U) {
         return false;
     }
-    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
+    HANDLE process = OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, process_id);
     if (process == nullptr) {
         // Access denied is treated conservatively as an existing process.
         return GetLastError() == ERROR_ACCESS_DENIED;
     }
-    const bool alive = WaitForSingleObject(process, 0U) == WAIT_TIMEOUT;
+    const bool alive = WaitForSingleObject(process, 0U) == WAIT_TIMEOUT &&
+        is_wireview_process_image(process);
     CloseHandle(process);
     return alive;
+}
+
+// GetExitCodeProcess alone cannot distinguish "still running" from a child
+// that really exited with code 259 (STILL_ACTIVE). Confirm termination with a
+// zero-timeout wait first; only then fetch the real exit code.
+bool process_exited(HANDLE process, DWORD* exit_code) {
+    if (process == nullptr || WaitForSingleObject(process, 0U) != WAIT_OBJECT_0) {
+        return false;
+    }
+    DWORD code = 0U;
+    if (GetExitCodeProcess(process, &code) != FALSE && exit_code != nullptr) {
+        *exit_code = code;
+    }
+    return true;
 }
 
 [[nodiscard]] bool recovery_display_mapping_matches(
@@ -3053,8 +3107,7 @@ void poll_vdd_broker(HWND window) {
     }
 
     DWORD exit_code = STILL_ACTIVE;
-    if (GetExitCodeProcess(g_state.vdd_broker_process, &exit_code) != FALSE &&
-        exit_code == STILL_ACTIVE) {
+    if (!process_exited(g_state.vdd_broker_process, &exit_code)) {
         return;
     }
     log_control_event(L"vdd-broker-exit", L"退出代码 " + std::to_wstring(exit_code) +
@@ -3085,7 +3138,11 @@ void poll_vdd_broker(HWND window) {
     } else if (removal_requested) {
         set_status(L"WireView 创建的副屏已安全移除。");
         if (recreate_for_simple_extension) {
-            set_status(L"原 WireView 副屏已不再附加到 Windows，正在重新创建扩展屏幕……");
+            // Visibility only (audit A2 N4): when a copy request was queued
+            // behind the same removal, recreate wins and the copy intent is
+            // dropped — say so instead of failing silently.
+            set_status(std::wstring(L"原 WireView 副屏已不再附加，正在重新创建扩展屏幕……") +
+                (start_after_removal ? L"\n复制请求已取消：扩展重建优先。" : L""));
             begin_simple_extension(recreate_for_simple_extension_input);
         } else if (start_after_removal) {
             if (!select_primary_display()) {
@@ -3208,6 +3265,11 @@ void stop_session() {
     update_session_action_controls();
     update_vdd_configuration_controls();
     update_vdd_controls();
+    // The 500 ms status poll is armed by start_session; without this a manual
+    // stop leaves it firing (guarded, but wasted) until the next natural exit.
+    if (g_state.window != nullptr) {
+        KillTimer(g_state.window, kProcessTimer);
+    }
 }
 
 // 会话运行中按当前显示器拓扑重挂指针边缘映射（WM_DISPLAYCHANGE 防抖后调
@@ -3317,6 +3379,12 @@ bool start_session(
     // 把 start_session 重入进来；重入会重建 display_choices 并使外层迭代
     // 器失效（真机崩溃实证）。同一时间只允许一个 start_session。
     if (g_state.start_session_in_progress) {
+        // No longer silent (audit A2 claim 1): a swallowed restart/probe here
+        // used to leave the UI stale with no trace. set_status is safe at this
+        // point: it only updates child controls, the tray and the async
+        // WebView state post — nothing re-enters start_session.
+        log_control_event(L"start-session", L"重入的启动请求被忽略。");
+        set_status(L"会话启动正在进行中，已忽略重复请求。");
         return false;
     }
     struct StartSessionGuard {
@@ -3324,6 +3392,9 @@ bool start_session(
         ~StartSessionGuard() { flag = false; }
     } start_guard{g_state.start_session_in_progress};
     g_state.start_session_in_progress = true;
+    // A new session gets a fresh one-shot budget for the "custom slots full"
+    // editor prompt (see apply_detected_device_profile).
+    g_state.custom_mode_prompt_shown = false;
     if (!device_profile_probe && g_state.device_profile_requires_custom_mode) {
         set_status(L"请先在“编辑自定义分辨率”中替换或释放一个自定义槽，再开始 WireView。");
         show_custom_mode_editor(window);
@@ -3575,7 +3646,11 @@ bool start_session(
         return false;
     }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // BREAKAWAY_OK only permits children that explicitly ask for it (notably
+    // the shared adb server) to leave the job; kill-on-close still applies to
+    // every remaining member when the control center exits.
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     if (!SetInformationJobObject(
             job,
             JobObjectExtendedLimitInformation,
@@ -3625,6 +3700,10 @@ bool start_session(
     g_state.preview_active = device_preview;
     g_state.profile_probe_active = device_profile_probe;
     g_state.session_input_enabled = enable_input && !device_preview && !device_profile_probe;
+    // Record the transport at launch time (audit A2 N6): the status file is
+    // only polled every 500 ms, and a rotate request inside that window must
+    // already see the new session's real transport.
+    g_state.last_session_transport_wifi = wifi_session;
     EnableWindow(g_state.display_selector, FALSE);
     EnableWindow(g_state.refresh_displays_button, FALSE);
     EnableWindow(g_state.resolution_selector, FALSE);
@@ -3684,7 +3763,7 @@ void poll_device_detection(HWND window) {
         return;
     }
     DWORD exit_code = STILL_ACTIVE;
-    if (!GetExitCodeProcess(g_state.device_probe_process, &exit_code) || exit_code == STILL_ACTIVE) {
+    if (!process_exited(g_state.device_probe_process, &exit_code)) {
         return;
     }
     CloseHandle(g_state.device_probe_process);
@@ -3695,7 +3774,6 @@ void poll_device_detection(HWND window) {
         reset_android_device_identity();
         if (was_connected) {
             InvalidateRect(g_state.window, nullptr, FALSE);
-            InvalidateRect(g_state.simple_window, nullptr, FALSE);
         }
         if (exit_code != g_state.last_auto_device_probe_exit && g_state.shell_process == nullptr) {
             const std::wstring reason = exit_code == 2U
@@ -3726,7 +3804,6 @@ void poll_device_detection(HWND window) {
     g_state.device_connected = true;
     if (!was_connected) {
         InvalidateRect(g_state.window, nullptr, FALSE);
-        InvalidateRect(g_state.simple_window, nullptr, FALSE);
     }
     if ((!g_state.auto_device_profile_attempted || g_state.device_profile_refresh_requested) &&
         g_state.shell_process == nullptr) {
@@ -4771,6 +4848,13 @@ void begin_simple_extension(bool enable_input) {
 }
 
 void begin_simple_copy(bool enable_input) {
+    // While the broker is still creating the extension VDD (process alive,
+    // owned display not yet attached), a copy start would later collide with
+    // the queued auto-start and strand the fresh VDD unused (audit A2 N2).
+    if (g_state.vdd_broker_process != nullptr && g_state.owned_display_device.empty()) {
+        set_status(L"正在创建副屏，请稍候…");
+        return;
+    }
     if (!g_state.owned_display_device.empty()) {
         g_state.start_after_vdd_removal = true;
         g_state.start_after_vdd_removal_input = enable_input;
@@ -4851,12 +4935,14 @@ std::wstring combo_options_as_json(HWND selector) {
     return json;
 }
 
+// -1 means "no selection"; publish it as-is instead of faking item 0. The
+// web option list compares indices strictly, so -1 selects nothing.
 int combo_selected_index(HWND selector) {
     if (selector == nullptr) {
-        return 0;
+        return -1;
     }
     const LRESULT selected = SendMessageW(selector, CB_GETCURSEL, 0U, 0);
-    return selected < 0 ? 0 : static_cast<int>(selected);
+    return selected < 0 ? -1 : static_cast<int>(selected);
 }
 
 std::wstring web_diagnostics_text() {
@@ -4906,7 +4992,7 @@ void publish_web_state() {
         }
         json += L"\"" + std::wstring(key) + L"\":" + (value ? L"true" : L"false");
     };
-    const auto add_number = [&json](std::wstring_view key, std::size_t value) {
+    const auto add_number = [&json](std::wstring_view key, long long value) {
         if (json.size() > 1U) {
             json += L',';
         }
@@ -4933,21 +5019,21 @@ void publish_web_state() {
     add_string(L"displayName", selected_display == nullptr ? L"--" : selected_display->device_name);
     add_bool(L"parsecAvailable", g_state.parsec_vdd_available);
     add_number(L"parsecVersion", g_state.parsec_vdd_version);
-    add_number(L"parsecDisplayCount", g_state.parsec_display_count);
+    add_number(L"parsecDisplayCount", static_cast<long long>(g_state.parsec_display_count));
     add_array(L"displays", combo_options_as_json(g_state.display_selector));
     add_array(L"resolutions", combo_options_as_json(g_state.resolution_selector));
     add_array(L"vddModes", combo_options_as_json(g_state.vdd_mode_selector));
-    add_number(L"selectedDisplay", static_cast<std::size_t>(combo_selected_index(g_state.display_selector)));
-    add_number(L"selectedResolution", static_cast<std::size_t>(combo_selected_index(g_state.resolution_selector)));
-    add_number(L"selectedVddMode", static_cast<std::size_t>(combo_selected_index(g_state.vdd_mode_selector)));
+    add_number(L"selectedDisplay", combo_selected_index(g_state.display_selector));
+    add_number(L"selectedResolution", combo_selected_index(g_state.resolution_selector));
+    add_number(L"selectedVddMode", combo_selected_index(g_state.vdd_mode_selector));
     add_array(L"positions", combo_options_as_json(g_state.vdd_position_selector));
     add_array(L"orientations", combo_options_as_json(g_state.vdd_orientation_selector));
-    add_number(L"selectedPosition", static_cast<std::size_t>(combo_selected_index(g_state.vdd_position_selector)));
-    add_number(L"selectedOrientation", static_cast<std::size_t>(combo_selected_index(g_state.vdd_orientation_selector)));
+    add_number(L"selectedPosition", combo_selected_index(g_state.vdd_position_selector));
+    add_number(L"selectedOrientation", combo_selected_index(g_state.vdd_orientation_selector));
     add_bool(L"edgeMapping", g_state.edge_mapping_enabled);
     // R3 WiFi：开关、配对进度、已发现设备与白名单。
     add_bool(L"closeExits", g_state.close_exits);
-    add_number(L"idleExitMinutes", static_cast<std::size_t>(g_state.idle_exit_minutes));
+    add_number(L"idleExitMinutes", g_state.idle_exit_minutes);
     add_bool(L"wifiEnabled", wireview::host::wifi_control::enabled());
     add_bool(L"wifiPairingActive", wireview::host::wifi_control::pairing_active());
     {
@@ -5121,6 +5207,9 @@ void handle_web_message(std::wstring_view message) {
         if (!ip.empty()) {
             wireview::host::wifi_control::begin_pairing(ip);
         }
+    } else if (message == L"wifi-pair-cancel") {
+        // 取消进行中的配对：不碰 socket，握手返回后丢弃结果。
+        wireview::host::wifi_control::cancel_pairing();
     } else if (message.starts_with(L"wifi-pair|")) {
         // 从已发现设备列表发起配对。
         const int index = _wtoi(std::wstring(message.substr(10U)).c_str());
@@ -5199,161 +5288,6 @@ void hide_native_controls_for_web() {
     }
 }
 #endif
-
-LRESULT CALLBACK simple_window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    switch (message) {
-        case WM_CREATE: {
-            g_state.simple_window = window;
-            enable_dark_title_bar(window);
-            g_state.simple_mirror_button = CreateWindowW(
-                L"BUTTON", L"复制屏幕", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                24, 278, 548, 232, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSimpleMirrorButton)),
-                nullptr, nullptr);
-            g_state.simple_extend_button = CreateWindowW(
-                L"BUTTON", L"扩展屏幕", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                588, 278, 548, 232, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSimpleExtendButton)),
-                nullptr, nullptr);
-            g_state.simple_display_only_button = CreateWindowW(
-                L"BUTTON", L"仅显示", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                24, 566, 556, 64, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInputDisplayOnlyButton)),
-                nullptr, nullptr);
-            g_state.simple_input_button = CreateWindowW(
-                L"BUTTON", L"触控与手写笔", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                580, 566, 556, 64, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kInputEnabledButton)),
-                nullptr, nullptr);
-            g_state.simple_stop_button = CreateWindowW(
-                L"BUTTON", L"■  停止 WireView", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                24, 650, 230, 44, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStopButton)),
-                nullptr, nullptr);
-            g_state.simple_display_settings_button = CreateWindowW(
-                L"BUTTON", L"Windows 显示设置", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                270, 650, 250, 44, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDisplaySettingsButton)),
-                nullptr, nullptr);
-            CreateWindowW(
-                L"BUTTON", L"切换到完整模式  →", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                886, 650, 250, 44, window,
-                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSimpleReturnButton)),
-                nullptr, nullptr);
-            RECT simple_client{};
-            GetClientRect(window, &simple_client);
-            g_state.simple_status = CreateWindowW(
-                L"STATIC", L"准备就绪", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE,
-                62, simple_client.bottom - 54, simple_client.right - 110, 30,
-                window, nullptr, nullptr, nullptr);
-            for (HWND control : {g_state.simple_mirror_button, g_state.simple_extend_button,
-                     g_state.simple_display_only_button, g_state.simple_input_button,
-                     g_state.simple_stop_button, g_state.simple_display_settings_button,
-                     g_state.simple_status}) {
-                apply_control_theme(control, control == g_state.simple_status ? g_font_small : g_font_button);
-            }
-            for (HWND button : {g_state.simple_mirror_button, g_state.simple_extend_button,
-                     g_state.simple_display_only_button, g_state.simple_input_button,
-                     g_state.simple_stop_button, g_state.simple_display_settings_button,
-                     GetDlgItem(window, kSimpleReturnButton)}) {
-                enable_owner_draw_button_feedback(button);
-            }
-            layout_simple_controls(window);
-            set_status(g_state.current_status.empty() ? L"准备就绪。" : g_state.current_status);
-            update_session_action_controls();
-            return 0;
-        }
-        case WM_ERASEBKGND:
-            return 1;
-        case WM_PAINT: {
-            PAINTSTRUCT paint{};
-            HDC dc = BeginPaint(window, &paint);
-            paint_window_buffered(window, dc, paint_simple_window);
-            EndPaint(window, &paint);
-            return 0;
-        }
-        case WM_DRAWITEM:
-            if (paint_owner_draw_button(
-                    *reinterpret_cast<const DRAWITEMSTRUCT*>(lparam))) {
-                return TRUE;
-            }
-            break;
-        case WM_CTLCOLORSTATIC: {
-            HDC dc = reinterpret_cast<HDC>(wparam);
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, kColorTextMuted);
-            return reinterpret_cast<LRESULT>(g_background_brush);
-        }
-        case WM_COMMAND:
-            log_control_event(L"simple-command", L"id=" +
-                std::to_wstring(LOWORD(wparam)) + L" notify=" + std::to_wstring(HIWORD(wparam)));
-            switch (LOWORD(wparam)) {
-                case kSimpleReturnButton:
-                    return_to_full_mode();
-                    return 0;
-                case kSimpleMirrorButton:
-                    begin_simple_copy(g_state.session_input_enabled);
-                    return 0;
-                case kSimpleExtendButton:
-                    begin_simple_extension(g_state.session_input_enabled);
-                    return 0;
-                case kInputDisplayOnlyButton:
-                    g_state.session_input_enabled = false;
-                    InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.window, nullptr, FALSE);
-                    return 0;
-                case kInputEnabledButton:
-                    g_state.session_input_enabled = true;
-                    InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.window, nullptr, FALSE);
-                    return 0;
-                case kStopButton:
-                    notify_android_of_user_stop();
-                    stop_session();
-                    set_status(L"WireView 已停止。");
-                    return 0;
-                case kDisplaySettingsButton:
-                    open_windows_display_settings();
-                    return 0;
-            }
-            break;
-        case WM_CLOSE:
-            // 简易窗口关闭时仅隐藏到托盘，保持简易模式以便托盘恢复。
-            ShowWindow(window, SW_HIDE);
-            return 0;
-        case WM_GETMINMAXINFO: {
-            auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
-            info->ptMinTrackSize.x = 980;
-            info->ptMinTrackSize.y = 700;
-            return 0;
-        }
-        case WM_SIZE:
-            if (wparam != SIZE_MINIMIZED) {
-                layout_simple_controls(window);
-                InvalidateRect(window, nullptr, FALSE);
-            }
-            return 0;
-        case WM_DPICHANGED: {
-            const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
-            SetWindowPos(window, nullptr, suggested->left, suggested->top,
-                suggested->right - suggested->left, suggested->bottom - suggested->top,
-                SWP_NOZORDER | SWP_NOACTIVATE);
-            return 0;
-        }
-        case WM_DESTROY:
-            g_state.simple_window = nullptr;
-            g_state.simple_status = nullptr;
-            g_state.simple_mirror_button = nullptr;
-            g_state.simple_input_button = nullptr;
-            g_state.simple_extend_button = nullptr;
-            g_state.simple_extend_input_button = nullptr;
-            g_state.simple_display_only_button = nullptr;
-            g_state.simple_stop_button = nullptr;
-            g_state.simple_display_settings_button = nullptr;
-            return 0;
-    }
-    return DefWindowProcW(window, message, wparam, lparam);
-}
 
 void open_simple_mode(HWND full_window) {
     g_state.simple_mode = true;
@@ -5654,6 +5588,14 @@ void show_diagnostics_window(HWND owner) {
 }
 
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (g_taskbar_created_message != 0U && message == g_taskbar_created_message) {
+        // The taskbar was recreated (Explorer restart): re-register the tray
+        // icon, otherwise a window hidden to the tray has no entry point left.
+        if (g_state.tray_added) {
+            add_tray_icon(window);
+        }
+        return 0;
+    }
     switch (message) {
         case WM_CREATE: {
             enable_dark_title_bar(window);
@@ -6124,12 +6066,10 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 case kInputDisplayOnlyButton:
                     g_state.session_input_enabled = false;
                     InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.simple_window, nullptr, FALSE);
                     return 0;
                 case kInputEnabledButton:
                     g_state.session_input_enabled = true;
                     InvalidateRect(window, nullptr, FALSE);
-                    InvalidateRect(g_state.simple_window, nullptr, FALSE);
                     return 0;
                 case kSimpleDisplayOnlyButton:
                     g_state.session_input_enabled = false;
@@ -6228,7 +6168,18 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             if (wparam == kRotateRestartTimer) {
                 KillTimer(window, kRotateRestartTimer);
                 if (g_state.shell_process == nullptr) {
-                    (void)start_session(window, g_state.session_input_enabled);
+                    if (!start_session(window, g_state.session_input_enabled)) {
+                        set_status(L"换向重启失败：会话未能启动。");
+                    }
+                } else {
+                    // Another path (manual start / device probe / VDD-ready
+                    // auto-start) won the 800 ms window; stop it and restart
+                    // so the new orientation actually applies.
+                    set_status(L"检测到会话已在运行，正在按新方向重启…");
+                    stop_session();
+                    if (!start_session(window, g_state.session_input_enabled)) {
+                        set_status(L"换向重启失败：会话未能启动。");
+                    }
                 }
                 // The hint applies to exactly one restart.
                 g_state.rotate_restart_force_wifi = false;
@@ -6267,8 +6218,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     set_status(*script_status);
                 }
                 DWORD exit_code = STILL_ACTIVE;
-                if (!GetExitCodeProcess(g_state.shell_process, &exit_code) ||
-                    exit_code != STILL_ACTIVE) {
+                if (process_exited(g_state.shell_process, &exit_code)) {
                     const bool completed_profile_probe = g_state.profile_probe_active;
                     const std::wstring final_status = read_script_status().value_or(
                         g_state.last_script_status);
@@ -6348,9 +6298,6 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
         case WM_DESTROY:
             g_state.exiting = true;
             log_control_event(L"destroy", L"收到 WM_DESTROY，开始停止会话、VDD 与 WebView。 ");
-            if (g_state.simple_window != nullptr && IsWindow(g_state.simple_window) != FALSE) {
-                DestroyWindow(g_state.simple_window);
-            }
 #ifdef WIREVIEW_WEBVIEW_UI
             if (g_webview_host) {
                 log_control_event(L"destroy", L"正在关闭 WebView2 控制器。 ");
@@ -6443,6 +6390,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     initialize_ui_theme();
     load_control_ui_assets();
 
+    // Explorer restarts broadcast this registered message; remembering the id
+    // lets the window procedure re-add the tray icon afterwards.
+    g_taskbar_created_message = RegisterWindowMessageW(L"TaskbarCreated");
     const WNDCLASSW window_class{
         .lpfnWndProc = window_procedure,
         .hInstance = instance,
@@ -6451,16 +6401,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         .lpszClassName = L"WireViewControlWindow",
     };
     if (RegisterClassW(&window_class) == 0U) {
-        return 1;
-    }
-    const WNDCLASSW simple_window_class{
-        .lpfnWndProc = simple_window_procedure,
-        .hInstance = instance,
-        .hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)),
-        .hbrBackground = g_background_brush,
-        .lpszClassName = L"WireViewSimpleWindow",
-    };
-    if (RegisterClassW(&simple_window_class) == 0U) {
         return 1;
     }
     const WNDCLASSW custom_mode_class{

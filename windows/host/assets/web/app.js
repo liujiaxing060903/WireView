@@ -140,6 +140,10 @@
         : targetId
           ? ('会话目标：' + (targetName || targetId) + (targetIp ? '（' + targetIp + '）' : '（未发现，将用最后地址）'))
           : '尚无配对设备：在下方输入平板 IP 发起配对';
+      // While a pairing attempt runs, the cancel button replaces the plain
+      // pairing entry so a stuck attempt (130 s PIN window) is escapable.
+      const cancelButton = document.querySelector('#wifi-settings-cancel');
+      if (cancelButton) cancelButton.hidden = !state.wifiPairingActive;
       const ipInput = document.querySelector('#wifi-settings-ip');
       if (ipInput && document.activeElement !== ipInput && ipInput.value) {
         // keep user text; never auto-clear while typing
