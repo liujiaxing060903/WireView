@@ -268,20 +268,19 @@ bool WindowsInputInjector::inject_touch_batch(const wireview::protocol::InputBat
         const auto action = record.action;
         if (action == InputAction::hover) {
             // A hover for a contact still held down is an Android
-            // tool-switch transition: treat it as a plain move so the
-            // contact does not freeze at stale coordinates. Hovers for
-            // pointers that are unknown or already released this batch stay
-            // skipped.
+            // tool-switch transition: refresh its coordinates so the
+            // contact does not freeze at stale ones. Keep the staged
+            // action untouched - rewriting a fresh down to a move here
+            // would drop the contact before it was ever injected. Hovers
+            // for pointers that are unknown or already released this batch
+            // stay skipped.
             const auto held = staged_touches.find(record.pointer_id);
             if (held != staged_touches.end() &&
                 held->second.action != static_cast<std::uint8_t>(InputAction::up) &&
                 held->second.action != static_cast<std::uint8_t>(InputAction::cancel)) {
-                held->second = TouchContact{
-                    .normalized_x = record.normalized_x,
-                    .normalized_y = record.normalized_y,
-                    .pressure = record.pressure,
-                    .action = static_cast<std::uint8_t>(InputAction::move),
-                };
+                held->second.normalized_x = record.normalized_x;
+                held->second.normalized_y = record.normalized_y;
+                held->second.pressure = record.pressure;
             }
             continue;
         }

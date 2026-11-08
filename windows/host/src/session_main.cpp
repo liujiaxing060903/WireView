@@ -126,6 +126,9 @@ std::wstring widen_ascii(std::string_view value) {
 // periodic heartbeat lands here, next to the other WireView logs.
 void log_supervisor_line(const std::filesystem::path& status_file,
     const std::string& line) {
+    if (status_file.empty()) {
+        return;
+    }
     const std::filesystem::path directory = status_file.parent_path();
     std::error_code make_error;
     std::filesystem::create_directories(directory, make_error);
@@ -354,8 +357,11 @@ ProcessResult run_capture_bounded(
     // Closing the read end first is essential when this run spawned the adb
     // server: the resident server inherits the pipe handles, so the write
     // end never runs dry and the reader's ReadFile would block forever.
-    // Closing read_pipe fails that pending ReadFile immediately and the
-    // join completes; the collected bytes are already safe in 'bytes'.
+    // Cancel the pending synchronous read first (documented for sync
+    // handles since Windows 8), then close - the failed ReadFile releases
+    // the reader thread and the join completes; the collected bytes are
+    // already safe in 'bytes'.
+    (void)CancelIoEx(read_pipe, nullptr);
     CloseHandle(read_pipe);
     pipe_reader.join();
     if (!bytes.empty()) {
@@ -744,7 +750,6 @@ int run(const Options& options) {
         std::thread reverse_supervisor([&]() {
             const std::string serial_narrow = to_utf8(serial);
             bool last_mapped = true;
-            auto last_heartbeat = std::chrono::steady_clock::now() - std::chrono::seconds(60);
             while (reverse_supervisor_running.load()) {
                 const auto listing = run_capture_bounded(
                     adb, {L"-s", serial, L"reverse", L"--list"},
@@ -759,10 +764,10 @@ int run(const Options& options) {
                         {}, {}, 15'000U);
                     rebuild_ok = rebuild.started && rebuild.exit_code == 0U;
                 }
-                const auto now = std::chrono::steady_clock::now();
-                if (mapped != last_mapped || now - last_heartbeat >= std::chrono::seconds(15)) {
+                // Log on state flips only: a periodic heartbeat would grow
+                // the file without bound on long sessions.
+                if (mapped != last_mapped) {
                     last_mapped = mapped;
-                    last_heartbeat = now;
                     log_supervisor_line(options.status_file,
                         "serial=" + serial_narrow +
                         " mapped=" + (mapped ? "1" : "0") +

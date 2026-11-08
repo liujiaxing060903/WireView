@@ -427,7 +427,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     // gain 0.85 puts a typical SDR white (~2.5) at ~0.88 display white,
     // 80-nit reference white at ~0.57, and nothing ever saturates.
     float4 scrgb = hdrTexture.Sample(pointSampler, uv);
-    float3 mapped = 1.0 - exp(-scrgb.rgb * 0.85);
+    float3 mapped = saturate(1.0 - exp(-max(scrgb.rgb, 0.0) * 0.85));
     return float4(pow(mapped, 1.0 / 2.2), 1.0);
 }
 )";
