@@ -65,6 +65,14 @@ std::wstring host_display_name();
 std::vector<DiscoveredDevice> devices();
 std::vector<WhitelistItem> whitelist_entries();
 
+// The auto/manual-selected session target for the web UI.
+struct TargetInfo {
+    std::wstring android_id;
+    std::wstring device_name;
+    std::wstring ip;  // dial address (empty = not discovered yet)
+};
+TargetInfo target_info();
+
 // Session target selection and credential resolution for start_session.
 void select_target(const std::wstring& android_id);
 bool has_session_target();

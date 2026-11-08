@@ -280,6 +280,23 @@ std::vector<DiscoveredDevice> devices() {
     return result;
 }
 
+TargetInfo target_info() {
+    std::lock_guard lock(g_mutex);
+    TargetInfo info;
+    info.android_id = g_selected_id;
+    info.ip = g_selected_ip;
+    info.device_name = g_selected_name;
+    if (info.device_name.empty() && info.android_id.empty() == false) {
+        for (const auto& entry : whitelist().entries()) {
+            if (ascii_to_wide(entry.android_id) == info.android_id) {
+                info.device_name = ascii_to_wide(entry.device_name);
+                break;
+            }
+        }
+    }
+    return info;
+}
+
 std::vector<WhitelistItem> whitelist_entries() {
     std::vector<WhitelistItem> result;
     std::lock_guard lock(g_mutex);
