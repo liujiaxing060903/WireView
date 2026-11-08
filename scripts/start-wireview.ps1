@@ -108,10 +108,26 @@ if ($StreamWidth -ne 0 -and (($StreamWidth % 2) -ne 0 -or ($StreamHeight % 2) -n
     throw 'StreamWidth and StreamHeight must both be even for H.264 NV12.'
 }
 
-$hostExecutable = Join-Path $repoRoot 'build\windows-nmake\windows\host\wireview_host.exe'
-if (-not (Test-Path -LiteralPath $hostExecutable)) {
+# Locate the most recent build tree instead of hardcoding windows-nmake:
+# build-windows.ps1 places Release builds in build\windows-release (or a
+# caller-supplied windows-release-* directory). Probe the known candidates
+# in order and use the first one that actually contains the host.
+$buildRoot = Join-Path $repoRoot 'build'
+$buildCandidates = [Collections.Generic.List[string]]::new()
+$buildCandidates.Add((Join-Path $buildRoot 'windows-nmake'))
+$buildCandidates.Add((Join-Path $buildRoot 'windows-release'))
+if (Test-Path -LiteralPath $buildRoot) {
+    Get-ChildItem -LiteralPath $buildRoot -Directory -Filter 'windows-release-*' |
+        Sort-Object Name |
+        ForEach-Object { $buildCandidates.Add($_.FullName) }
+}
+$hostDirectory = $buildCandidates |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_ 'windows\host\wireview_host.exe') } |
+    Select-Object -First 1
+if (-not $hostDirectory) {
     throw 'wireview_host.exe is missing. Run scripts\build-windows.ps1 first.'
 }
+$hostExecutable = Join-Path $hostDirectory 'windows\host\wireview_host.exe'
 
 function Assert-CaptureDisplayAttached {
     if (-not $DisplayDevice) {
@@ -147,6 +163,12 @@ $deadline = [DateTime]::UtcNow.AddMinutes($DurationMinutes)
 $logDirectory = Join-Path $env:TEMP 'WireView'
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 $script:ReconnectCount = 0
+# One stable log pair per launcher run, overwritten each retry: a host that
+# fails immediately used to leave two GUID-named log files per retry second
+# in %TEMP%\WireView with no cleanup.
+$sessionId = [guid]::NewGuid().ToString('N')
+$outputLog = Join-Path $logDirectory "mirror-$sessionId.out.log"
+$errorLog = Join-Path $logDirectory "mirror-$sessionId.err.log"
 if ($DeviceProfileProbe) {
     Publish-Status 'WireView is identifying the connected Android display.' 'identifying_device'
 } elseif ($DevicePreview) {
@@ -217,9 +239,6 @@ while ([DateTime]::UtcNow -lt $deadline) {
         $hostArguments += @('--status-file', $StatusFile)
     }
 
-    $sessionId = [guid]::NewGuid().ToString('N')
-    $outputLog = Join-Path $logDirectory "mirror-$sessionId.out.log"
-    $errorLog = Join-Path $logDirectory "mirror-$sessionId.err.log"
     $captureLabel = if ($UseParsecVdd) { 'a new Parsec VDD display' } elseif ($DisplayDevice) { "display $DisplayDevice" } else { 'the primary display' }
     if ($DeviceProfileProbe) {
         Publish-Status 'WireView is identifying the connected Android display.' 'identifying_device'

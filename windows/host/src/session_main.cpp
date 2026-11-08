@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <thread>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -44,16 +46,30 @@ struct ProcessResult {
     bool started{false};
 };
 
+// Full CommandLineToArgvW-compatible quoting: every run of backslashes
+// that directly precedes a double quote (or ends the argument) must be
+// doubled so the child recovers the original characters. The previous
+// simplified version mangled arguments such as C:\dir\ or values
+// containing \", shifting every later argument of the child command line.
 std::wstring quote_argument(const std::wstring& value) {
     std::wstring quoted{L"\""};
+    std::size_t backslashes{};
     for (const wchar_t character : value) {
-        if (character == L'\"') {
-            quoted += L"\\\"";
-        } else {
-            quoted += character;
+        if (character == L'\\') {
+            ++backslashes;
+            continue;
         }
+        if (character == L'\"') {
+            quoted.append(backslashes + 1U, L'\\');
+            quoted.push_back(character);
+        } else {
+            quoted.append(backslashes, L'\\');
+            quoted.push_back(character);
+        }
+        backslashes = 0U;
     }
-    quoted += L"\"";
+    quoted.append(backslashes * 2U, L'\\');
+    quoted += L'\"';
     return quoted;
 }
 
@@ -91,6 +107,16 @@ std::string to_utf8(const std::wstring& value) {
     std::string result(static_cast<std::size_t>(length), '\0');
     WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
         result.data(), length, nullptr, nullptr);
+    return result;
+}
+
+// Widens narrow ASCII diagnostics (exception messages) back to wide text
+// for the status file.
+std::wstring widen_ascii(std::string_view value) {
+    std::wstring result(value.size(), L'\0');
+    for (std::size_t index = 0U; index < value.size(); ++index) {
+        result[index] = static_cast<wchar_t>(static_cast<unsigned char>(value[index]));
+    }
     return result;
 }
 
@@ -132,11 +158,22 @@ void write_status(const Options& options, const std::wstring& state,
     if (options.status_file.empty()) {
         return;
     }
+    // The status file is the session's only feedback channel; every failure
+    // below leaves a debugger-visible trace so a stalled control center can
+    // be diagnosed instead of polling a stale state forever without a hint.
     std::error_code error;
-    std::filesystem::create_directories(options.status_file.parent_path(), error);
+    if (!std::filesystem::create_directories(options.status_file.parent_path(), error) &&
+        error) {
+        OutputDebugStringA(("WireView session: creating the status directory failed (error " +
+            std::to_string(error.value()) + "): " +
+            to_utf8(options.status_file.parent_path().wstring()) + "\n").c_str());
+        error.clear();
+    }
     const auto temporary = options.status_file.wstring() + L".tmp";
     std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
     if (!stream) {
+        OutputDebugStringA(("WireView session: opening the status temporary file failed: " +
+            to_utf8(temporary) + "\n").c_str());
         return;
     }
     const std::wstring status = L"version=1\nstate=" + state + L"\nmessage=" + message +
@@ -152,10 +189,86 @@ void write_status(const Options& options, const std::wstring& state,
     stream.close();
     std::filesystem::rename(temporary, options.status_file, error);
     if (error) {
+        // The control center may briefly hold the target file open while
+        // polling; remove and rename once more before giving up with a trace.
+        OutputDebugStringA(("WireView session: publishing the status file failed (error " +
+            std::to_string(error.value()) + "), retrying: " +
+            to_utf8(options.status_file.wstring()) + "\n").c_str());
+        error.clear();
         std::filesystem::remove(options.status_file, error);
         error.clear();
         std::filesystem::rename(temporary, options.status_file, error);
+        if (error) {
+            OutputDebugStringA(("WireView session: the status file rename retry failed (error " +
+                std::to_string(error.value()) + "): " +
+                to_utf8(options.status_file.wstring()) + "\n").c_str());
+        }
     }
+}
+
+// adb.exe is the machine-wide Android debug bridge server: once started it
+// outlives WireView and is shared with other tools on the machine. When
+// this session runs inside the control center's kill-on-close job, every
+// spawned adb (and the detached server it forks) would be terminated with
+// the session, so adb launches request CREATE_BREAKAWAY_FROM_JOB. The
+// host executable never matches this predicate and always stays in the job.
+bool is_adb_executable(const std::filesystem::path& executable) {
+    constexpr std::wstring_view kAdbFileName = L"adb.exe";
+    const std::wstring filename = executable.filename().wstring();
+    if (filename.size() != kAdbFileName.size()) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < kAdbFileName.size(); ++index) {
+        const auto lowered = static_cast<wchar_t>(towlower(filename[index]));
+        if (lowered != kAdbFileName[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<wchar_t> build_command_line(const std::filesystem::path& executable,
+    const std::vector<std::wstring>& arguments) {
+    std::wstring command = quote_argument(executable.wstring());
+    for (const auto& argument : arguments) {
+        command += L" ";
+        command += quote_argument(argument);
+    }
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    return buffer;
+}
+
+BOOL spawn_child_process(const std::filesystem::path& executable, wchar_t* command_line,
+    const std::filesystem::path& working_directory, STARTUPINFOW* startup,
+    PROCESS_INFORMATION* process) {
+    const bool wants_breakaway = is_adb_executable(executable);
+    const std::wstring directory = working_directory.empty()
+        ? std::wstring{}
+        : working_directory.wstring();
+    const wchar_t* directory_argument = directory.empty() ? nullptr : directory.c_str();
+    const DWORD base_flags = CREATE_NO_WINDOW;
+    BOOL created = FALSE;
+    if (wants_breakaway) {
+        // adb escapes the kill-on-close job so the system singleton adb
+        // server survives a session stop (it would otherwise take down
+        // Android Studio and every other adb user on the machine).
+        created = CreateProcessW(executable.c_str(), command_line, nullptr, nullptr, TRUE,
+            base_flags | CREATE_BREAKAWAY_FROM_JOB, nullptr, directory_argument, startup,
+            process);
+        if (!created) {
+            // A job created without JOB_OBJECT_LIMIT_BREAKAWAY_OK refuses
+            // the escape (for example a session launched by an older
+            // control center); degrade to a regular in-job child. A retry
+            // for unrelated failure causes just fails again harmlessly.
+            created = CreateProcessW(executable.c_str(), command_line, nullptr, nullptr,
+                TRUE, base_flags, nullptr, directory_argument, startup, process);
+        }
+    } else {
+        created = CreateProcessW(executable.c_str(), command_line, nullptr, nullptr, TRUE,
+            base_flags, nullptr, directory_argument, startup, process);
+    }
+    return created;
 }
 
 // Bounded variant for housekeeping adb calls: a hung adbd half-open
@@ -179,13 +292,7 @@ ProcessResult run_capture_bounded(
         return {};
     }
     SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0U);
-    std::wstring command = quote_argument(executable.wstring());
-    for (const auto& argument : arguments) {
-        command += L" ";
-        command += quote_argument(argument);
-    }
-    std::vector<wchar_t> command_buffer(command.begin(), command.end());
-    command_buffer.push_back(L'\0');
+    std::vector<wchar_t> command_buffer = build_command_line(executable, arguments);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -193,9 +300,8 @@ ProcessResult run_capture_bounded(
     startup.hStdError = write_pipe;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION process{};
-    const std::wstring directory = working_directory.empty() ? L"" : working_directory.wstring();
-    const BOOL created = CreateProcessW(executable.c_str(), command_buffer.data(), nullptr, nullptr,
-        TRUE, CREATE_NO_WINDOW, nullptr, directory.empty() ? nullptr : directory.c_str(), &startup, &process);
+    const BOOL created = spawn_child_process(executable, command_buffer.data(),
+        working_directory, &startup, &process);
     CloseHandle(write_pipe);
     if (!created) {
         CloseHandle(read_pipe);
@@ -244,13 +350,7 @@ ProcessResult run_capture(const std::filesystem::path& executable,
         return {};
     }
     SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0U);
-    std::wstring command = quote_argument(executable.wstring());
-    for (const auto& argument : arguments) {
-        command += L" ";
-        command += quote_argument(argument);
-    }
-    std::vector<wchar_t> command_buffer(command.begin(), command.end());
-    command_buffer.push_back(L'\0');
+    std::vector<wchar_t> command_buffer = build_command_line(executable, arguments);
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;
@@ -258,9 +358,8 @@ ProcessResult run_capture(const std::filesystem::path& executable,
     startup.hStdError = write_pipe;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION process{};
-    const std::wstring directory = working_directory.empty() ? L"" : working_directory.wstring();
-    const BOOL created = CreateProcessW(executable.c_str(), command_buffer.data(), nullptr, nullptr,
-        TRUE, CREATE_NO_WINDOW, nullptr, directory.empty() ? nullptr : directory.c_str(), &startup, &process);
+    const BOOL created = spawn_child_process(executable, command_buffer.data(),
+        working_directory, &startup, &process);
     CloseHandle(write_pipe);
     if (!created) {
         CloseHandle(read_pipe);
@@ -327,7 +426,13 @@ bool parse_unsigned(std::wstring_view value, std::uint32_t* target) {
         if (character < L'0' || character > L'9') {
             return false;
         }
-        result = result * 10U + static_cast<std::uint32_t>(character - L'0');
+        const std::uint32_t digit = static_cast<std::uint32_t>(character - L'0');
+        // Reject values that would wrap around uint32_t; without this a
+        // --duration-seconds of 4294967297 would silently become 1 second.
+        if (result > (UINT32_MAX - digit) / 10U) {
+            return false;
+        }
+        result = result * 10U + digit;
     }
     *target = result;
     return true;
@@ -374,6 +479,14 @@ bool parse_arguments(int argc, wchar_t** argv, Options* options) {
                 return false;
             }
             options->wifi_endpoint = argv[++index];
+            // The downstream WiFi transport is IPv4-only (it fills a
+            // sockaddr_in). An endpoint with more than one colon is an
+            // IPv6 literal or malformed; reject it here, at parse time,
+            // instead of failing later with a misleading ip:port split.
+            if (std::count(options->wifi_endpoint.begin(), options->wifi_endpoint.end(),
+                    L':') > 1) {
+                throw std::invalid_argument("IPv6 endpoints are not supported; use IPv4:port");
+            }
         } else {
             return false;
         }
@@ -389,7 +502,13 @@ ProcessResult run_host(const Options& options, const std::filesystem::path& host
     if (options.device_profile_probe) {
         arguments.push_back(L"--probe-device-profile");
     } else if (options.device_preview) {
-        arguments.insert(arguments.end(), {L"--device-preview", std::to_wstring(session_seconds)});
+        // The host rejects --device-preview durations above 1800 seconds,
+        // while sessions default to an "until stopped" duration. Clamp the
+        // forwarded preview duration to that CLI contract; the mirror and
+        // reconnect paths below have no such cap.
+        constexpr std::uint32_t kMaximumPreviewSeconds = 1'800U;
+        arguments.insert(arguments.end(), {L"--device-preview",
+            std::to_wstring((std::min)(session_seconds, kMaximumPreviewSeconds))});
     } else {
         arguments.insert(arguments.end(), {L"--stream-desktop", std::to_wstring(session_seconds)});
         arguments.push_back(L"--display");
@@ -531,7 +650,7 @@ int run(const Options& options) {
             Sleep(1000U);
             continue;
         }
-        const auto device_query = run_capture(adb, {L"devices"});
+        const auto device_query = run_capture_bounded(adb, {L"devices"});
         const auto devices = device_query.started ? connected_devices(device_query.output) : std::vector<std::wstring>{};
         if (devices.size() != 1U) {
             if (device_query.output.find(L"\tunauthorized") != std::wstring::npos) {
@@ -545,18 +664,18 @@ int run(const Options& options) {
             continue;
         }
         const auto& serial = devices.front();
-        const auto package = run_capture(adb, {L"-s", serial, L"shell", L"pm", L"path", std::wstring(kPackageName)});
+        const auto package = run_capture_bounded(adb, {L"-s", serial, L"shell", L"pm", L"path", std::wstring(kPackageName)});
         if (!package.started || package.exit_code != 0U || package.output.find(L"package:") == std::wstring::npos) {
             write_status(options, L"error", L"未检测到 WireView Android 应用；请先安装 APK。", reconnect_count);
             return 3;
         }
-        const auto reverse = run_capture(adb, {L"-s", serial, L"reverse", std::wstring(kReversePort), std::wstring(kReversePort)});
+        const auto reverse = run_capture_bounded(adb, {L"-s", serial, L"reverse", std::wstring(kReversePort), std::wstring(kReversePort)});
         if (!reverse.started || reverse.exit_code != 0U) {
             write_status(options, L"waiting", L"ADB 端口映射失败，正在重试。", reconnect_count);
             Sleep(1000U);
             continue;
         }
-        const auto launch = run_capture(adb, {L"-s", serial, L"shell", L"am", L"start", L"-n", std::wstring(kActivityName)});
+        const auto launch = run_capture_bounded(adb, {L"-s", serial, L"shell", L"am", L"start", L"-n", std::wstring(kActivityName)});
         if (!launch.started || launch.exit_code != 0U) {
             write_status(options, L"waiting", L"无法启动 WireView Android 应用，正在重试。", reconnect_count);
             Sleep(1000U);
@@ -620,7 +739,7 @@ int detect_single_adb_device(bool require_wireview_app) {
     if (adb.empty()) {
         return 2;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     if (!query.started || query.exit_code != 0U) {
         return 2;
     }
@@ -637,7 +756,7 @@ int detect_single_adb_device(bool require_wireview_app) {
     if (!require_wireview_app) {
         return 0;
     }
-    const auto process = run_capture(adb, {L"-s", devices.front(), L"shell", L"pidof",
+    const auto process = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"pidof",
         std::wstring(kPackageName)});
     const bool app_running = process.started && process.exit_code == 0U &&
         std::any_of(process.output.begin(), process.output.end(), [](wchar_t character) {
@@ -649,7 +768,7 @@ int detect_single_adb_device(bool require_wireview_app) {
     // “划掉后台”时 Android 进程可能短暂仍在，pidof 因而不能代表活动仍可用。
     // 若系统提供 resumed/top-resumed 行，则要求当前前台确实是 WireView；旧系统或
     // 厂商删减 dumpsys 输出时安全地退回到 pidof，避免错误拒绝正常设备。
-    const auto activities = run_capture(adb, {L"-s", devices.front(), L"shell", L"dumpsys",
+    const auto activities = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"dumpsys",
         L"activity", L"activities"});
     if (!activities.started || activities.exit_code != 0U) {
         return 0;
@@ -680,14 +799,14 @@ int notify_android_stop() {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.WIREVIEW_STOPPED"});
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
@@ -697,14 +816,14 @@ int notify_android_host_exited() {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.HOST_EXITED"});
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
@@ -720,14 +839,14 @@ int notify_pairing_approved(wchar_t** argv) {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.WIREVIEW_PAIRING_APPROVED",
         L"--es", L"pin", pin});
     return result.started && result.exit_code == 0U ? 0 : 1;
@@ -738,14 +857,14 @@ int notify_android_device_identified() {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.DEVICE_IDENTIFIED"});
     return result.started && result.exit_code == 0U ? 0 : 1;
 }
@@ -755,14 +874,14 @@ int notify_android_vdd_created(wchar_t** argv) {
     if (adb.empty()) {
         return 1;
     }
-    const auto query = run_capture(adb, {L"devices"});
+    const auto query = run_capture_bounded(adb, {L"devices"});
     const auto devices = query.started && query.exit_code == 0U
         ? connected_devices(query.output)
         : std::vector<std::wstring>{};
     if (devices.size() != 1U) {
         return 1;
     }
-    const auto result = run_capture(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
+    const auto result = run_capture_bounded(adb, {L"-s", devices.front(), L"shell", L"am", L"broadcast",
         L"-a", L"com.wireview.receiver.action.VDD_CREATED",
         L"--ei", L"stream_width", argv[2],
         L"--ei", L"stream_height", argv[3],
@@ -788,7 +907,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     const bool notify_vdd = argc == 5 && std::wstring_view(argv[1]) == L"--notify-vdd-created";
     const bool notify_pairing = argc == 3 && std::wstring_view(argv[1]) == L"--notify-pairing-approved";
     Options options;
-    const bool valid = !detect_device && !notify_stop && !notify_host_exited && !notify_identified && !notify_vdd && !notify_pairing && parse_arguments(argc, argv, &options);
+    bool valid = false;
+    try {
+        valid = !detect_device && !notify_stop && !notify_host_exited && !notify_identified &&
+            !notify_vdd && !notify_pairing && parse_arguments(argc, argv, &options);
+    } catch (const std::exception& error) {
+        // Argument validation (for example IPv6 WiFi endpoints) reports
+        // specific reasons by exception; surface them through the status
+        // file when it was already parsed, and never let them escape
+        // wWinMain as a silent std::terminate.
+        OutputDebugStringA((std::string("WireView session: ") + error.what() + "\n").c_str());
+        if (!options.status_file.empty()) {
+            write_status(options, L"error", widen_ascii(error.what()), 0U);
+        }
+        LocalFree(argv);
+        return 1;
+    }
     if (detect_device) {
         LocalFree(argv);
         return require_wireview_app || argc == 2 ? detect_single_adb_device(require_wireview_app) : 1;

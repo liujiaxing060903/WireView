@@ -43,7 +43,11 @@ if (@($apkMetadata.elements).Count -ne 1 -or
     throw "Android APK 版本与发布版本 $Version 不一致，请先重新构建 Android。"
 }
 $webIndex = Get-Content -Raw -LiteralPath (Join-Path $runtimeDirectory 'web/index.html')
-if ($webIndex -notmatch [regex]::Escape("版本 $Version")) {
+# Anchor the version so "版本 1.1.20" cannot satisfy Version=1.1.2 by a
+# digit continuation (and vice versa): the match must end at a non-digit
+# or at the end of the file content.
+$versionPattern = '版本 ' + [regex]::Escape($Version) + '(\D|$)'
+if ($webIndex -notmatch $versionPattern) {
     throw "Windows 控制中心版本与发布版本 $Version 不一致，请先重新构建 Windows。"
 }
 foreach ($destination in @($packageDirectory, $archivePath, $apkDestination)) {

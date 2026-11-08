@@ -243,9 +243,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             display_device = session.wait_for_display(std::chrono::seconds(30));
         } catch (const std::exception& first_attempt_error) {
             const std::string first_detail(first_attempt_error.what());
-            const bool first_display_never_attached = first_detail.find(
-                "Parsec VDD created a display but WireView did not find a uniquely new attached") !=
-                std::string::npos;
+            // Prefer the concrete VddAttachError type; keep the legacy
+            // substring match only so an older parsec_vdd message still
+            // triggers the same recovery.
+            const bool first_display_never_attached =
+                dynamic_cast<const wireview::host::VddAttachError*>(&first_attempt_error) !=
+                    nullptr ||
+                first_detail.find(
+                    "Parsec VDD created a display but WireView did not find a uniquely new attached") !=
+                    std::string::npos;
             if (!first_display_never_attached) {
                 throw;
             }

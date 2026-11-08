@@ -191,7 +191,7 @@ target_link_libraries(wireview_host PRIVATE
 target_compile_features(wireview_host PRIVATE cxx_std_20)
 
 if(MSVC)
-    target_compile_options(wireview_host PRIVATE /W4 /WX /permissive-)
+    target_compile_options(wireview_host PRIVATE /W4 /WX /permissive- /utf-8)
     target_compile_options(wireview_control PRIVATE /W4 /WX /permissive- /utf-8)
     target_compile_options(wireview_control_legacy PRIVATE /W4 /WX /permissive- /utf-8)
     target_compile_options(wireview_session PRIVATE /W4 /WX /permissive- /utf-8)
