@@ -118,7 +118,8 @@ final class WifiAuthCrypto {
         return result;
     }
 
-    private static byte[] concat(byte[]... parts) {
+    /** Package-private so {@link WifiPairing} can delegate (A7 N7). */
+    static byte[] concat(byte[]... parts) {
         int total = 0;
         for (byte[] part : parts) {
             total += part.length;
