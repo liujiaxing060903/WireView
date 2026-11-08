@@ -61,6 +61,11 @@ button:disabled { cursor: not-allowed; opacity: .42; }
   top: calc(100% + 20px);
   right: 0;
   width: 348px;
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #3b5570 transparent;
   padding: 15px;
   border: 1px solid #344761;
   border-radius: 12px;

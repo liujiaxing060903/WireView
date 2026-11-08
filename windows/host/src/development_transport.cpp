@@ -998,7 +998,7 @@ void send_desktop_stream(
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
     std::deque<std::vector<std::uint8_t>> outbound;
-    bool sender_running{true};
+    std::atomic_bool sender_running{true};
     std::exception_ptr sender_error;
     std::uint64_t dropped_frames{0};
     std::uint64_t slow_writes{0};
@@ -1029,18 +1029,44 @@ void send_desktop_stream(
 
     std::thread sender_thread([&] {
         auto last_slow_log = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        // Keepalive: pings used to ride only on video frames, so a static
+        // desktop produced no traffic at all - a dead link went unnoticed
+        // by the sender (nothing to write) and the tablet's idle read
+        // timeout fired into a host that never returned to accept. An
+        // independent heartbeat both detects the dead link here (the write
+        // fails and ends the session into the reconnect loop) and keeps
+        // the tablet's flow-phase read timeout from tripping on a live
+        // but static session.
+        auto last_wire_activity = std::chrono::steady_clock::now();
+        std::uint64_t keepalive_sequence = 0U;
+        constexpr auto kKeepaliveInterval = std::chrono::seconds(5);
         for (;;) {
             std::vector<std::uint8_t> bytes;
             {
                 std::unique_lock lock(queue_mutex);
-                queue_cv.wait(lock, [&] {
+                queue_cv.wait_for(lock, std::chrono::seconds(2), [&] {
                     return !outbound.empty() || !sender_running;
                 });
                 if (outbound.empty()) {
-                    return;
+                    if (!sender_running) {
+                        return;
+                    }
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last_wire_activity < kKeepaliveInterval) {
+                        continue;
+                    }
+                    last_wire_activity = now;
+                    bytes = wireview::protocol::encode_packet(
+                        wireview::protocol::PacketHeader{
+                            .type = wireview::protocol::PacketType::ping,
+                            .sequence = keepalive_sequence++,
+                            .timestamp_micros = monotonic_micros(),
+                        },
+                        {});
+                } else {
+                    bytes = std::move(outbound.front());
+                    outbound.pop_front();
                 }
-                bytes = std::move(outbound.front());
-                outbound.pop_front();
             }
             const auto write_started = std::chrono::steady_clock::now();
             try {
@@ -1053,6 +1079,7 @@ void send_desktop_stream(
                 queue_cv.notify_all();
                 return;
             }
+            last_wire_activity = std::chrono::steady_clock::now();
             const auto write_elapsed = std::chrono::steady_clock::now() - write_started;
             if (write_elapsed > std::chrono::milliseconds(5)) {
                 ++slow_writes;
@@ -1176,6 +1203,12 @@ void send_desktop_stream(
         },
         .consume_bitrate_command = [&] {
             return adaptive_state.consume();
+        },
+        .should_abort = [&] {
+            // The sender clears this flag when its keepalive write failed
+            // (link dead); the input thread clears its own when the receive
+            // loop terminated. Both atomics, readable from the encode loop.
+            return !sender_running.load() || !input_running.load();
         },
     };
 

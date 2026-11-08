@@ -49,6 +49,11 @@ final class ConnectionClient implements AutoCloseable {
     // so a live stream never trips this; a half-open link now fails in
     // seconds instead of waiting on TCP keepalives or an infinite read.
     private static final int FLOW_IDLE_READ_TIMEOUT_MILLIS = 25_000;
+    // Bound for the HELLO read on non-WiFi rounds (USB probe path): the PC
+    // may still be re-running its session when we connect, so the HELLO can
+    // legitimately take a few seconds - but an unbounded read here would
+    // park this thread forever on a connection nobody will ever serve.
+    private static final int HELLO_READ_TIMEOUT_MILLIS = 12_000;
     // A pairing failure stays on screen this long before the generic
     // waiting status may overwrite it (connection-side half of A7 claim 3).
     private static final long PAIRING_FAILURE_HOLD_MILLIS = 3_000L;
@@ -269,6 +274,9 @@ final class ConnectionClient implements AutoCloseable {
         while (running.get()) {
             boolean handshakeCompleted = false;
             boolean wifiTransport = wifiRequested;
+            // Set once the bounded HELLO read is armed on a non-WiFi round;
+            // lets the timeout catch log a trace it would otherwise skip.
+            boolean helloReadBound = false;
             if (isUsbAccessory()) {
                 PersistentDiagnosticLog.record("ConnectionClient", "opening USB transport");
             }
@@ -327,7 +335,18 @@ final class ConnectionClient implements AutoCloseable {
 
                 // The USB probe path already pre-read its HELLO (deferred);
                 // every other path reads it here, still under the handshake
-                // bound on WiFi.
+                // bound on WiFi. Non-WiFi rounds get their own bound: a
+                // connection accepted (or backlog-queued) while the PC side
+                // is still tearing down its previous session must not park
+                // this thread forever waiting for a HELLO that may never come.
+                if (!wifiTransport && round.deferredPacket == null) {
+                    helloReadBound = true;
+                    try {
+                        activeConnection.setReadTimeout(HELLO_READ_TIMEOUT_MILLIS);
+                    } catch (IOException ignored) {
+                        // Transports without read timeouts unblock on close.
+                    }
+                }
                 Protocol.Packet hello = round.deferredPacket != null
                         ? round.deferredPacket
                         : Protocol.readPacket(input);
@@ -378,7 +397,7 @@ final class ConnectionClient implements AutoCloseable {
                 // Same recovery as any I/O failure, but with its own trace
                 // because nothing else about the socket is wrong.
                 if (running.get()) {
-                    if (handshakeCompleted || isUsbAccessory() || wifiTransport) {
+                    if (handshakeCompleted || helloReadBound || isUsbAccessory() || wifiTransport) {
                         PersistentDiagnosticLog.record(
                                 "ConnectionClient",
                                 "read timed out: link went silent (" + readTimeout + ")");

@@ -120,6 +120,25 @@ std::wstring widen_ascii(std::string_view value) {
     return result;
 }
 
+// Append-only diagnostics for the reverse supervisor. The supervisor used
+// to fail silently, which made "replug never recovers" undiagnosable: the
+// only evidence was a missing mapping. One line per state change plus a
+// periodic heartbeat lands here, next to the other WireView logs.
+void log_supervisor_line(const std::filesystem::path& status_file,
+    const std::string& line) {
+    const std::filesystem::path directory = status_file.parent_path();
+    std::error_code make_error;
+    std::filesystem::create_directories(directory, make_error);
+    const std::filesystem::path log_file = directory / L"reverse-supervisor.log";
+    std::ofstream stream(log_file, std::ios::app);
+    if (!stream) {
+        return;
+    }
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+    stream << seconds << ' ' << line << '\n';
+}
+
 std::filesystem::path find_adb() {
     std::vector<std::filesystem::path> candidates;
     const auto executable_directory = current_executable().parent_path();
@@ -702,17 +721,33 @@ int run(const Options& options) {
         // 会先删旧映射，踢断正在工作的连接）。
         std::atomic_bool reverse_supervisor_running{true};
         std::thread reverse_supervisor([&]() {
+            const std::string serial_narrow = to_utf8(serial);
+            bool last_mapped = true;
+            auto last_heartbeat = std::chrono::steady_clock::now() - std::chrono::seconds(60);
             while (reverse_supervisor_running.load()) {
                 const auto listing = run_capture_bounded(
                     adb, {L"-s", serial, L"reverse", L"--list"},
                     {}, {}, 15'000U);
                 const bool mapped = listing.started && listing.exit_code == 0U &&
                     listing.output.find(std::wstring(kReversePort)) != std::wstring::npos;
+                bool rebuild_ok = true;
                 if (!mapped) {
-                    (void)run_capture_bounded(
+                    const auto rebuild = run_capture_bounded(
                         adb, {L"-s", serial, L"reverse",
                               std::wstring(kReversePort), std::wstring(kReversePort)},
                         {}, {}, 15'000U);
+                    rebuild_ok = rebuild.started && rebuild.exit_code == 0U;
+                }
+                const auto now = std::chrono::steady_clock::now();
+                if (mapped != last_mapped || now - last_heartbeat >= std::chrono::seconds(15)) {
+                    last_mapped = mapped;
+                    last_heartbeat = now;
+                    log_supervisor_line(options.status_file,
+                        "serial=" + serial_narrow +
+                        " mapped=" + (mapped ? "1" : "0") +
+                        (mapped ? "" : (rebuild_ok ? " rebuild=ok" : " rebuild=failed")) +
+                        " list_exit=" + std::to_string(listing.exit_code) +
+                        " list_started=" + (listing.started ? "1" : "0"));
                 }
                 for (int tick = 0; tick < 20 && reverse_supervisor_running.load(); ++tick) {
                     Sleep(100U);

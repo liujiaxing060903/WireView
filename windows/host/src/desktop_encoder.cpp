@@ -419,11 +419,15 @@ VertexOutput main(uint vertexId : SV_VertexID) {
 Texture2D<float4> hdrTexture : register(t0);
 SamplerState pointSampler : register(s0);
 float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
-    // scRGB linear light: 1.0 corresponds to 80 nits. A 200-nit SDR white
-    // keeps bright windows readable on the tablet; gamma-encode into the
-    // display-referred BGRA path the rest of the pipeline expects.
+    // scRGB linear light: 1.0 corresponds to 80 nits. DWM lifts SDR content
+    // above that by the "SDR content brightness" slider, so ordinary white
+    // windows land around 2.0-3.0 - the old saturate(v * 200/80) mapped all
+    // of them to clipped pure white on the tablet (blinding). Exponential
+    // exposure mapping rolls highlights off smoothly instead of clipping:
+    // gain 0.85 puts a typical SDR white (~2.5) at ~0.88 display white,
+    // 80-nit reference white at ~0.57, and nothing ever saturates.
     float4 scrgb = hdrTexture.Sample(pointSampler, uv);
-    float3 mapped = saturate(scrgb.rgb * (200.0 / 80.0));
+    float3 mapped = 1.0 - exp(-scrgb.rgb * 0.85);
     return float4(pow(mapped, 1.0 / 2.2), 1.0);
 }
 )";
@@ -2262,6 +2266,20 @@ int run_desktop_encode_session(
     encoder->start();
 
     while (!drained) {
+        // The sender keepalive marks the session dead when the link is gone
+        // (idle heartbeat write fails, or the input thread terminated); a
+        // static desktop produces no frames, so this poll - not on_frame -
+        // is what actually ends such a session into the reconnect loop.
+        if (callbacks.should_abort && callbacks.should_abort()) {
+            // Aborted sessions never reach the final stats block; print the
+            // duplication health here so a "frozen picture" report can be
+            // attributed: desktopUpdates ~= delivered means duplication was
+            // healthy and the freeze was perceived; desktopUpdates << means
+            // the capture interface itself stalled.
+            std::cerr << "Session aborted | desktopUpdates=" << frames->updates()
+                      << " | encoded=" << encoded << '\n';
+            throw std::runtime_error("stream aborted: link or input thread is gone");
+        }
         const HardwareAvcEncoder::EncoderEvent event = encoder->next_event();
         if (event.type != MEUnknown && event.type != MENonFatalError) {
             // Any healthy event breaks a run of non-fatal errors.
