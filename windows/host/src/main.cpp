@@ -143,6 +143,9 @@ int main(int argument_count, char** arguments) {
         if (argument_count == 2 && std::string_view(arguments[1]) == "--list-displays") {
             return wireview::host::run_desktop_display_list();
         }
+        if (argument_count == 3 && std::string_view(arguments[1]) == "--test-cursor") {
+            return wireview::host::run_cursor_shape_probe(arguments[2]);
+        }
         if (argument_count == 2 && std::string_view(arguments[1]) == "--probe-parsec-vdd") {
             const auto probe = wireview::host::probe_parsec_vdd();
             std::cout << "Parsec VDD: " << probe.detail;
@@ -167,13 +170,28 @@ int main(int argument_count, char** arguments) {
             return wireview::host::run_desktop_capture_benchmark(
                 std::chrono::seconds(seconds));
         }
-        if (argument_count == 3 && std::string_view(arguments[1]) == "--encode-benchmark") {
+        if (argument_count >= 3 && std::string_view(arguments[1]) == "--encode-benchmark") {
             const int seconds = std::stoi(arguments[2]);
             if (seconds < 1 || seconds > 60) {
                 throw std::invalid_argument("encode duration must be between 1 and 60 seconds");
             }
+            bool software_encoder = false;
+            std::string_view display;
+            for (int index = 3; index < argument_count; ++index) {
+                const std::string_view option(arguments[index]);
+                if (option == "--software-encoder") {
+                    software_encoder = true;
+                    continue;
+                }
+                if (option == "--display" && index + 1 < argument_count && display.empty()) {
+                    display = arguments[++index];
+                    continue;
+                }
+                throw std::invalid_argument(
+                    "--encode-benchmark accepts --software-encoder and --display \\.\\DISPLAYn");
+            }
             return wireview::host::run_desktop_encode_benchmark(
-                std::chrono::seconds(seconds));
+                std::chrono::seconds(seconds), software_encoder, display);
         }
         if (argument_count >= 3 && std::string_view(arguments[1]) == "--device-preview") {
             const int seconds = std::stoi(arguments[2]);
@@ -415,7 +433,7 @@ int main(int argument_count, char** arguments) {
         }
         if (argument_count != 1) {
             std::cerr << "Usage: wireview_host [--listen|--loopback|--listen-idd-relay|--probe-video|--list-displays|--probe-parsec-vdd|--remove-parsec-vdd-index <index>|"
-                         "--capture-benchmark <seconds>|--encode-benchmark <seconds>|"
+                         "--capture-benchmark <seconds>|--encode-benchmark <seconds> [--software-encoder]|"
                          "--stream-desktop <seconds> [--input-log-only] [--size WIDTHxHEIGHT] [--frame-rate 60|120] [--display \\\\.\\DISPLAYn|--parsec-vdd] [--status-file PATH] [--reconnect-count N] [--transport adb|winusb]|"
                          "--reconnect-desktop <seconds> [--size WIDTHxHEIGHT] [--frame-rate 60|120] [--display \\\\.\\DISPLAYn] [--status-file PATH]|"
                          "--stream <annex-b.h264>]\n";
