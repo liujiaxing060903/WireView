@@ -61,6 +61,32 @@ final class CodecProbe {
         return best;
     }
 
+    /** Every usable AVC decoder, best-scoring first, for the manual picker. */
+    static java.util.List<Result> listAvcDecoders() {
+        java.util.List<Result> results = new java.util.ArrayList<>();
+        for (MediaCodecInfo codec : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos()) {
+            if (codec.isEncoder() || codec.isAlias() || !supportsAvc(codec)) {
+                continue;
+            }
+            try {
+                MediaCodecInfo.CodecCapabilities capabilities =
+                        codec.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC);
+                MediaCodecInfo.VideoCapabilities video = capabilities.getVideoCapabilities();
+                results.add(new Result(
+                        codec.getName(),
+                        codec.isHardwareAccelerated(),
+                        codec.isSoftwareOnly(),
+                        capabilities.isFeatureSupported(
+                                MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency),
+                        video != null && video.areSizeAndRateSupported(1920, 1080, 60.0)));
+            } catch (IllegalArgumentException error) {
+                Log.w(TAG, "Cannot inspect AVC decoder " + codec.getName(), error);
+            }
+        }
+        results.sort((left, right) -> Integer.compare(right.score(), left.score()));
+        return results;
+    }
+
     private static boolean supportsAvc(MediaCodecInfo codec) {
         for (String type : codec.getSupportedTypes()) {
             if (MediaFormat.MIMETYPE_VIDEO_AVC.equalsIgnoreCase(type)) {

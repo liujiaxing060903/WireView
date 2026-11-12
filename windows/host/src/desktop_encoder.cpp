@@ -28,6 +28,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -43,7 +44,15 @@ using Clock = std::chrono::steady_clock;
 
 constexpr UINT32 kBitRate = 24'000'000U;
 constexpr LONGLONG kHundredNanosecondsPerSecond = 10'000'000LL;
-constexpr float kCursorHardwareScaleCompensation = 3.11F;
+
+// A hardware encoder is allowed to renegotiate its H.264 output type once, right
+// after the first frame. Anything beyond that means the encoder keeps restarting
+// its stream and the session cannot make progress.
+constexpr unsigned kMaxStreamChanges = 4U;
+// Intel's Quick Sync encoder answers ProcessOutput with E_UNEXPECTED instead of
+// MF_E_TRANSFORM_NEED_MORE_INPUT for a short while after its stream was reset.
+// Treat a bounded run of those as "no output yet", not as a fatal error.
+constexpr unsigned kMaxUnexpectedOutputFailures = 120U;
 
 [[nodiscard]] std::string hresult_text(HRESULT value) {
     std::ostringstream output;
@@ -316,6 +325,12 @@ private:
 
 class DesktopFrameSource {
 public:
+    // Probe hook: runs the Win32 cursor fallback used for secondary displays.
+    [[nodiscard]] static bool capture_cursor_shape_for_probe(
+        HCURSOR cursor, DesktopPointer& captured_pointer) {
+        return capture_system_cursor_shape(cursor, captured_pointer);
+    }
+
     DesktopFrameSource(
         IDXGIOutput1* output,
         ID3D11Device* device,
@@ -533,15 +548,20 @@ private:
         UINT height,
         UINT hotspot_x,
         UINT hotspot_y) {
-        const auto set_white_pixel = [&pixels, width, height](int x, int y) {
+        // The desktop cursor is a black I-beam with a white outline. Drawing it in
+        // a single colour made the I-beam look wrong next to the primary display
+        // (white instead of black) and invisible on matching backgrounds, so build
+        // the two-tone shape here.
+        const auto set_pixel = [&pixels, width, height](
+                                   int x, int y, std::uint8_t value) {
             if (x < 0 || y < 0 || x >= static_cast<int>(width) || y >= static_cast<int>(height)) {
                 return;
             }
             auto* pixel = pixels.data() +
                 (static_cast<std::size_t>(y) * width + static_cast<UINT>(x)) * 4U;
-            pixel[0] = 0xffU;
-            pixel[1] = 0xffU;
-            pixel[2] = 0xffU;
+            pixel[0] = value;
+            pixel[1] = value;
+            pixel[2] = value;
             pixel[3] = 0xffU;
         };
         const int center_x = static_cast<int>(hotspot_x);
@@ -552,6 +572,8 @@ private:
         const int source_top = top - 1;
         const int source_bottom = std::min(static_cast<int>(height) - 1, bottom + 1);
         const int source_height = source_bottom - source_top + 1;
+        std::vector<bool> shape(
+            static_cast<std::size_t>(width) * height, false);
 
         // Encode the measured Windows cursor as an exact logical 14x25 mask.
         // Coordinates use the user's convention: (1,1) is the lower-left
@@ -574,18 +596,84 @@ private:
                     (logical_y == 1 || logical_y == 25) &&
                     center_stem;
                 if (!side_cutout && !outer_center_cutout) {
-                    set_white_pixel(x, y);
+                    shape[static_cast<std::size_t>(y) * width + static_cast<UINT>(x)] = true;
+                }
+            }
+        }
+        // White outline first, then the black I-beam on top: the outline keeps the
+        // cursor visible on dark desktops, the black body matches Windows.
+        for (int y = 0; y < static_cast<int>(height); ++y) {
+            for (int x = 0; x < static_cast<int>(width); ++x) {
+                if (shape[static_cast<std::size_t>(y) * width + static_cast<UINT>(x)]) {
+                    continue;
+                }
+                bool touches_shape = false;
+                for (int dy = -1; dy <= 1 && !touches_shape; ++dy) {
+                    for (int dx = -1; dx <= 1 && !touches_shape; ++dx) {
+                        const int nx = x + dx;
+                        const int ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= static_cast<int>(width) ||
+                            ny >= static_cast<int>(height)) {
+                            continue;
+                        }
+                        touches_shape =
+                            shape[static_cast<std::size_t>(ny) * width + static_cast<UINT>(nx)];
+                    }
+                }
+                if (touches_shape) {
+                    set_pixel(x, y, 0xffU);
                 }
             }
         }
         std::size_t opaque_pixels = 0U;
-        for (std::size_t offset = 3U; offset < pixels.size(); offset += 4U) {
-            opaque_pixels += pixels[offset] != 0U ? 1U : 0U;
+        for (int y = 0; y < static_cast<int>(height); ++y) {
+            for (int x = 0; x < static_cast<int>(width); ++x) {
+                if (shape[static_cast<std::size_t>(y) * width + static_cast<UINT>(x)]) {
+                    set_pixel(x, y, 0x00U);
+                    ++opaque_pixels;
+                }
+            }
         }
         return opaque_pixels;
     }
 
-    [[nodiscard]] bool capture_system_cursor_shape(
+    // One-pixel white ring around the opaque cursor pixels so a black I-beam stays
+    // readable on dark desktops.
+    static void add_cursor_outline(
+        std::vector<std::uint8_t>& pixels, UINT width, UINT height) {
+        const std::vector<std::uint8_t> source = pixels;
+        for (UINT y = 0U; y < height; ++y) {
+            for (UINT x = 0U; x < width; ++x) {
+                const std::size_t offset =
+                    (static_cast<std::size_t>(y) * width + x) * 4U;
+                if (source[offset + 3U] != 0U) {
+                    continue;
+                }
+                bool neighbour = false;
+                for (int dy = -1; dy <= 1 && !neighbour; ++dy) {
+                    for (int dx = -1; dx <= 1 && !neighbour; ++dx) {
+                        const int nx = static_cast<int>(x) + dx;
+                        const int ny = static_cast<int>(y) + dy;
+                        if (nx < 0 || ny < 0 || nx >= static_cast<int>(width) ||
+                            ny >= static_cast<int>(height)) {
+                            continue;
+                        }
+                        neighbour =
+                            source[(static_cast<std::size_t>(ny) * width +
+                                    static_cast<UINT>(nx)) * 4U + 3U] != 0U;
+                    }
+                }
+                if (neighbour) {
+                    pixels[offset] = 0xffU;
+                    pixels[offset + 1U] = 0xffU;
+                    pixels[offset + 2U] = 0xffU;
+                    pixels[offset + 3U] = 0xffU;
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] static bool capture_system_cursor_shape(
         HCURSOR cursor,
         DesktopPointer& captured_pointer) {
         ICONINFO icon_info{};
@@ -680,7 +768,12 @@ private:
                             if (and_mask && !xor_mask) {
                                 continue;
                             }
-                            const std::uint8_t value = xor_mask ? 0xffU : 0x00U;
+                            // Windows draws the I-beam as an inverting (XOR) cursor:
+                            // black on light backgrounds, white on dark ones. Drawing
+                            // the XOR pixels white made the tablet show a white I-beam
+                            // next to the primary's black one, so draw them black and
+                            // rely on the white outline added below for contrast.
+                            const std::uint8_t value = 0x00U;
                             pixels[offset] = value;
                             pixels[offset + 1U] = value;
                             pixels[offset + 2U] = value;
@@ -710,6 +803,8 @@ private:
             if (opaque_pixels == 0U && is_text_cursor(cursor, icon_info)) {
                 opaque_pixels = draw_text_cursor_fallback(
                     pixels, width, height, icon_info.xHotspot, icon_info.yHotspot);
+            } else if (is_text_cursor(cursor, icon_info)) {
+                add_cursor_outline(pixels, width, height);
             }
             captured_pointer.width = width;
             captured_pointer.height = height;
@@ -817,12 +912,12 @@ public:
         UINT width,
         UINT height,
         DXGI_FORMAT format,
-        float cursor_scale)
+        float dpi_scale)
         : device_(device),
           context_(context),
           width_(width),
           height_(height),
-          cursor_scale_(cursor_scale) {
+          dpi_scale_(dpi_scale) {
         if (format != DXGI_FORMAT_B8G8R8A8_UNORM &&
             format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) {
             throw std::runtime_error("cursor compositor requires BGRA desktop frames");
@@ -902,12 +997,32 @@ public:
         check_hresult(
             device_->CreateBlendState(&blend_description, &blend_state_),
             "ID3D11Device::CreateBlendState(cursor compositor)");
-        std::cout << "Cursor overlay scale=" << cursor_scale_ << "x\n";
+        std::cout << "Cursor overlay DPI scale=" << dpi_scale_ << "x\n";
     }
 
     void compose(ID3D11Texture2D* desktop, const DesktopPointer& pointer) {
         context_->CopyResource(composited_.Get(), desktop);
         const UINT shape_height = rendered_height(pointer);
+        ++compose_count_;
+        const bool log_this_frame =
+            (pointer.visible && cursor_visible_logs_ < 8U) ||
+            (!pointer.visible && cursor_visible_logs_ == 0U && (compose_count_ % 240U) == 0U);
+        if (log_this_frame) {
+            cursor_geometry_logged_ = true;
+            if (pointer.visible) {
+                ++cursor_visible_logs_;
+            }
+            std::cout << "Cursor frame: visible=" << (pointer.visible ? "yes" : "no")
+                      << " | shape=" << pointer.width << 'x' << shape_height
+                      << " | shapeType=" << pointer.type
+                      << " | bytes=" << pointer.bytes.size()
+                      << " | systemShape=" << (pointer.system_cursor_shape ? "yes" : "no")
+                      << " | renderAdjust=" << pointer.render_scale_adjustment
+                      << " | pos=" << pointer.x << ',' << pointer.y
+                      << " | hotspot=" << pointer.hotspot_x << ',' << pointer.hotspot_y
+                      << " | dpiScale=" << dpi_scale_
+                      << " | frame=" << width_ << 'x' << height_ << '\n';
+        }
         if (!pointer.visible || !is_supported_shape(pointer) || pointer.bytes.empty() ||
             pointer.width == 0U || shape_height == 0U ||
             pointer.width > kMaximumPointerDimension ||
@@ -948,15 +1063,17 @@ public:
             uploaded_shape_version_ = pointer.shape_version;
         }
 
-        const bool is_standard_arrow = pointer.system_cursor_shape &&
-            pointer.hotspot_x == 0U && pointer.hotspot_y == 0U;
-        const float effective_cursor_scale = cursor_scale_ *
-            (is_standard_arrow ? (21.0F / 18.0F) : 1.0F) *
-            pointer.render_scale_adjustment;
+        // A shape captured straight from desktop duplication is already sized for
+        // this display. The Win32 fallback always hands back the raw 32 px system
+        // cursor, so it must be scaled by the monitor DPI to match what Windows
+        // draws on that display (200% display -> 64 px cursor).
+        const float effective_cursor_scale =
+            pointer.system_cursor_shape ? dpi_scale_ : 1.0F;
         const float base_cursor_width =
             static_cast<float>(pointer.width) * effective_cursor_scale;
-        const float cursor_width = base_cursor_width * pointer.render_width_adjustment;
+        const float cursor_width = base_cursor_width;
         const float cursor_height = static_cast<float>(shape_height) * effective_cursor_scale;
+
         const float system_cursor_hotspot_adjustment = pointer.system_cursor_shape
             // The virtual desktop reports physical cursor coordinates while
             // WireView enlarges the cursor image for the tablet. One native
@@ -971,7 +1088,16 @@ public:
             static_cast<float>(pointer.hotspot_y) * system_cursor_hotspot_adjustment;
         if (cursor_x >= static_cast<float>(width_) || cursor_y >= static_cast<float>(height_) ||
             cursor_x + cursor_width <= 0.0F || cursor_y + cursor_height <= 0.0F) {
+            if (log_this_frame) {
+                std::cout << "Cursor draw: culled at " << cursor_x << ',' << cursor_y
+                          << " drawn=" << cursor_width << 'x' << cursor_height << '\n';
+            }
             return;
+        }
+        if (log_this_frame) {
+            std::cout << "Cursor draw: at=" << cursor_x << ',' << cursor_y
+                      << " | drawn=" << cursor_width << 'x' << cursor_height
+                      << " | effectiveScale=" << effective_cursor_scale << '\n';
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -985,6 +1111,10 @@ public:
             .height = cursor_height,
             .output_width = static_cast<float>(width_),
             .output_height = static_cast<float>(height_),
+            .uv_width = static_cast<float>(pointer.width) /
+                static_cast<float>(kMaximumPointerDimension),
+            .uv_height = static_cast<float>(shape_height) /
+                static_cast<float>(kMaximumPointerDimension),
         };
         context_->Unmap(constant_buffer_.Get(), 0);
 
@@ -1020,6 +1150,12 @@ public:
         return composited_.Get();
     }
 
+    // Keeps the cursor proportional when the user changes the Windows scaling of
+    // the captured display while a session is running.
+    void set_dpi_scale(float scale) noexcept {
+        dpi_scale_ = scale > 0.0F ? scale : 1.0F;
+    }
+
 private:
     struct CursorConstants {
         float x;
@@ -1028,8 +1164,11 @@ private:
         float height;
         float output_width;
         float output_height;
-        float padding_x{};
-        float padding_y{};
+        // The cursor lives in the top-left corner of a 256x256 texture, so the
+        // shader must sample only that sub-rectangle; sampling 0..1 scaled the
+        // cursor down by (shape / 256) and made it look tiny on the tablet.
+        float uv_width{1.0F};
+        float uv_height{1.0F};
     };
 
     [[nodiscard]] static ComPtr<ID3DBlob> compile_shader(
@@ -1147,13 +1286,14 @@ cbuffer CursorConstants : register(b0) {
     float2 origin;
     float2 extent;
     float2 outputSize;
+    float2 uvScale;
 };
 struct VertexOutput { float4 position : SV_POSITION; float2 uv : TEXCOORD0; };
 VertexOutput main(uint vertexId : SV_VertexID) {
     const float2 uv[4] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
     VertexOutput output;
-    output.uv = uv[vertexId];
-    float2 pixel = origin + output.uv * extent;
+    output.uv = uv[vertexId] * uvScale;
+    float2 pixel = origin + uv[vertexId] * extent;
     output.position = float4(
         (pixel.x / outputSize.x) * 2.0 - 1.0,
         1.0 - (pixel.y / outputSize.y) * 2.0,
@@ -1183,7 +1323,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     ComPtr<ID3D11BlendState> blend_state_;
     UINT width_{};
     UINT height_{};
-    float cursor_scale_{1.0F};
+    float dpi_scale_{1.0F};
+    bool cursor_geometry_logged_{false};
+    unsigned compose_count_{0U};
+    unsigned cursor_visible_logs_{0U};
     std::array<std::uint8_t,
                static_cast<std::size_t>(kMaximumPointerDimension) *
                    kMaximumPointerDimension * 4U> transparent_pointer_pixels_{};
@@ -1363,6 +1506,35 @@ public:
         output_slots_[slot_index].in_use = false;
     }
 
+    // Copies an NV12 surface back to system memory for the software encoder
+    // fallback. NV12 is one resource: RowPitch * Height bytes of luma followed by
+    // the interleaved chroma plane at the same pitch.
+    [[nodiscard]] std::vector<std::uint8_t> read_nv12(ID3D11Texture2D* texture) {
+        context_->CopyResource(diagnostic_staging_texture_.Get(), texture);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        check_hresult(
+            context_->Map(diagnostic_staging_texture_.Get(), 0, D3D11_MAP_READ, 0, &mapped),
+            "ID3D11DeviceContext::Map(NV12 readback)");
+        const std::size_t luma_size =
+            static_cast<std::size_t>(output_width_) * static_cast<std::size_t>(output_height_);
+        std::vector<std::uint8_t> bytes(luma_size + luma_size / 2U);
+        const auto* source = static_cast<const std::uint8_t*>(mapped.pData);
+        const std::size_t pitch = mapped.RowPitch;
+        for (UINT row = 0U; row < output_height_; ++row) {
+            std::memcpy(bytes.data() + static_cast<std::size_t>(row) * output_width_,
+                        source + static_cast<std::size_t>(row) * pitch,
+                        output_width_);
+        }
+        const auto* chroma = source + pitch * static_cast<std::size_t>(output_height_);
+        for (UINT row = 0U; row < output_height_ / 2U; ++row) {
+            std::memcpy(bytes.data() + luma_size + static_cast<std::size_t>(row) * output_width_,
+                        chroma + static_cast<std::size_t>(row) * pitch,
+                        output_width_);
+        }
+        context_->Unmap(diagnostic_staging_texture_.Get(), 0);
+        return bytes;
+    }
+
 private:
     void report_first_luma(ID3D11Texture2D* texture) {
         if (diagnostic_luma_reported_) {
@@ -1469,6 +1641,40 @@ private:
     return selected;
 }
 
+// Fallback for machines whose hardware H.264 MFT cannot encode (for example the
+// Intel Quick Sync MFT on some driver/OS combinations). The Microsoft software
+// encoder accepts system-memory NV12, so the desktop frame is read back to the
+// CPU before it is submitted.
+[[nodiscard]] ComPtr<IMFActivate> find_software_encoder() {
+    const MFT_REGISTER_TYPE_INFO input_type{MFMediaType_Video, MFVideoFormat_NV12};
+    const MFT_REGISTER_TYPE_INFO output_type{MFMediaType_Video, MFVideoFormat_H264};
+    IMFActivate** activations = nullptr;
+    UINT32 count = 0;
+    check_hresult(
+        MFTEnum2(
+            MFT_CATEGORY_VIDEO_ENCODER,
+            // Omitting MFT_ENUM_FLAG_HARDWARE restricts the result to software
+            // transforms; there is no MFT_ENUM_FLAG_SOFTWARE flag.
+            MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT,
+            &input_type,
+            &output_type,
+            nullptr,
+            &activations,
+            &count),
+        "MFTEnum2(software H.264 encoder)");
+    if (count == 0 || activations == nullptr) {
+        CoTaskMemFree(activations);
+        throw std::runtime_error("no software H.264 encoder is registered on this system");
+    }
+    ComPtr<IMFActivate> selected;
+    selected.Attach(activations[0]);
+    for (UINT32 index = 1; index < count; ++index) {
+        activations[index]->Release();
+    }
+    CoTaskMemFree(activations);
+    return selected;
+}
+
 void log_h264_media_type(const char* label, IMFMediaType* type) {
     UINT32 width = 0;
     UINT32 height = 0;
@@ -1547,6 +1753,71 @@ bool set_codec_uint32(
     return type;
 }
 
+// TEMPORARY debugging aid: writes a BGRA8 texture to a bottom-up 32-bit BMP.
+[[nodiscard]] bool debug_frames_enabled() {
+    char value[8]{};
+    return GetEnvironmentVariableA("WIREVIEW_DUMP_FRAMES", value, sizeof(value)) > 0U;
+}
+
+void save_debug_bmp(
+    ID3D11Device* device,
+    ID3D11DeviceContext* context,
+    ID3D11Texture2D* texture,
+    const char* path) {
+    D3D11_TEXTURE2D_DESC description{};
+    texture->GetDesc(&description);
+    description.Usage = D3D11_USAGE_STAGING;
+    description.BindFlags = 0U;
+    description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    description.MiscFlags = 0U;
+    ComPtr<ID3D11Texture2D> staging;
+    const HRESULT create_result = device->CreateTexture2D(&description, nullptr, &staging);
+    if (FAILED(create_result)) {
+        std::cout << "Debug BMP: CreateTexture2D failed " << hresult_text(create_result) << '\n';
+        return;
+    }
+    context->CopyResource(staging.Get(), texture);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    const HRESULT map_result = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(map_result)) {
+        std::cout << "Debug BMP: Map failed " << hresult_text(map_result) << '\n';
+        return;
+    }
+    const UINT width = description.Width;
+    const UINT height = description.Height;
+    const UINT row_bytes = width * 4U;
+    const UINT image_bytes = row_bytes * height;
+    FILE* file = nullptr;
+    if (fopen_s(&file, path, "wb") == 0 && file != nullptr) {
+        std::uint8_t header[54]{};
+        const UINT file_size = image_bytes + 54U;
+        const UINT pixel_offset = 54U;
+        const UINT header_size = 40U;
+        const std::uint16_t planes = 1U;
+        const std::uint16_t bits_per_pixel = 32U;
+        header[0] = 'B';
+        header[1] = 'M';
+        std::memcpy(header + 2, &file_size, 4);
+        std::memcpy(header + 10, &pixel_offset, 4);
+        std::memcpy(header + 14, &header_size, 4);
+        std::memcpy(header + 18, &width, 4);
+        std::memcpy(header + 22, &height, 4);
+        std::memcpy(header + 26, &planes, 2);
+        std::memcpy(header + 28, &bits_per_pixel, 2);
+        std::memcpy(header + 34, &image_bytes, 4);
+        (void)std::fwrite(header, 1, sizeof(header), file);
+        for (UINT row = 0; row < height; ++row) {
+            const auto* source = static_cast<const std::uint8_t*>(mapped.pData) +
+                static_cast<std::size_t>(height - 1U - row) * mapped.RowPitch;
+            (void)std::fwrite(source, 1, row_bytes, file);
+        }
+        std::fclose(file);
+    } else {
+        std::cout << "Debug BMP: fopen failed for " << path << '\n';
+    }
+    context->Unmap(staging.Get(), 0);
+}
+
 class HardwareAvcEncoder {
 public:
     HardwareAvcEncoder(
@@ -1554,8 +1825,10 @@ public:
         ID3D11Device* device,
         UINT32 width,
         UINT32 height,
-        UINT32 frame_rate)
+        UINT32 frame_rate,
+        bool hardware = true)
         : activation_(activation),
+          hardware_(hardware),
           width_(width),
           height_(height),
           frame_rate_(frame_rate),
@@ -1569,63 +1842,107 @@ public:
                       "IMFTransform::GetAttributes");
         asynchronous_ = MFGetAttributeUINT32(
             transform_attributes.Get(), MF_TRANSFORM_ASYNC, FALSE) != FALSE;
-        if (!asynchronous_) {
+        if (hardware_ && !asynchronous_) {
             throw std::runtime_error("selected hardware encoder is not asynchronous");
         }
-        check_hresult(
-            transform_attributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE),
-            "SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK)");
-
-        UINT reset_token = 0;
-        check_hresult(
-            MFCreateDXGIDeviceManager(&reset_token, &device_manager_),
-            "MFCreateDXGIDeviceManager");
-        check_hresult(device_manager_->ResetDevice(device, reset_token),
-                      "IMFDXGIDeviceManager::ResetDevice");
-        if (MFGetAttributeUINT32(
-                transform_attributes.Get(), MF_SA_D3D11_AWARE, FALSE) != FALSE) {
+        if (asynchronous_) {
             check_hresult(
-                transform_->ProcessMessage(
-                    MFT_MESSAGE_SET_D3D_MANAGER,
-                    reinterpret_cast<ULONG_PTR>(device_manager_.Get())),
-                "IMFTransform::ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER)");
-            direct3d_aware_ = true;
+                transform_attributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE),
+                "SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK)");
         }
 
-        check_hresult(transform_.As(&codec_api_), "IMFTransform::QueryInterface(ICodecAPI)");
-        std::cout << "Encoder controls:\n";
-        low_latency_enabled_ = set_codec_bool(
-            codec_api_.Get(), CODECAPI_AVEncCommonLowLatency, true, "lowLatency");
-        set_codec_bool(codec_api_.Get(), CODECAPI_AVEncCommonRealTime, true, "realTime");
-        if (!set_codec_uint32(
-                codec_api_.Get(),
-                CODECAPI_AVEncCommonRateControlMode,
-                eAVEncCommonRateControlMode_LowDelayVBR,
-                "lowDelayVBR")) {
+        if (hardware_) {
+            UINT reset_token = 0;
+            check_hresult(
+                MFCreateDXGIDeviceManager(&reset_token, &device_manager_),
+                "MFCreateDXGIDeviceManager");
+            check_hresult(device_manager_->ResetDevice(device, reset_token),
+                          "IMFDXGIDeviceManager::ResetDevice");
+            if (MFGetAttributeUINT32(
+                    transform_attributes.Get(), MF_SA_D3D11_AWARE, FALSE) != FALSE) {
+                check_hresult(
+                    transform_->ProcessMessage(
+                        MFT_MESSAGE_SET_D3D_MANAGER,
+                        reinterpret_cast<ULONG_PTR>(device_manager_.Get())),
+                    "IMFTransform::ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER)");
+                direct3d_aware_ = true;
+            }
+        }
+
+        if (SUCCEEDED(transform_.As(&codec_api_))) {
+            std::cout << "Encoder controls:\n";
+            low_latency_enabled_ = set_codec_bool(
+                codec_api_.Get(), CODECAPI_AVEncCommonLowLatency, true, "lowLatency");
+            set_codec_bool(codec_api_.Get(), CODECAPI_AVEncCommonRealTime, true, "realTime");
+            if (!set_codec_uint32(
+                    codec_api_.Get(),
+                    CODECAPI_AVEncCommonRateControlMode,
+                    eAVEncCommonRateControlMode_LowDelayVBR,
+                    "lowDelayVBR")) {
+                set_codec_uint32(
+                    codec_api_.Get(),
+                    CODECAPI_AVEncCommonRateControlMode,
+                    eAVEncCommonRateControlMode_CBR,
+                    "CBR");
+            }
             set_codec_uint32(
-                codec_api_.Get(),
-                CODECAPI_AVEncCommonRateControlMode,
-                eAVEncCommonRateControlMode_CBR,
-                "CBR");
+                codec_api_.Get(), CODECAPI_AVEncCommonMeanBitRate, bit_rate_, "meanBitRate");
+            set_codec_uint32(
+                codec_api_.Get(), CODECAPI_AVEncMPVGOPSize, frame_rate_, "gop");
+            set_codec_uint32(
+                codec_api_.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0, "bFrames0");
+            set_codec_uint32(
+                codec_api_.Get(), CODECAPI_AVEncVideoMaxNumRefFrame, 1, "referenceFrames1");
+        } else {
+            codec_api_.Reset();
+            std::cout << "Encoder controls: none (ICodecAPI is not available)\n";
         }
-        set_codec_uint32(
-            codec_api_.Get(), CODECAPI_AVEncCommonMeanBitRate, bit_rate_, "meanBitRate");
-        set_codec_uint32(
-            codec_api_.Get(), CODECAPI_AVEncMPVGOPSize, frame_rate_, "gop");
-        set_codec_uint32(
-            codec_api_.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0, "bFrames0");
-        set_codec_uint32(
-            codec_api_.Get(), CODECAPI_AVEncVideoMaxNumRefFrame, 1, "referenceFrames1");
 
-        auto output_type = make_video_type(MFVideoFormat_H264, width, height, frame_rate_);
-        check_hresult(output_type->SetUINT32(MF_MT_AVG_BITRATE, bit_rate_),
-                      "SetUINT32(MF_MT_AVG_BITRATE)");
-        check_hresult(
-            output_type->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High),
-            "SetUINT32(MF_MT_MPEG2_PROFILE)");
-        check_hresult(transform_->SetOutputType(0, output_type.Get(), 0),
-                      "IMFTransform::SetOutputType(H.264)");
-        log_h264_media_type("Encoder initial output type", output_type.Get());
+        // Both encoders must see the output type before the input type: the
+        // Microsoft software encoder answers SetInputType with
+        // MF_E_TRANSFORM_TYPE_NOT_SET otherwise.
+        if (hardware_) {
+            auto output_type = make_video_type(MFVideoFormat_H264, width, height, frame_rate_);
+            check_hresult(output_type->SetUINT32(MF_MT_AVG_BITRATE, bit_rate_),
+                          "SetUINT32(MF_MT_AVG_BITRATE)");
+            check_hresult(
+                output_type->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High),
+                "SetUINT32(MF_MT_MPEG2_PROFILE)");
+            check_hresult(transform_->SetOutputType(0, output_type.Get(), 0),
+                          "IMFTransform::SetOutputType(H.264)");
+            log_h264_media_type("Encoder initial output type", output_type.Get());
+        } else {
+            // The software encoder needs a complete output type (bit rate and
+            // profile included) and refuses some profiles, so try High, then
+            // Main, then whatever the encoder publishes itself.
+            const UINT32 profiles[2] = {
+                static_cast<UINT32>(eAVEncH264VProfile_High),
+                static_cast<UINT32>(eAVEncH264VProfile_Main),
+            };
+            HRESULT set_result = E_FAIL;
+            for (const UINT32 profile : profiles) {
+                auto candidate =
+                    make_video_type(MFVideoFormat_H264, width, height, frame_rate_);
+                (void)candidate->SetUINT32(MF_MT_AVG_BITRATE, bit_rate_);
+                (void)candidate->SetUINT32(MF_MT_MPEG2_PROFILE, profile);
+                set_result = transform_->SetOutputType(0, candidate.Get(), 0);
+                if (SUCCEEDED(set_result)) {
+                    log_h264_media_type("Encoder initial output type", candidate.Get());
+                    break;
+                }
+            }
+            if (FAILED(set_result)) {
+                auto fallback = select_h264_output_type();
+                if (fallback.Get() == nullptr) {
+                    throw std::runtime_error(
+                        "software H.264 encoder published no matching output type");
+                }
+                (void)fallback->SetUINT32(MF_MT_AVG_BITRATE, bit_rate_);
+                check_hresult(transform_->SetOutputType(0, fallback.Get(), 0),
+                              "IMFTransform::SetOutputType(H.264 software)");
+                log_h264_media_type("Encoder initial output type", fallback.Get());
+            }
+        }
 
         auto input_type = make_video_type(MFVideoFormat_NV12, width, height, frame_rate_);
         check_hresult(input_type->SetUINT32(
@@ -1637,8 +1954,10 @@ public:
                       "IMFTransform::SetInputType(NV12)");
         check_hresult(transform_->GetOutputStreamInfo(0, &output_info_),
                       "IMFTransform::GetOutputStreamInfo");
-        check_hresult(transform_.As(&events_),
-                      "IMFTransform::QueryInterface(IMFMediaEventGenerator)");
+        if (asynchronous_) {
+            check_hresult(transform_.As(&events_),
+                          "IMFTransform::QueryInterface(IMFMediaEventGenerator)");
+        }
     }
 
     ~HardwareAvcEncoder() {
@@ -1661,6 +1980,9 @@ public:
     }
 
     void submit(ID3D11Texture2D* texture, LONGLONG timestamp, LONGLONG duration) {
+        if (!hardware_) {
+            throw std::logic_error("submit(texture) requires the hardware encoder path");
+        }
         ComPtr<IMFMediaBuffer> buffer;
         check_hresult(
             MFCreateDXGISurfaceBuffer(
@@ -1669,16 +1991,28 @@ public:
         ComPtr<IMFSample> sample;
         check_hresult(MFCreateSample(&sample), "MFCreateSample(input)");
         check_hresult(sample->AddBuffer(buffer.Get()), "IMFSample::AddBuffer(input)");
-        check_hresult(sample->SetSampleTime(timestamp), "IMFSample::SetSampleTime(input)");
-        check_hresult(sample->SetSampleDuration(duration),
-                      "IMFSample::SetSampleDuration(input)");
-        if (!first_input_submitted_) {
-            set_codec_bool(
-                codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, true, "forceFirstKeyframe");
-            first_input_submitted_ = true;
-        }
-        check_hresult(transform_->ProcessInput(0, sample.Get(), 0),
-                      "IMFTransform::ProcessInput");
+        submit_sample(sample.Get(), timestamp, duration);
+    }
+
+    // Software encoder fallback: the Microsoft H.264 MFT is not D3D11 aware, so the
+    // NV12 frame has to be read back to system memory and copied into an MF buffer.
+    void submit_bytes(std::span<const std::uint8_t> frame, LONGLONG timestamp, LONGLONG duration) {
+        ComPtr<IMFMediaBuffer> buffer;
+        check_hresult(
+            MFCreateMemoryBuffer(static_cast<DWORD>(frame.size()), &buffer),
+            "MFCreateMemoryBuffer(input)");
+        BYTE* target = nullptr;
+        DWORD capacity = 0;
+        check_hresult(buffer->Lock(&target, &capacity, nullptr),
+                      "IMFMediaBuffer::Lock(input)");
+        std::memcpy(target, frame.data(), frame.size());
+        check_hresult(buffer->Unlock(), "IMFMediaBuffer::Unlock(input)");
+        check_hresult(buffer->SetCurrentLength(static_cast<DWORD>(frame.size())),
+                      "IMFMediaBuffer::SetCurrentLength(input)");
+        ComPtr<IMFSample> sample;
+        check_hresult(MFCreateSample(&sample), "MFCreateSample(input)");
+        check_hresult(sample->AddBuffer(buffer.Get()), "IMFSample::AddBuffer(input)");
+        submit_sample(sample.Get(), timestamp, duration);
     }
 
     void force_keyframe() {
@@ -1686,6 +2020,10 @@ public:
         // old reference picture. Request an IDR on the encoder thread before
         // submitting the next source frame, then let the receiver resume only
         // after that clean point arrives.
+        if (codec_api_.Get() == nullptr) {
+            needs_keyframe_ = true;
+            return;
+        }
         if (!set_codec_bool(
                 codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, true, "forceRecoveryKeyframe")) {
             throw std::runtime_error("hardware encoder rejected forced recovery keyframe");
@@ -1693,6 +2031,26 @@ public:
     }
 
     [[nodiscard]] MediaEventType next_event() {
+        if (!asynchronous_) {
+            // The Microsoft software encoder is a synchronous MFT with no event
+            // queue. Drive it through the same state machine as the asynchronous
+            // path: ask for a frame, then report the output ProcessInput produced.
+            if (input_pending_) {
+                return METransformHaveOutput;
+            }
+            if (draining_) {
+                return METransformDrainComplete;
+            }
+            // A synchronous encoder buffers a few frames; report "nothing to do"
+            // while it refuses more input instead of failing in ProcessInput with
+            // MF_E_NOTACCEPTING.
+            DWORD input_flags = 0;
+            if (SUCCEEDED(transform_->GetInputStatus(0, &input_flags)) &&
+                (input_flags & MFT_INPUT_STATUS_ACCEPT_DATA) == 0U) {
+                return MEUnknown;
+            }
+            return METransformNeedInput;
+        }
         ComPtr<IMFMediaEvent> event;
         const HRESULT result = events_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
         if (result == MF_E_NO_EVENTS_AVAILABLE) {
@@ -1714,84 +2072,111 @@ public:
         bool annex_b{false};
     };
 
-    [[nodiscard]] Output take_output() {
-        for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
-            ComPtr<IMFSample> allocated_sample;
-            const bool transform_provides_sample =
-                (output_info_.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES |
-                                         MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0U;
-            if (!transform_provides_sample) {
-                check_hresult(MFCreateSample(&allocated_sample), "MFCreateSample(output)");
-                const std::uint64_t native_size =
-                    static_cast<std::uint64_t>(width_) * static_cast<std::uint64_t>(height_) * 2U;
-                const DWORD buffer_size = static_cast<DWORD>(std::min<std::uint64_t>(
-                    std::max<std::uint64_t>(output_info_.cbSize, native_size),
-                    std::numeric_limits<DWORD>::max()));
-                ComPtr<IMFMediaBuffer> buffer;
-                check_hresult(MFCreateMemoryBuffer(buffer_size, &buffer),
-                              "MFCreateMemoryBuffer(output)");
-                check_hresult(allocated_sample->AddBuffer(buffer.Get()),
-                              "IMFSample::AddBuffer(output)");
-            }
-
-            MFT_OUTPUT_DATA_BUFFER output_data{};
-            output_data.dwStreamID = 0;
-            output_data.pSample = allocated_sample.Get();
-            DWORD status = 0;
-            const HRESULT result = transform_->ProcessOutput(0, 1, &output_data, &status);
-            if (output_data.pEvents != nullptr) {
-                output_data.pEvents->Release();
-            }
-            if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
-                std::cout << "IMFTransform::ProcessOutput requested output-format change"
-                          << " | status=" << hresult_text(static_cast<HRESULT>(status)) << '\n';
-                if ((status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS) != 0U) {
-                    throw std::runtime_error(
-                        "hardware encoder created a new output stream, which WireView does not support");
-                }
-                renegotiate_output_type();
-                continue;
-            }
-            if (FAILED(result) && attempt > 0U) {
-                throw std::runtime_error(
-                    "IMFTransform::ProcessOutput failed after output-format renegotiation: " +
-                    hresult_text(result));
-            }
-            check_hresult(result, "IMFTransform::ProcessOutput");
-
-            ComPtr<IMFSample> sample;
-            if (output_data.pSample == allocated_sample.Get()) {
-                sample = allocated_sample;
-            } else {
-                sample.Attach(output_data.pSample);
-            }
-            if (!sample) {
-                throw std::runtime_error("hardware encoder returned no output sample");
-            }
-
-            Output output;
-            if (FAILED(sample->GetSampleTime(&output.timestamp))) {
-                output.timestamp = -1;
-            }
-            output.keyframe = MFGetAttributeUINT32(
-                sample.Get(), MFSampleExtension_CleanPoint, FALSE) != FALSE;
-
-            ComPtr<IMFMediaBuffer> contiguous;
-            check_hresult(sample->ConvertToContiguousBuffer(&contiguous),
-                          "IMFSample::ConvertToContiguousBuffer");
-            BYTE* data = nullptr;
-            DWORD capacity = 0;
-            DWORD current_length = 0;
-            check_hresult(contiguous->Lock(&data, &capacity, &current_length),
-                          "IMFMediaBuffer::Lock(output)");
-            output.annex_b = current_length >= 4U && data[0] == 0U && data[1] == 0U &&
-                             ((data[2] == 1U) || (data[2] == 0U && data[3] == 1U));
-            output.bytes.assign(data, data + current_length);
-            check_hresult(contiguous->Unlock(), "IMFMediaBuffer::Unlock(output)");
-            return output;
+    // Returns an empty result when the encoder produced no frame for this
+    // METransformHaveOutput notification. ProcessOutput must be called exactly
+    // once per notification: an asynchronous encoder that provides its own
+    // samples answers a second call, made without new input, with E_UNEXPECTED.
+    [[nodiscard]] std::optional<Output> take_output() {
+        dropped_input_ = false;
+        ComPtr<IMFSample> allocated_sample;
+        const bool transform_provides_sample =
+            (output_info_.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES |
+                                     MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0U;
+        if (!transform_provides_sample) {
+            check_hresult(MFCreateSample(&allocated_sample), "MFCreateSample(output)");
+            const std::uint64_t native_size =
+                static_cast<std::uint64_t>(width_) * static_cast<std::uint64_t>(height_) * 2U;
+            const DWORD buffer_size = static_cast<DWORD>(std::min<std::uint64_t>(
+                std::max<std::uint64_t>(output_info_.cbSize, native_size),
+                std::numeric_limits<DWORD>::max()));
+            ComPtr<IMFMediaBuffer> buffer;
+            check_hresult(MFCreateMemoryBuffer(buffer_size, &buffer),
+                          "MFCreateMemoryBuffer(output)");
+            check_hresult(allocated_sample->AddBuffer(buffer.Get()),
+                          "IMFSample::AddBuffer(output)");
         }
-        throw std::runtime_error(
-            "hardware encoder repeated its output-format change after renegotiation");
+
+        MFT_OUTPUT_DATA_BUFFER output_data{};
+        output_data.dwStreamID = 0;
+        output_data.pSample = allocated_sample.Get();
+        DWORD status = 0;
+        const HRESULT result = transform_->ProcessOutput(0, 1, &output_data, &status);
+        input_pending_ = false;
+        if (output_data.pEvents != nullptr) {
+            output_data.pEvents->Release();
+            output_data.pEvents = nullptr;
+        }
+        if (result == MF_E_TRANSFORM_STREAM_CHANGE) {
+            std::cout << "IMFTransform::ProcessOutput requested output-format change"
+                      << " | status=" << hresult_text(static_cast<HRESULT>(status)) << '\n';
+            if ((status & MFT_PROCESS_OUTPUT_STATUS_NEW_STREAMS) != 0U) {
+                throw std::runtime_error(
+                    "hardware encoder created a new output stream, which WireView does not support");
+            }
+            if (++stream_changes_ > kMaxStreamChanges) {
+                throw std::runtime_error(
+                    "hardware encoder repeated its output-format change after renegotiation");
+            }
+            renegotiate_output_type();
+            reset_stream_after_renegotiation();
+            dropped_input_ = true;
+            return std::nullopt;
+        }
+        if (result == MF_E_TRANSFORM_NEED_MORE_INPUT) {
+            return std::nullopt;
+        }
+        if (result == E_UNEXPECTED) {
+            // The encoder lost the frame it was holding. Report "no output", ask
+            // for a fresh IDR on the next submit, and keep the session alive; a
+            // short run of these is normal right after a stream reset.
+            if (++unexpected_output_failures_ > kMaxUnexpectedOutputFailures) {
+                throw std::runtime_error(
+                    "IMFTransform::ProcessOutput kept returning E_UNEXPECTED (0x8000FFFF)");
+            }
+            needs_keyframe_ = true;
+            std::cout << "IMFTransform::ProcessOutput returned E_UNEXPECTED; "
+                         "waiting for the next encoder event\n";
+            return std::nullopt;
+        }
+        unexpected_output_failures_ = 0U;
+        check_hresult(result, "IMFTransform::ProcessOutput");
+
+        ComPtr<IMFSample> sample;
+        if (output_data.pSample == allocated_sample.Get()) {
+            sample = allocated_sample;
+        } else {
+            sample.Attach(output_data.pSample);
+        }
+        if (!sample) {
+            throw std::runtime_error("hardware encoder returned no output sample");
+        }
+
+        Output output;
+        if (FAILED(sample->GetSampleTime(&output.timestamp))) {
+            output.timestamp = -1;
+        }
+        output.keyframe = MFGetAttributeUINT32(
+            sample.Get(), MFSampleExtension_CleanPoint, FALSE) != FALSE;
+
+        ComPtr<IMFMediaBuffer> contiguous;
+        check_hresult(sample->ConvertToContiguousBuffer(&contiguous),
+                      "IMFSample::ConvertToContiguousBuffer");
+        BYTE* data = nullptr;
+        DWORD capacity = 0;
+        DWORD current_length = 0;
+        check_hresult(contiguous->Lock(&data, &capacity, &current_length),
+                      "IMFMediaBuffer::Lock(output)");
+        output.annex_b = current_length >= 4U && data[0] == 0U && data[1] == 0U &&
+                         ((data[2] == 1U) || (data[2] == 0U && data[3] == 1U));
+        output.bytes.assign(data, data + current_length);
+        check_hresult(contiguous->Unlock(), "IMFMediaBuffer::Unlock(output)");
+        if (!asynchronous_ && draining_) {
+            // Keep pulling while the drained software encoder still holds frames;
+            // next_event() stops reporting output once ProcessOutput says there is
+            // nothing left.
+            input_pending_ = true;
+        }
+        return output;
     }
 
     void drain() {
@@ -1804,6 +2189,11 @@ public:
         check_hresult(transform_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0),
                       "MFT_MESSAGE_COMMAND_DRAIN");
         draining_ = true;
+        if (!asynchronous_) {
+            // Pull whatever the synchronous encoder still holds; next_event()
+            // keeps reporting output until ProcessOutput drains the queue.
+            input_pending_ = true;
+        }
     }
 
     [[nodiscard]] bool direct3d_aware() const noexcept {
@@ -1814,11 +2204,105 @@ public:
         return low_latency_enabled_;
     }
 
+    [[nodiscard]] bool software() const noexcept {
+        return !hardware_;
+    }
+
+    [[nodiscard]] bool asynchronous() const noexcept {
+        return asynchronous_;
+    }
+
+    // True when the last take_output() call discarded the frame it was encoding
+    // because the encoder renegotiated its output type.
+    [[nodiscard]] bool dropped_input() const noexcept {
+        return dropped_input_;
+    }
+
 private:
+    void submit_sample(IMFSample* sample, LONGLONG timestamp, LONGLONG duration) {
+        check_hresult(sample->SetSampleTime(timestamp), "IMFSample::SetSampleTime(input)");
+        check_hresult(sample->SetSampleDuration(duration),
+                      "IMFSample::SetSampleDuration(input)");
+        if ((!first_input_submitted_ || needs_keyframe_) && codec_api_.Get() != nullptr) {
+            set_codec_bool(
+                codec_api_.Get(), CODECAPI_AVEncVideoForceKeyFrame, true,
+                needs_keyframe_ ? "forceRecoveryKeyframe" : "forceFirstKeyframe");
+            needs_keyframe_ = false;
+        }
+        first_input_submitted_ = true;
+        check_hresult(transform_->ProcessInput(0, sample, 0),
+                      "IMFTransform::ProcessInput");
+        if (!asynchronous_) {
+            input_pending_ = true;
+        }
+    }
+
+    // Picks the H.264 output type the transform publishes for the configured
+    // geometry. The Microsoft software encoder rejects client-built types, and a
+    // hardware encoder may publish several.
+    [[nodiscard]] ComPtr<IMFMediaType> select_h264_output_type() {
+        ComPtr<IMFMediaType> first_h264;
+        for (DWORD index = 0U;; ++index) {
+            ComPtr<IMFMediaType> candidate;
+            const HRESULT result = transform_->GetOutputAvailableType(0, index, &candidate);
+            if (result == MF_E_NO_MORE_TYPES) {
+                break;
+            }
+            check_hresult(result, "IMFTransform::GetOutputAvailableType(H.264)");
+            GUID subtype{};
+            if (FAILED(candidate->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+                subtype != MFVideoFormat_H264) {
+                continue;
+            }
+            UINT32 candidate_width = 0U;
+            UINT32 candidate_height = 0U;
+            if (SUCCEEDED(MFGetAttributeSize(candidate.Get(), MF_MT_FRAME_SIZE,
+                                            &candidate_width, &candidate_height)) &&
+                candidate_width == width_ && candidate_height == height_) {
+                return candidate;
+            }
+            if (first_h264.Get() == nullptr) {
+                first_h264 = candidate;
+            }
+        }
+        return first_h264;
+    }
     void renegotiate_output_type() {
-        ComPtr<IMFMediaType> output_type;
-        check_hresult(transform_->GetOutputAvailableType(0, 0, &output_type),
-                      "IMFTransform::GetOutputAvailableType(H.264 stream change)");
+        // The encoder publishes its new type list here. Prefer an H.264 type whose
+        // frame size matches the configured output instead of blindly taking
+        // index 0, which may describe a different geometry.
+        ComPtr<IMFMediaType> first_h264;
+        ComPtr<IMFMediaType> matching_size;
+        for (DWORD index = 0U;; ++index) {
+            ComPtr<IMFMediaType> candidate;
+            const HRESULT result = transform_->GetOutputAvailableType(0, index, &candidate);
+            if (result == MF_E_NO_MORE_TYPES) {
+                break;
+            }
+            check_hresult(result, "IMFTransform::GetOutputAvailableType(H.264 stream change)");
+            GUID subtype{};
+            if (FAILED(candidate->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
+                subtype != MFVideoFormat_H264) {
+                continue;
+            }
+            if (first_h264.Get() == nullptr) {
+                first_h264 = candidate;
+            }
+            UINT32 candidate_width = 0U;
+            UINT32 candidate_height = 0U;
+            if (SUCCEEDED(MFGetAttributeSize(candidate.Get(), MF_MT_FRAME_SIZE,
+                                            &candidate_width, &candidate_height)) &&
+                candidate_width == width_ && candidate_height == height_) {
+                matching_size = candidate;
+                break;
+            }
+        }
+        ComPtr<IMFMediaType> output_type =
+            matching_size.Get() != nullptr ? matching_size : first_h264;
+        if (output_type.Get() == nullptr) {
+            throw std::runtime_error(
+                "hardware encoder published no H.264 output type after the stream change");
+        }
         GUID subtype{};
         check_hresult(output_type->GetGUID(MF_MT_SUBTYPE, &subtype),
                       "IMFMediaType::GetGUID(MF_MT_SUBTYPE after stream change)");
@@ -1826,6 +2310,10 @@ private:
             throw std::runtime_error(
                 "hardware encoder changed to a non-H.264 output type, which WireView does not support");
         }
+        // Ask for the same bit rate, frame rate and profile the session was
+        // started with; the enumerated type is passed back unmodified.
+        check_hresult(output_type->SetUINT32(MF_MT_AVG_BITRATE, bit_rate_),
+                      "SetUINT32(MF_MT_AVG_BITRATE after stream change)");
         check_hresult(transform_->SetOutputType(0, output_type.Get(), 0),
                       "IMFTransform::SetOutputType(H.264 stream change)");
         check_hresult(transform_->GetOutputStreamInfo(0, &output_info_),
@@ -1835,6 +2323,14 @@ private:
                   << " | bufferBytes=" << output_info_.cbSize
                   << " | alignment=" << output_info_.cbAlignment << '\n';
         log_h264_media_type("Encoder renegotiated output type", output_type.Get());
+    }
+
+    // A stream change invalidates whatever the encoder had queued. Ask for an IDR
+    // on the next frame because the reference chain is gone. Do not flush the
+    // transform here: a flushed asynchronous MFT can stop raising the
+    // METransformNeedInput/METransformHaveOutput events this loop relies on.
+    void reset_stream_after_renegotiation() {
+        needs_keyframe_ = true;
     }
 
     ComPtr<IMFActivate> activation_;
@@ -1847,13 +2343,53 @@ private:
     UINT32 height_{};
     UINT32 frame_rate_{};
     UINT32 bit_rate_{};
+    bool hardware_{true};
     bool asynchronous_{false};
     bool direct3d_aware_{false};
     bool low_latency_enabled_{false};
     bool first_input_submitted_{false};
     bool started_{false};
     bool draining_{false};
+    bool needs_keyframe_{false};
+    bool input_pending_{false};
+    bool dropped_input_{false};
+    unsigned stream_changes_{0U};
+    unsigned unexpected_output_failures_{0U};
 };
+
+// TEMPORARY probe helper: dumps a BGRA pixel buffer to a bottom-up 32-bit BMP.
+void write_rgba_bmp(
+    const std::uint8_t* pixels, UINT width, UINT height, const char* path) {
+    const UINT row_bytes = width * 4U;
+    const UINT image_bytes = row_bytes * height;
+    FILE* file = nullptr;
+    if (fopen_s(&file, path, "wb") != 0 || file == nullptr) {
+        return;
+    }
+    std::uint8_t header[54]{};
+    const UINT file_size = image_bytes + 54U;
+    const UINT pixel_offset = 54U;
+    const UINT header_size = 40U;
+    const std::uint16_t planes = 1U;
+    const std::uint16_t bits_per_pixel = 32U;
+    header[0] = 'B';
+    header[1] = 'M';
+    std::memcpy(header + 2, &file_size, 4);
+    std::memcpy(header + 10, &pixel_offset, 4);
+    std::memcpy(header + 14, &header_size, 4);
+    std::memcpy(header + 18, &width, 4);
+    std::memcpy(header + 22, &height, 4);
+    std::memcpy(header + 26, &planes, 2);
+    std::memcpy(header + 28, &bits_per_pixel, 2);
+    std::memcpy(header + 34, &image_bytes, 4);
+    (void)std::fwrite(header, 1, sizeof(header), file);
+    for (UINT row = 0; row < height; ++row) {
+        const auto* source = pixels +
+            static_cast<std::size_t>(height - 1U - row) * row_bytes;
+        (void)std::fwrite(source, 1, row_bytes, file);
+    }
+    std::fclose(file);
+}
 
 }  // namespace
 
@@ -1863,7 +2399,8 @@ int run_desktop_encode_session(
     std::uint16_t requested_output_width,
     std::uint16_t requested_output_height,
     std::uint16_t frame_rate,
-    std::string_view capture_display_device) {
+    std::string_view capture_display_device,
+    bool prefer_software_encoder) {
     if (duration <= std::chrono::seconds::zero()) {
         throw std::invalid_argument("encode duration must be positive");
     }
@@ -1903,8 +2440,7 @@ int run_desktop_encode_session(
         frames->width(),
         frames->height(),
         frames->format(),
-        monitor_cursor_scale(target->output_description.Monitor) *
-            kCursorHardwareScaleCompensation);
+        monitor_cursor_scale(target->output_description.Monitor));
     auto converter = std::make_unique<GpuNv12Converter>(
         d3d->device.Get(),
         d3d->context.Get(),
@@ -1920,8 +2456,23 @@ int run_desktop_encode_session(
     const DXGI_FORMAT capture_format = frames->format();
     const LUID capture_adapter_luid = target->adapter_description.AdapterLuid;
 
-    ComPtr<IMFActivate> activation = find_hardware_encoder(
-        target->adapter_description.AdapterLuid);
+    // Prefer the hardware encoder bound to the desktop adapter. If it is missing
+    // or refuses to run (some Intel Quick Sync driver/OS combinations return
+    // E_UNEXPECTED from ProcessOutput), fall back to the Microsoft software H.264
+    // encoder so the session still starts instead of failing outright.
+    bool use_software_encoder = prefer_software_encoder;
+    ComPtr<IMFActivate> activation;
+    if (!use_software_encoder) {
+        try {
+            activation = find_hardware_encoder(target->adapter_description.AdapterLuid);
+        } catch (const std::exception& error) {
+            std::cout << "Hardware H.264 encoder unavailable: " << error.what() << '\n';
+            use_software_encoder = true;
+        }
+    }
+    if (use_software_encoder) {
+        activation = find_software_encoder();
+    }
     const RECT& desktop_bounds = target->output_description.DesktopCoordinates;
     std::cout << "Encoding " << utf8(target->output_description.DeviceName)
               << " at " << output_width << 'x' << output_height << '@'
@@ -1938,12 +2489,27 @@ int run_desktop_encode_session(
               << "Cursor source: " << (target->primary
                   ? "DXGI desktop duplication"
                   : "DXGI with Windows system-cursor fallback") << '\n';
-    auto encoder = std::make_unique<HardwareAvcEncoder>(
-        activation.Get(), d3d->device.Get(), output_width, output_height, frame_rate);
-    std::cout << "Encoder path: asynchronous=yes | d3d11Aware="
-              << (encoder->direct3d_aware() ? "yes" : "no")
-              << " | lowLatencySet="
-              << (encoder->low_latency_enabled() ? "yes" : "no") << '\n';
+    std::unique_ptr<HardwareAvcEncoder> encoder;
+    try {
+        encoder = std::make_unique<HardwareAvcEncoder>(
+            activation.Get(), d3d->device.Get(), output_width, output_height, frame_rate,
+            !use_software_encoder);
+    } catch (const std::exception& error) {
+        if (use_software_encoder) {
+            throw;
+        }
+        std::cout << "Hardware encoder setup failed (" << error.what()
+                  << "); falling back to the Microsoft software H.264 encoder\n";
+        activation = find_software_encoder();
+        encoder = std::make_unique<HardwareAvcEncoder>(
+            activation.Get(), d3d->device.Get(), output_width, output_height, frame_rate, false);
+        use_software_encoder = true;
+    }
+    std::cout << "Encoder path: asynchronous="
+              << (encoder->asynchronous() ? "yes" : "no")
+              << " | d3d11Aware=" << (encoder->direct3d_aware() ? "yes" : "no")
+              << " | lowLatencySet=" << (encoder->low_latency_enabled() ? "yes" : "no")
+              << " | software=" << (use_software_encoder ? "yes" : "no") << '\n';
 
     if (output_width > std::numeric_limits<std::uint16_t>::max() ||
         output_height > std::numeric_limits<std::uint16_t>::max()) {
@@ -1960,9 +2526,12 @@ int run_desktop_encode_session(
     struct SubmittedFrame {
         Clock::time_point submitted_at;
         std::size_t converter_slot;
+        bool slot_held{true};
     };
     std::unordered_map<LONGLONG, SubmittedFrame> submitted_at;
     std::uint64_t submitted = 0;
+    // TEMPORARY cursor-debugging state.
+    unsigned dump_index = 0U;
     std::uint64_t encoded = 0;
     std::uint64_t keyframes = 0;
     std::uint64_t total_bytes = 0;
@@ -1977,6 +2546,7 @@ int run_desktop_encode_session(
             started.time_since_epoch()).count());
     const auto deadline = started + duration;
     auto drain_deadline = deadline + std::chrono::seconds(5);
+    auto last_event = started;
     bool draining = false;
     bool drained = false;
     std::uint64_t desktop_updates_before_reset = 0;
@@ -1985,12 +2555,26 @@ int run_desktop_encode_session(
     while (!drained) {
         const MediaEventType event = encoder->next_event();
         if (event == MEUnknown) {
+            // The encoder can go quiet (for example right after it renegotiated
+            // its output type), so the deadline has to be honoured here as well;
+            // otherwise a silent encoder would spin forever.
+            if (!draining && Clock::now() >= deadline) {
+                encoder->drain();
+                draining = true;
+                drain_deadline = Clock::now() + std::chrono::seconds(5);
+                continue;
+            }
             if (draining && Clock::now() > drain_deadline) {
-                throw std::runtime_error("hardware encoder drain timed out");
+                throw std::runtime_error("encoder drain timed out");
+            }
+            if (!draining && Clock::now() - last_event > std::chrono::seconds(5)) {
+                throw std::runtime_error(
+                    "hardware encoder stopped delivering events; no input or output for 5 seconds");
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
+        last_event = Clock::now();
 
         if (event == METransformNeedInput) {
             if (!draining && Clock::now() >= deadline) {
@@ -2067,8 +2651,7 @@ int run_desktop_encode_session(
                             replacement->width(),
                             replacement->height(),
                             replacement->format(),
-                            monitor_cursor_scale(refreshed_target->output_description.Monitor) *
-                                kCursorHardwareScaleCompensation);
+                            monitor_cursor_scale(refreshed_target->output_description.Monitor));
                         auto replacement_converter = std::make_unique<GpuNv12Converter>(
                             refreshed_d3d->device.Get(),
                             refreshed_d3d->context.Get(),
@@ -2079,11 +2662,13 @@ int run_desktop_encode_session(
                             output_height,
                             replacement->format(),
                             frame_rate);
-                        ComPtr<IMFActivate> replacement_activation = find_hardware_encoder(
-                            refreshed_target->adapter_description.AdapterLuid);
+                        ComPtr<IMFActivate> replacement_activation = use_software_encoder
+                            ? find_software_encoder()
+                            : find_hardware_encoder(
+                                  refreshed_target->adapter_description.AdapterLuid);
                         auto replacement_encoder = std::make_unique<HardwareAvcEncoder>(
                             replacement_activation.Get(), refreshed_d3d->device.Get(),
-                            output_width, output_height, frame_rate);
+                            output_width, output_height, frame_rate, !use_software_encoder);
                         replacement_encoder->start();
 
                         target = std::move(refreshed_target);
@@ -2126,31 +2711,96 @@ int run_desktop_encode_session(
                 continue;
             }
             frames->refresh_system_cursor();
+            if ((submitted % 60U) == 0U && target) {
+                cursor_compositor->set_dpi_scale(
+                    monitor_cursor_scale(target->output_description.Monitor));
+            }
             cursor_compositor->compose(frames->texture(), frames->pointer());
+            // TEMPORARY: dump a few composited frames while the pointer is visible.
+            // Debug aid: set WIREVIEW_DUMP_FRAMES=1 to save a few frames as BMP.
+            if (frames->pointer().visible && dump_index < 4U &&
+                submitted >= 30U * (dump_index + 1U) && debug_frames_enabled()) {
+                char local_app_data[MAX_PATH]{};
+                if (GetEnvironmentVariableA("LOCALAPPDATA", local_app_data, MAX_PATH) > 0U) {
+                    const std::string base = std::string(local_app_data) +
+                        "\\WireView\\logs\\frame" + std::to_string(dump_index);
+                    save_debug_bmp(d3d->device.Get(), d3d->context.Get(),
+                                   frames->texture(), (base + "-raw.bmp").c_str());
+                    save_debug_bmp(d3d->device.Get(), d3d->context.Get(),
+                                   cursor_compositor->texture(),
+                                   (base + "-composed.bmp").c_str());
+                    std::cout << "Cursor debug frame " << dump_index << " written"
+                              << " | pos=" << frames->pointer().x << ',' << frames->pointer().y
+                              << " | renderAdjust="
+                              << frames->pointer().render_scale_adjustment << '\n';
+                }
+                ++dump_index;
+            }
             const GpuNv12Converter::ConvertedFrame nv12 = converter->convert();
             const LONGLONG timestamp = static_cast<LONGLONG>(submitted) * frame_duration;
             if (callbacks.consume_keyframe_request && callbacks.consume_keyframe_request()) {
                 std::cout << "Android requested H.264 recovery keyframe; forcing next frame\n";
                 encoder->force_keyframe();
             }
-            submitted_at.emplace(
-                timestamp,
-                SubmittedFrame{
-                    .submitted_at = Clock::now(),
-                    .converter_slot = nv12.slot,
-                });
-            encoder->submit(nv12.texture, timestamp, frame_duration);
+            if (use_software_encoder) {
+                // The software MFT is not D3D11 aware: read the NV12 frame back and
+                // hand it over as system memory. The GPU surface is free as soon as
+                // the copy exists, and the software encoder buffers several frames
+                // internally, so release it now instead of waiting for the output:
+                // otherwise the three-slot pool starves instantly.
+                const std::vector<std::uint8_t> nv12_bytes =
+                    converter->read_nv12(nv12.texture);
+                converter->release_slot(nv12.slot);
+                submitted_at.emplace(
+                    timestamp,
+                    SubmittedFrame{
+                        .submitted_at = Clock::now(),
+                        .converter_slot = nv12.slot,
+                        .slot_held = false,
+                    });
+                encoder->submit_bytes(nv12_bytes, timestamp, frame_duration);
+            } else {
+                submitted_at.emplace(
+                    timestamp,
+                    SubmittedFrame{
+                        .submitted_at = Clock::now(),
+                        .converter_slot = nv12.slot,
+                    });
+                encoder->submit(nv12.texture, timestamp, frame_duration);
+            }
             ++submitted;
             continue;
         }
 
         if (event == METransformHaveOutput) {
-            const HardwareAvcEncoder::Output output = encoder->take_output();
+            const std::optional<HardwareAvcEncoder::Output> output = encoder->take_output();
+            if (!output) {
+                // A renegotiation dropped the frame the encoder was holding. Release
+                // its GPU slot so the NV12 pool cannot starve, and keep the session
+                // running: the event loop submits the next frame as soon as the
+                // encoder asks for one. A plain "no output yet" is not a drop.
+                if (encoder->dropped_input() && !submitted_at.empty()) {
+                    auto oldest = submitted_at.begin();
+                    for (auto candidate = submitted_at.begin();
+                         candidate != submitted_at.end();
+                         ++candidate) {
+                        if (candidate->first < oldest->first) {
+                            oldest = candidate;
+                        }
+                    }
+                    if (oldest->second.slot_held) {
+                        converter->release_slot(oldest->second.converter_slot);
+                        oldest->second.slot_held = false;
+                    }
+                    submitted_at.erase(oldest);
+                }
+                continue;
+            }
             ++encoded;
-            total_bytes += output.bytes.size();
-            keyframes += output.keyframe ? 1U : 0U;
-            annex_b_outputs += output.annex_b ? 1U : 0U;
-            const auto input = submitted_at.find(output.timestamp);
+            total_bytes += output->bytes.size();
+            keyframes += output->keyframe ? 1U : 0U;
+            annex_b_outputs += output->annex_b ? 1U : 0U;
+            const auto input = submitted_at.find(output->timestamp);
             if (input != submitted_at.end()) {
                 const double latency_ms = std::chrono::duration<double, std::milli>(
                     Clock::now() - input->second.submitted_at).count();
@@ -2159,15 +2809,18 @@ int run_desktop_encode_session(
                 if (encoded == 1U) {
                     first_frame_latency_ms = latency_ms;
                 }
-                converter->release_slot(input->second.converter_slot);
+                if (input->second.slot_held) {
+                    converter->release_slot(input->second.converter_slot);
+                    input->second.slot_held = false;
+                }
                 submitted_at.erase(input);
             }
             if (callbacks.on_frame) {
-                const std::uint64_t timestamp_micros = output.timestamp >= 0
-                    ? stream_timestamp_base + static_cast<std::uint64_t>(output.timestamp / 10)
+                const std::uint64_t timestamp_micros = output->timestamp >= 0
+                    ? stream_timestamp_base + static_cast<std::uint64_t>(output->timestamp / 10)
                     : stream_timestamp_base;
                 callbacks.on_frame(
-                    output.bytes, output.keyframe, timestamp_micros);
+                    output->bytes, output->keyframe, timestamp_micros);
             }
             continue;
         }
@@ -2208,11 +2861,67 @@ int run_desktop_encode_session(
               << " ms | average=" << average_latency_ms
               << " ms | maximum=" << maximum_latency_ms << " ms\n"
               << "Bitstream framing: AnnexB=" << annex_b_outputs << '/' << encoded << '\n';
-    return encoded > 0U && encoder->low_latency_enabled() ? 0 : 2;
+    return encoded > 0U && (encoder->low_latency_enabled() || encoder->software()) ? 0 : 2;
 }
 
-int run_desktop_encode_benchmark(std::chrono::seconds duration) {
-    return run_desktop_encode_session(duration, {});
+int run_desktop_encode_benchmark(
+    std::chrono::seconds duration,
+    bool prefer_software_encoder,
+    std::string_view capture_display_device) {
+    return run_desktop_encode_session(
+        duration, {}, 0U, 0U, 60U, capture_display_device, prefer_software_encoder);
+}
+
+int run_cursor_shape_probe(const char* output_path) {
+    ComApartment apartment;
+    if (output_path == nullptr || *output_path == '\0') {
+        throw std::invalid_argument("cursor shape probe needs an output path");
+    }
+    struct Probe {
+        const char* name;
+        LPCSTR resource;
+    };
+    const Probe probes[2] = {
+        {"arrow", IDC_ARROW},
+        {"ibeam", IDC_IBEAM},
+    };
+    for (const Probe& probe : probes) {
+        const HCURSOR cursor = LoadCursorA(nullptr, probe.resource);
+        std::cout << probe.name << ": ";
+        if (cursor == nullptr) {
+            std::cout << "LoadCursor failed\n";
+            continue;
+        }
+        DesktopPointer pointer;
+        if (!DesktopFrameSource::capture_cursor_shape_for_probe(cursor, pointer)) {
+            std::cout << "capture failed\n";
+            continue;
+        }
+        std::size_t opaque = 0U;
+        std::size_t white = 0U;
+        std::size_t black = 0U;
+        for (std::size_t offset = 0; offset + 3U < pointer.bytes.size(); offset += 4U) {
+            if (pointer.bytes[offset + 3U] == 0U) {
+                continue;
+            }
+            ++opaque;
+            if (pointer.bytes[offset] > 200U) {
+                ++white;
+            } else if (pointer.bytes[offset] < 60U) {
+                ++black;
+            }
+        }
+        std::cout << pointer.width << 'x' << pointer.height
+                  << " | opaque=" << opaque
+                  << " | white=" << white
+                  << " | black=" << black
+                  << " | hotspot=" << pointer.hotspot_x << ',' << pointer.hotspot_y
+                  << '\n';
+        const std::string path = std::string(output_path) + '-' + probe.name + ".bmp";
+        write_rgba_bmp(pointer.bytes.data(), pointer.width, pointer.height, path.c_str());
+        std::cout << "  written " << path << '\n';
+    }
+    return 0;
 }
 
 int run_desktop_display_list() {
@@ -2221,13 +2930,26 @@ int run_desktop_display_list() {
     std::cout << "Attached WireView capture displays: " << targets.size() << '\n';
     for (const CaptureTarget& target : targets) {
         const RECT& bounds = target.output_description.DesktopCoordinates;
+        UINT effective_x = 0U;
+        UINT effective_y = 0U;
+        const HRESULT effective_result = GetDpiForMonitor(
+            target.output_description.Monitor, MDT_EFFECTIVE_DPI, &effective_x, &effective_y);
+        UINT raw_x = 0U;
+        UINT raw_y = 0U;
+        const HRESULT raw_result = GetDpiForMonitor(
+            target.output_description.Monitor, MDT_RAW_DPI, &raw_x, &raw_y);
         std::cout << "  " << utf8(target.output_description.DeviceName)
                   << " | " << utf8(target.adapter_description.Description)
                   << " | " << (target.primary ? "primary" : "secondary")
                   << " | rect=" << bounds.left << ',' << bounds.top << '-'
                   << bounds.right << ',' << bounds.bottom
                   << " | size=" << (bounds.right - bounds.left) << 'x'
-                  << (bounds.bottom - bounds.top) << '\n';
+                  << (bounds.bottom - bounds.top)
+                  << " | dpi=" << (SUCCEEDED(effective_result) ? effective_x : 0U)
+                  << " (" << (SUCCEEDED(raw_result) ? raw_x : 0U) << " raw)"
+                  << " | dpiScale="
+                  << monitor_cursor_scale(target.output_description.Monitor)
+                  << '\n';
     }
     return 0;
 }

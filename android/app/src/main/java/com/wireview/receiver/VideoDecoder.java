@@ -154,6 +154,13 @@ final class VideoDecoder implements AutoCloseable {
             if (selectedDecoder.lowLatency || forceLowLatency) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
             }
+            // Framework scheduling hints. They are not a latency switch, but some
+            // decoders size their internal pipeline from them, so they cost nothing
+            // when ignored (Kirin does ignore them; Qualcomm may not).
+            format.setInteger(
+                    MediaFormat.KEY_OPERATING_RATE,
+                    Math.max(1, streamConfig.frameRateNumerator));
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0); // 0 = realtime priority.
 
             codec = MediaCodec.createByCodecName(selectedDecoder.name);
             applyVendorLowLatencyParameters(codec, format);

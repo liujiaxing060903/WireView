@@ -21,23 +21,13 @@
             </div>
           </div>
           <p class="settings-description">视频和控制数据仅通过 USB / 本机 ADB 通道传输，不经过云端服务器。</p>
-          <div class="settings-developer">
-            <span>开发者</span>
-            <strong>S+Zn</strong>
-            <p>如有反馈或建议，欢迎通过邮箱联系。</p>
-            <div class="developer-email"><code>S_Znnn@163.com</code><button id="copy-developer-email" type="button">复制邮箱</button></div>
+          <div class="settings-toggle-row">
+            <span><strong>重连自动投屏</strong><small id="auto-resume-state">已关闭</small></span>
+            <button id="auto-resume-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-label="重连自动投屏"><i></i></button>
           </div>
-          <button id="support-developer" class="settings-action support-action" type="button">❤　支持开发者</button>
-          <div id="support-content" class="support-content" hidden>
-            <span class="support-confetti" aria-hidden="true"></span>
-            <img id="support-qr" src="ui/developer-support.png" alt="S+Zn 的赞赏码">
-            <div class="support-copy">
-              <div class="support-copy-heading"><strong>感谢支持</strong><small>你的支持会帮助 WireView 持续改进。</small></div>
-              <div class="support-scan-actions">
-                <small id="support-scan-tip" hidden>您也可以尝试提高屏幕亮度。给您添麻烦了，感谢支持！</small>
-                <button id="support-scan-help" type="button" aria-pressed="false">扫码有问题？</button>
-              </div>
-            </div>
+          <div class="settings-toggle-row">
+            <span><strong>低延迟解码（实验）</strong><small id="low-latency-state">已关闭</small></span>
+            <button id="low-latency-toggle" class="toggle" type="button" role="switch" aria-checked="false" aria-label="低延迟解码"><i></i></button>
           </div>
           <div class="settings-toggle-row">
             <span><strong>暗色模式</strong><small>当前已开启</small></span>
@@ -55,6 +45,16 @@
     <section id="diagnostics-page" class="page is-hidden"></section>
     <footer id="status-bar" class="status-bar"></footer>
   </main>
+  <div id="mode-switch-dialog" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mode-switch-title">
+      <strong id="mode-switch-title">切换投屏方式？</strong>
+      <p id="mode-switch-text">当前正在投屏，切换方式会先停止当前投屏，再按新方式重新开始。</p>
+      <div class="modal-actions">
+        <button id="mode-switch-cancel" type="button">取消</button>
+        <button id="mode-switch-confirm" type="button" class="primary-button">确认切换</button>
+      </div>
+    </div>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>

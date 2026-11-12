@@ -1,3 +1,19 @@
+# 相对之前版本做了以下改动
+修复
+1.编码器崩溃 0x8000FFFF
+2.软件编码兜底
+3.光标叠加层尺寸错误（对应上游 issue #2）
+4.光标不跟随 DPI
+5.I 型光标不可见
+新增
+1.重连自动投屏
+2.投屏中切换显示方式
+3.状态栏实时指标
+4.竖屏面板设备自动横屏投屏
+5.低延迟解码（实验）
+已知限制
+1.麒麟 990（MatePad）解码器未声明 FEATURE_LowLatency，实测约 100 ms 固定延迟，软件侧无法再降； 同环境高通设备约 10 ms。
+2.Android 端改动需要重新编译 APK 才会生效，本仓库的 Windows 二进制已包含全部 Windows 侧改动。
 # WireView 有线副屏
 
 让 Android 手机和平板，成为 Windows 的第二块屏幕。
@@ -63,3 +79,11 @@ Windows 使用 DXGI 捕获桌面、Media Foundation 编码 H.264，Android 使�
 ## 反馈问题
 
 欢迎通过 [GitHub Issues](https://github.com/liujiaxing060903/WireView/issues) 提交问题或建议。反馈连接、黑屏或卡顿问题时，请附上 Windows 版本、显卡型号、Android 设备型号、所用分辨率与帧率，以及能够复现问题的操作步骤。需要进一步定位时，可从控制中心的“诊断与日志”收集对应会话日志。
+
+## 关于本仓库
+
+本仓库基于 [liujiaxing060903/WireView](https://github.com/liujiaxing060903/WireView) 的 v1.1.20 修改而来，
+上游仓库当前未附带开源许可证，因此本仓库的公开分发需以取得原作者许可为前提。
+
+相对上游的改动清单见 [docs/LOCAL-CHANGES.md](docs/LOCAL-CHANGES.md)，
+版本记录见 [CHANGELOG.md](CHANGELOG.md)。

@@ -1,11 +1,14 @@
 package com.wireview.receiver;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -37,6 +40,14 @@ import java.nio.charset.StandardCharsets;
 public final class MainActivity extends Activity implements ConnectionClient.Listener, VideoDecoder.Listener {
     private static final String TAG = "WireViewUsb";
     private static final String DISPLAY_VERSION = "1.1.20";
+    // Receiver-side options that survive restarts. The decoder only takes effect on
+    // the next launch; the orientation applies immediately.
+    private static final String PREFS_NAME = "wireview-settings";
+    private static final String PREF_DECODER = "decoder";
+    private static final String PREF_ORIENTATION = "orientation";
+    private static final String ORIENTATION_AUTO = "auto";
+    private static final String ORIENTATION_LANDSCAPE = "landscape";
+    private static final String ORIENTATION_PORTRAIT = "portrait";
     private static final long PEN_MOVE_INTERVAL_MILLIS = 33L;
     private static final String ACTION_USB_PERMISSION =
             "com.wireview.receiver.action.USB_PERMISSION";
@@ -52,6 +63,8 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     private TextView statusView;
     private TextView deviceInfoView;
     private TextView versionView;
+    private TextView settingsButton;
+    private SharedPreferences preferences;
     private LinearLayout connectionPanel;
     private FrameLayout videoContainer;
     private SurfaceView displaySurface;
@@ -254,6 +267,8 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 "onCreate action=" + getIntent().getAction()
                         + " savedState=" + (savedInstanceState != null));
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        applyOrientationPreference(preferences.getString(PREF_ORIENTATION, ORIENTATION_AUTO));
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -348,12 +363,33 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                         ViewGroup.LayoutParams.MATCH_PARENT));
 
         setContentView(root);
+
+        settingsButton = new TextView(this);
+        settingsButton.setText("⚙ 设置");
+        settingsButton.setTextColor(Color.rgb(190, 196, 205));
+        settingsButton.setTextSize(13.0f);
+        settingsButton.setPadding(dp(14), dp(8), dp(14), dp(8));
+        GradientDrawable settingsBackground = new GradientDrawable();
+        settingsBackground.setColor(Color.rgb(28, 30, 34));
+        settingsBackground.setCornerRadius(dp(10));
+        settingsButton.setBackground(settingsBackground);
+        settingsButton.setOnClickListener(view -> showReceiverSettings());
+        settingsButton.setVisibility(View.VISIBLE);
+        FrameLayout.LayoutParams settingsParameters = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.START);
+        settingsParameters.setMargins(dp(16), 0, 0, dp(16));
+        root.addView(settingsButton, settingsParameters);
         Log.i(TAG, "Activity created: action=" + getIntent().getAction());
         connection = new ConnectionClient(this);
         registerUsbPermissionReceiver();
         adoptOrRequestAccessory(getIntent());
 
         String decoderOverride = getIntent().getStringExtra("decoder");
+        if (decoderOverride == null || decoderOverride.isEmpty()) {
+            decoderOverride = preferences.getString(PREF_DECODER, null);
+        }
         boolean forceLowLatency = getIntent().getBooleanExtra("force_low_latency", false);
         selectedDecoder = CodecProbe.findBestAvcDecoder(decoderOverride);
         refreshDeviceInfo();
@@ -712,6 +748,89 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
+    private void applyOrientationPreference(String mode) {
+        int requested;
+        if (ORIENTATION_LANDSCAPE.equals(mode)) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+        } else if (ORIENTATION_PORTRAIT.equals(mode)) {
+            requested = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+        } else {
+            requested = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR;
+        }
+        setRequestedOrientation(requested);
+    }
+
+    private void showReceiverSettings() {
+        final String[] entries = {"选择解码器…", "画面方向…"};
+        new AlertDialog.Builder(this)
+                .setTitle("接收端设置")
+                .setItems(entries, (dialog, which) -> {
+                    if (which == 0) {
+                        showDecoderPicker();
+                    } else {
+                        showOrientationPicker();
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private void showDecoderPicker() {
+        final java.util.List<CodecProbe.Result> decoders = CodecProbe.listAvcDecoders();
+        final java.util.List<String> labels = new java.util.ArrayList<>();
+        labels.add("自动（推荐）");
+        for (CodecProbe.Result decoder : decoders) {
+            labels.add(decoder.summary());
+        }
+        final String current = preferences.getString(PREF_DECODER, "");
+        int checked = 0;
+        for (int index = 0; index < decoders.size(); ++index) {
+            if (decoders.get(index).name.equals(current)) {
+                checked = index + 1;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("选择解码器（重新打开 App 后生效）")
+                .setSingleChoiceItems(labels.toArray(new String[0]), checked, (dialog, which) -> {
+                    SharedPreferences.Editor editor = preferences.edit();
+                    if (which == 0) {
+                        editor.remove(PREF_DECODER);
+                    } else {
+                        editor.putString(PREF_DECODER, decoders.get(which - 1).name);
+                    }
+                    editor.apply();
+                    dialog.dismiss();
+                    showShortToast("解码器已保存，重新打开 WireView 后生效");
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showOrientationPicker() {
+        final String[] values = {ORIENTATION_AUTO, ORIENTATION_LANDSCAPE, ORIENTATION_PORTRAIT};
+        final String[] labels = {"跟随手机（自动旋转）", "锁定横屏", "锁定竖屏"};
+        final String current = preferences.getString(PREF_ORIENTATION, ORIENTATION_AUTO);
+        int checked = 0;
+        for (int index = 0; index < values.length; ++index) {
+            if (values[index].equals(current)) {
+                checked = index;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("画面方向")
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    preferences.edit().putString(PREF_ORIENTATION, values[which]).apply();
+                    applyOrientationPreference(values[which]);
+                    dialog.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showShortToast(String message) {
+        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_SHORT).show();
+    }
+
     private void refreshDeviceInfo() {
         if (deviceInfoView != null) {
             deviceInfoView.setText(deviceDisplayLabel());
@@ -846,9 +965,16 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     }
 
     private void setStreamingPresentation(boolean streaming) {
+        // Hide the whole panel, not just its text: with only the children gone the
+        // rounded background still peeked out on both sides of a letterboxed video,
+        // which showed up as two grey rounded blobs in the black bars.
+        connectionPanel.setVisibility(streaming ? View.GONE : View.VISIBLE);
         statusView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         deviceInfoView.setVisibility(streaming ? View.GONE : View.VISIBLE);
         versionView.setVisibility(streaming ? View.GONE : View.VISIBLE);
+        if (settingsButton != null) {
+            settingsButton.setVisibility(streaming ? View.GONE : View.VISIBLE);
+        }
         getWindow().getDecorView().setSystemUiVisibility(streaming
                 ? View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
