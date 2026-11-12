@@ -5,32 +5,17 @@
     resolution: '原生自动', vddMode: '--', frameRate: '60 FPS',
     displays: [], resolutions: [], vddModes: [], selectedDisplay: 0,
     selectedResolution: 0, selectedVddMode: 0, parsecAvailable: false,
+    autoResume: false, autoResumeMode: 'copy', lowLatencyDecode: false,
+    outputFps: '', bitrateMbps: '', latencyMs: '', latencyP95Ms: '',
     parsecVersion: 0, parsecDisplayCount: 0, diagnostics: ''
   };
   const send = command => window.chrome?.webview?.postMessage(command);
-  const lockedCommands = new Set(['mode-copy', 'mode-extend', 'input-off', 'input-on', 'create-vdd', 'remove-vdd', 'recover-vdd', 'preview']);
+  const lockedCommands = new Set(['input-off', 'input-on', 'create-vdd', 'remove-vdd', 'recover-vdd', 'preview']);
   const lockedMessage = '先停止当前 WireView 视频会话';
   let transientStatus = '';
   let transientStatusTimer = 0;
   let settingsOpen = false;
-  let supportVisible = false;
-  let supportCodeEnlarged = false;
   let darkMode = localStorage.getItem('wireview-theme') !== 'light';
-  const supportConfettiTrajectories = Array.from({ length: 54 }, (_, index) => {
-    const angle = index * 2.399963229728653;
-    const speed = 120 + (index % 8) * 19;
-    return {
-      velocityX: Math.cos(angle) * speed,
-      velocityY: Math.sin(angle) * speed,
-      gravity: 320 + (index % 6) * 19,
-      duration: 1.75 + (index % 7) * .075,
-      delay: (index * 29) % 85,
-      spin: (index % 2 ? -1 : 1) * (430 + (index % 9) * 72),
-      flips: 3 + (index % 4),
-      width: 5 + (index % 6),
-      height: 9 + (index % 7) * 2
-    };
-  });
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const optionList = (items, selected) => items.map((item, index) => `<option value="${index}" ${index === selected ? 'selected' : ''}>${escape(item)}</option>`).join('');
   const panelTitle = (number, title) => `<div class="card-title"><span><i class="number">${number}</i>${title}</span></div>`;
@@ -57,80 +42,81 @@
     button.textContent = '↻　刷新';
     overview.append(button);
   };
-  const renderStatus = () => { document.querySelector('#status-bar').innerHTML = `<span class="status-dot" style="background:${state.connected ? 'var(--green)' : 'var(--subtle)'}"></span><span class="status-main">${escape(transientStatus || state.status || '准备就绪。')}</span><span class="status-divider"></span><span class="status-main">副屏分辨率：${escape(state.resolution)}　·　刷新率：${escape(state.vddMode)}　·　Parsec VDD ${state.parsecAvailable ? '可用' : '不可用'}</span>`; };
-  const showLockedMessage = () => {
-    transientStatus = lockedMessage;
+  const renderStatus = () => {
+    const metrics = [
+      `副屏分辨率：${escape(state.resolution)}`,
+      `刷新率：${escape(state.vddMode)}`,
+      `Parsec VDD ${state.parsecAvailable ? '可用' : '不可用'}`
+    ];
+    if (state.outputFps) metrics.push(`${escape(state.outputFps)} FPS`);
+    if (state.bitrateMbps) metrics.push(`${escape(state.bitrateMbps)} Mbps`);
+    if (state.latencyMs) {
+      metrics.push(`延迟 ${escape(state.latencyMs)} ms${state.latencyP95Ms ? `（P95 ${escape(state.latencyP95Ms)}）` : ''}`);
+    }
+    document.querySelector('#status-bar').innerHTML =
+      `<span class="status-dot" style="background:${state.connected ? 'var(--green)' : 'var(--subtle)'}"></span>` +
+      `<span class="status-main status-message">${escape(transientStatus || state.status || '准备就绪。')}</span>` +
+      `<span class="status-divider"></span>` +
+      `<span class="status-main status-metrics">${metrics.join('　·　')}</span>`;
+  };
+  const showTransient = text => {
+    transientStatus = text;
     window.clearTimeout(transientStatusTimer);
     renderStatus();
     transientStatusTimer = window.setTimeout(() => { transientStatus = ''; renderStatus(); }, 2500);
   };
+  const showLockedMessage = () => showTransient(lockedMessage);
+  let pendingSwitchMode = null;
+  const closeModeSwitchDialog = () => {
+    pendingSwitchMode = null;
+    const dialog = document.querySelector('#mode-switch-dialog');
+    if (!dialog) return;
+    dialog.hidden = true;
+    dialog.classList.remove('is-open');
+  };
+  const openModeSwitchDialog = target => {
+    pendingSwitchMode = target;
+    const dialog = document.querySelector('#mode-switch-dialog');
+    const text = document.querySelector('#mode-switch-text');
+    if (!dialog) return;
+    const current = state.mode === 'extend' ? '扩展屏幕' : '复制屏幕';
+    const next = target === 'extend' ? '扩展屏幕' : '复制屏幕';
+    if (text) {
+      text.textContent = `当前正在使用${current}。切换到${next}会先停止当前投屏，再按新方式重新开始。`;
+    }
+    dialog.hidden = false;
+    dialog.classList.add('is-open');
+    document.querySelector('#mode-switch-confirm')?.focus();
+  };
   const updateSettingsPanel = () => {
     const panel = document.querySelector('#settings-panel');
     const toggle = document.querySelector('#settings-toggle');
-    const support = document.querySelector('#support-content');
-    const supportQr = document.querySelector('#support-qr');
-    const scanHelp = document.querySelector('#support-scan-help');
-    const scanTip = document.querySelector('#support-scan-tip');
     panel.classList.toggle('is-open', settingsOpen);
     panel.setAttribute('aria-hidden', settingsOpen ? 'false' : 'true');
     toggle.setAttribute('aria-expanded', settingsOpen ? 'true' : 'false');
-    support.hidden = !supportVisible;
-    supportQr.src = supportCodeEnlarged ? 'ui/developer-support-enlarged.png' : 'ui/developer-support.png';
-    scanTip.hidden = !supportCodeEnlarged;
-    scanHelp.setAttribute('aria-pressed', supportCodeEnlarged ? 'true' : 'false');
-    scanHelp.textContent = supportCodeEnlarged ? '已放大赞赏码' : '扫码有问题？';
     document.body.classList.toggle('theme-light', !darkMode);
+    const autoResumeToggle = document.querySelector('#auto-resume-toggle');
+    if (autoResumeToggle) {
+      autoResumeToggle.classList.toggle('is-on', !!state.autoResume);
+      autoResumeToggle.setAttribute('aria-checked', state.autoResume ? 'true' : 'false');
+      const autoResumeHint = document.querySelector('#auto-resume-state');
+      if (autoResumeHint) {
+        autoResumeHint.textContent = state.autoResume
+          ? (state.autoResumeMode === 'extend' ? '已开启 · 恢复扩展屏幕' : '已开启 · 恢复复制屏幕')
+          : '已关闭';
+      }
+    }
+    const lowLatencyToggle = document.querySelector('#low-latency-toggle');
+    if (lowLatencyToggle) {
+      lowLatencyToggle.classList.toggle('is-on', !!state.lowLatencyDecode);
+      lowLatencyToggle.setAttribute('aria-checked', state.lowLatencyDecode ? 'true' : 'false');
+      const lowLatencyHint = document.querySelector('#low-latency-state');
+      if (lowLatencyHint) lowLatencyHint.textContent = state.lowLatencyDecode ? '已开启 · 需重新开始投屏' : '已关闭';
+    }
     const themeToggle = document.querySelector('#theme-toggle');
     themeToggle.classList.toggle('is-on', darkMode);
     themeToggle.setAttribute('aria-checked', darkMode ? 'true' : 'false');
     themeToggle.closest('.settings-toggle-row').querySelector('small').textContent = darkMode ? '当前已开启' : '当前已关闭';
-  };
-  const copyDeveloperEmail = async () => {
-    const email = 'S_Znnn@163.com';
-    const button = document.querySelector('#copy-developer-email');
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-      await navigator.clipboard.writeText(email);
-    } catch {
-      const field = document.createElement('textarea');
-      field.value = email;
-      field.style.position = 'fixed';
-      field.style.opacity = '0';
-      document.body.append(field);
-      field.select();
-      document.execCommand('copy');
-      field.remove();
-    }
-    button.textContent = '已复制';
-    window.setTimeout(() => { button.textContent = '复制邮箱'; }, 1800);
-  };
-  const launchSupportConfetti = () => {
-    const container = document.querySelector('.support-confetti');
-    const colors = ['#ff6f91', '#ffcf4b', '#70ddff', '#9d7bff', '#66df84', '#f2f5ff'];
-    container.replaceChildren();
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    supportConfettiTrajectories.forEach((trajectory, index) => {
-      const piece = document.createElement('i');
-      piece.style.width = `${trajectory.width}px`;
-      piece.style.height = `${trajectory.height}px`;
-      piece.style.background = colors[Math.floor(Math.random() * colors.length)];
-      container.append(piece);
-      const frames = [];
-      for (let frame = 0; frame <= 48; frame += 1) {
-        const progress = frame / 48;
-        const time = trajectory.duration * progress;
-        const x = trajectory.velocityX * time;
-        const y = trajectory.velocityY * time + .5 * trajectory.gravity * time * time;
-        const opacity = progress < .06 ? progress / .06 : progress > .8 ? (1 - progress) / .2 : 1;
-        const flip = Math.cos(progress * Math.PI * trajectory.flips);
-        frames.push({
-          offset: progress,
-          opacity: Math.max(0, opacity),
-          transform: `translate3d(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px), 0) rotate(${(trajectory.spin * progress).toFixed(1)}deg) scaleX(${flip.toFixed(3)})`
-        });
-      }
-      piece.animate(frames, { duration: trajectory.duration * 1000, delay: trajectory.delay, easing: 'linear', fill: 'both' });
-    });
   };
   const wireSettingsEvents = () => {
     const panel = document.querySelector('#settings-panel');
@@ -138,27 +124,19 @@
     toggle.addEventListener('click', event => {
       event.stopPropagation();
       settingsOpen = !settingsOpen;
-      if (!settingsOpen) {
-        supportVisible = false;
-        supportCodeEnlarged = false;
-      }
       updateSettingsPanel();
     });
-    document.querySelector('#support-developer').addEventListener('click', event => {
+    document.querySelector('#auto-resume-toggle').addEventListener('click', event => {
       event.stopPropagation();
-      supportVisible = !supportVisible;
-      if (!supportVisible) supportCodeEnlarged = false;
+      state.autoResume = !state.autoResume;
       updateSettingsPanel();
-      if (supportVisible) launchSupportConfetti();
+      send(state.autoResume ? 'auto-resume-on' : 'auto-resume-off');
     });
-    document.querySelector('#support-scan-help').addEventListener('click', event => {
+    document.querySelector('#low-latency-toggle').addEventListener('click', event => {
       event.stopPropagation();
-      supportCodeEnlarged = true;
+      state.lowLatencyDecode = !state.lowLatencyDecode;
       updateSettingsPanel();
-    });
-    document.querySelector('#copy-developer-email').addEventListener('click', event => {
-      event.stopPropagation();
-      void copyDeveloperEmail();
+      send(state.lowLatencyDecode ? 'low-latency-on' : 'low-latency-off');
     });
     document.querySelector('#theme-toggle').addEventListener('click', event => {
       event.stopPropagation();
@@ -169,16 +147,12 @@
     });
     panel.addEventListener('click', event => {
       if (event.target === panel) {
-        supportVisible = false;
-        supportCodeEnlarged = false;
         updateSettingsPanel();
       }
     });
     document.addEventListener('click', event => {
       if (!settingsOpen || panel.contains(event.target) || toggle.contains(event.target)) return;
       settingsOpen = false;
-      supportVisible = false;
-      supportCodeEnlarged = false;
       updateSettingsPanel();
     });
   };
@@ -231,12 +205,22 @@
     parsecAvailable: state.parsecAvailable,
     parsecVersion: state.parsecVersion,
     parsecDisplayCount: state.parsecDisplayCount,
-    displayName: state.displayName
+    displayName: state.displayName,
+    autoResume: state.autoResume,
+    autoResumeMode: state.autoResumeMode
   });
   const wireEvents = () => {
     document.querySelectorAll('[data-command]').forEach(node => node.addEventListener('click', () => {
-      if (state.running && lockedCommands.has(node.dataset.command)) { showLockedMessage(); return; }
-      send(node.dataset.command);
+      const command = node.dataset.command;
+      if (command === 'mode-copy' || command === 'mode-extend') {
+        const target = command === 'mode-copy' ? 'copy' : 'extend';
+        if (!state.running) { send(command); return; }
+        if (state.mode === target) { showTransient(target === 'extend' ? '已经在使用扩展屏幕。' : '已经在使用复制屏幕。'); return; }
+        openModeSwitchDialog(target);
+        return;
+      }
+      if (state.running && lockedCommands.has(command)) { showLockedMessage(); return; }
+      send(command);
     }));
     document.querySelectorAll('[data-select]').forEach(node => {
       const blockIfRunning = event => {
@@ -261,9 +245,24 @@
   window.chrome?.webview?.addEventListener('message', event => {
     const beforeLayout = layoutSnapshot();
     const beforeStatus = state.status;
+    const beforeMetrics = `${state.outputFps}|${state.bitrateMbps}|${state.latencyMs}|${state.latencyP95Ms}|${state.resolution}|${state.vddMode}|${state.parsecAvailable}`;
     Object.assign(state, event.data);
+    updateSettingsPanel();
     if (beforeLayout !== layoutSnapshot()) render();
-    else if (beforeStatus !== state.status) renderStatus();
+    else if (beforeStatus !== state.status ||
+      beforeMetrics !== `${state.outputFps}|${state.bitrateMbps}|${state.latencyMs}|${state.latencyP95Ms}|${state.resolution}|${state.vddMode}|${state.parsecAvailable}`) renderStatus();
+  });
+  document.querySelector('#mode-switch-cancel')?.addEventListener('click', closeModeSwitchDialog);
+  document.querySelector('#mode-switch-confirm')?.addEventListener('click', () => {
+    const target = pendingSwitchMode;
+    closeModeSwitchDialog();
+    if (target) send(target === 'extend' ? 'mode-extend' : 'mode-copy');
+  });
+  document.querySelector('#mode-switch-dialog')?.addEventListener('click', event => {
+    if (event.target === event.currentTarget) closeModeSwitchDialog();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && pendingSwitchMode) closeModeSwitchDialog();
   });
   wireSettingsEvents();
   updateSettingsPanel();

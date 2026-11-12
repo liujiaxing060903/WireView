@@ -32,6 +32,9 @@ struct Options {
     bool enable_input{false};
     bool device_preview{false};
     bool device_profile_probe{false};
+    // Experimental: ask the Android decoder for its low-latency mode even when it
+    // does not advertise FEATURE_LowLatency.
+    bool force_low_latency{false};
 };
 
 struct ProcessResult {
@@ -287,6 +290,8 @@ bool parse_arguments(int argc, wchar_t** argv, Options* options) {
             options->device_preview = true;
         } else if (argument == L"--device-profile-probe") {
             options->device_profile_probe = true;
+        } else if (argument == L"--force-low-latency") {
+            options->force_low_latency = true;
         } else {
             return false;
         }
@@ -429,7 +434,13 @@ int run(const Options& options) {
             Sleep(1000U);
             continue;
         }
-        const auto launch = run_capture(adb, {L"-s", serial, L"shell", L"am", L"start", L"-n", std::wstring(kActivityName)});
+        std::vector<std::wstring> launch_arguments{
+            L"-s", serial, L"shell", L"am", L"start", L"-n", std::wstring(kActivityName)};
+        if (options.force_low_latency) {
+            launch_arguments.insert(
+                launch_arguments.end(), {L"--ez", L"force_low_latency", L"true"});
+        }
+        const auto launch = run_capture(adb, launch_arguments);
         if (!launch.started || launch.exit_code != 0U) {
             write_status(options, L"waiting", L"无法启动 WireView Android 应用，正在重试。", reconnect_count);
             Sleep(1000U);

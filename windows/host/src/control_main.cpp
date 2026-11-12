@@ -228,6 +228,16 @@ struct ControlState {
     bool display_config_expanded{false};
     bool diagnostics_page{false};
     bool session_input_enabled{false};
+    // Reconnect auto-resume: remember the device and mode of the last session
+    // that actually reached the tablet, then repeat it when the same device is
+    // plugged in again.
+    bool auto_resume_enabled{false};
+    bool auto_resume_triggered{false};
+    // Experimental: force the Android decoder into low-latency mode.
+    bool low_latency_decode{false};
+    std::wstring auto_resume_mode{L"copy"};
+    std::wstring auto_resume_device;
+    std::filesystem::path auto_resume_file;
     bool start_after_vdd_ready{false};
     bool start_after_vdd_input{false};
     bool start_after_vdd_removal{false};
@@ -239,6 +249,11 @@ struct ControlState {
     bool recreate_vdd_for_simple_extension_input{false};
     DWORD last_auto_device_probe_exit{MAXDWORD};
     std::wstring device_profile_note;
+    // Live session metrics shown in the status bar.
+    std::wstring live_output_fps;
+    std::wstring live_bitrate_mbps;
+    std::wstring live_latency_p50_ms;
+    std::wstring live_latency_p95_ms;
     std::wstring device_model{L"Android"};
     std::wstring device_name{L"Android 设备"};
     std::wstring device_active_refresh{L"--"};
@@ -544,6 +559,7 @@ std::optional<StreamSettings> selected_stream_settings();
 void stop_session();
 bool start_session(HWND window, bool enable_input, bool device_preview, bool device_profile_probe);
 void begin_simple_extension(bool enable_input);
+void begin_simple_copy(bool enable_input);
 void set_status(const std::wstring& text);
 std::string wide_to_utf8(std::wstring_view value);
 void log_control_event(std::wstring_view category, std::wstring detail);
@@ -871,17 +887,25 @@ void apply_detected_device_profile(
         if (width == 0UL || height == 0UL || width > 65535UL || height > 65535UL) {
             return;
         }
-        const auto resolution = std::pair{
+        const auto panel_resolution = std::pair{
             static_cast<std::uint16_t>(width), static_cast<std::uint16_t>(height)};
-        if (g_state.detected_device_width == resolution.first &&
+        // A device whose panel is taller than it is wide (a phone, or a tablet held
+        // in portrait) must not define the stream size: the desktop is landscape and
+        // would be squeezed into a tall frame. Stream a landscape mode instead and
+        // let the receiver letterbox it.
+        const bool portrait_panel = panel_resolution.second > panel_resolution.first;
+        const auto resolution = portrait_panel
+            ? std::pair{static_cast<std::uint16_t>(1920U), static_cast<std::uint16_t>(1080U)}
+            : panel_resolution;
+        if (g_state.detected_device_width == panel_resolution.first &&
             g_state.detected_device_height == resolution.second &&
             !g_state.device_profile_requires_custom_mode) {
             return;
         }
-        g_state.detected_device_width = resolution.first;
-        g_state.detected_device_height = resolution.second;
+        g_state.detected_device_width = panel_resolution.first;
+        g_state.detected_device_height = panel_resolution.second;
         g_state.detected_device_max_refresh = maximum_refresh_text;
-        const std::wstring profile = std::to_wstring(width) + L"×" + std::to_wstring(height) +
+        std::wstring profile = std::to_wstring(width) + L"×" + std::to_wstring(height) +
             L"（最高 " + maximum_refresh_text + L" Hz）";
         bool added_custom_mode = false;
         if (!select_resolution_option(g_state.resolution_selector, resolution)) {
@@ -890,7 +914,10 @@ void apply_detected_device_profile(
                 [](const std::optional<CustomMode>& mode) { return !mode.has_value(); });
             if (empty_slot == g_custom_modes.end()) {
                 g_state.device_profile_requires_custom_mode = true;
-                g_state.device_profile_note = L"已识别设备：" + profile +
+                if (portrait_panel) {
+            profile += L"（竖屏面板，按横屏投屏）";
+        }
+        g_state.device_profile_note = L"已识别设备：" + profile +
                     L"。投屏分辨率列表没有对应项，且 5 个自定义模式槽均已占用；"
                     L"请先替换或释放一个槽，才能开始 WireView。";
                 show_custom_mode_editor(g_state.window);
@@ -913,6 +940,9 @@ void apply_detected_device_profile(
         populate_vdd_mode_selector(L"240");
         SendMessageW(g_state.frame_rate_selector, CB_SETCURSEL,
             maximum_refresh >= 119.0 ? 1U : 0U, 0);
+        if (portrait_panel) {
+            profile += L"（竖屏面板，按横屏投屏）";
+        }
         g_state.device_profile_note = L"已识别设备：" + profile +
             L"。已自动选择对应分辨率、副屏 240 Hz 和 " +
             (maximum_refresh >= 119.0
@@ -1626,6 +1656,56 @@ std::string wide_to_utf8(std::wstring_view value) {
         : std::string{};
 }
 
+void load_auto_resume_settings() {
+    g_state.auto_resume_enabled = false;
+    g_state.auto_resume_mode = L"copy";
+    g_state.auto_resume_device.clear();
+    g_state.low_latency_decode = false;
+    if (g_state.auto_resume_file.empty()) {
+        return;
+    }
+    std::ifstream input(g_state.auto_resume_file);
+    if (!input) {
+        return;
+    }
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line == "enabled=1") {
+            g_state.auto_resume_enabled = true;
+        } else if (line == "low_latency=1") {
+            g_state.low_latency_decode = true;
+        } else if (line.rfind("mode=", 0U) == 0U) {
+            const std::wstring value(line.begin() + 5, line.end());
+            if (value == L"extend" || value == L"copy") {
+                g_state.auto_resume_mode = value;
+            }
+        } else if (line.rfind("device=", 0U) == 0U) {
+            g_state.auto_resume_device = utf8_to_wide(line.substr(7U));
+        }
+    }
+}
+
+void save_auto_resume_settings() {
+    if (g_state.auto_resume_file.empty()) {
+        return;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(g_state.auto_resume_file.parent_path(), error);
+    if (error) {
+        return;
+    }
+    std::ofstream output(g_state.auto_resume_file, std::ios::trunc);
+    if (!output) {
+        return;
+    }
+    output << "enabled=" << (g_state.auto_resume_enabled ? 1 : 0) << '\n';
+    output << "low_latency=" << (g_state.low_latency_decode ? 1 : 0) << '\n';
+    output << "mode=" << (g_state.auto_resume_mode == L"extend" ? "extend" : "copy") << '\n';
+    if (!g_state.auto_resume_device.empty()) {
+        output << "device=" << wide_to_utf8(g_state.auto_resume_device) << '\n';
+    }
+}
+
 std::wstring normalize_device_model(std::wstring value) {
     std::wstring normalized;
     normalized.reserve(value.size());
@@ -1965,6 +2045,14 @@ std::optional<std::wstring> read_script_status() {
         formatted += L"\n主机发送：" + output_fps + L" FPS · " + bitrate_mbps +
             L" Mbps · " + delivered_frames + L" 帧";
     }
+    // Keep the live metrics for the status bar; they are cleared when the
+    // session ends so the footer never shows stale numbers.
+    g_state.live_output_fps = (state == L"streaming") ? output_fps : std::wstring{};
+    g_state.live_bitrate_mbps = (state == L"streaming") ? bitrate_mbps : std::wstring{};
+    g_state.live_latency_p50_ms =
+        (state == L"streaming" && surface_samples != L"0") ? surface_p50_ms : std::wstring{};
+    g_state.live_latency_p95_ms =
+        (state == L"streaming" && surface_samples != L"0") ? surface_p95_ms : std::wstring{};
     if (!surface_samples.empty() && surface_samples != L"0") {
         formatted += L"\nSurface：" + surface_samples + L" 样本 · P50 " +
             surface_p50_ms + L" ms · P95 " + surface_p95_ms + L" ms";
@@ -2843,6 +2931,10 @@ void stop_session() {
     }
     g_state.preview_active = false;
     g_state.profile_probe_active = false;
+    g_state.live_output_fps.clear();
+    g_state.live_bitrate_mbps.clear();
+    g_state.live_latency_p50_ms.clear();
+    g_state.live_latency_p95_ms.clear();
     if (!g_state.status_file.empty()) {
         std::error_code error;
         std::filesystem::remove(g_state.status_file, error);
@@ -2954,6 +3046,14 @@ bool start_session(
         }
     }
     save_stream_settings(*settings);
+    if (!device_preview && !device_profile_probe && g_state.device_connected &&
+        !g_state.device_model.empty()) {
+        // Remember what this tablet used last so the same device can resume it on
+        // the next USB connection.
+        g_state.auto_resume_mode = g_state.web_extend_mode ? L"extend" : L"copy";
+        g_state.auto_resume_device = g_state.device_model;
+        save_auto_resume_settings();
+    }
 
     std::error_code error;
     const auto temporary_directory = std::filesystem::temp_directory_path(error);
@@ -2994,6 +3094,9 @@ bool start_session(
     }
     if (!device_preview && !device_profile_probe) {
         argument += L" --display \"" + settings->display_device + L"\"";
+        if (g_state.low_latency_decode) {
+            argument += L" --force-low-latency";
+        }
     }
     std::vector<wchar_t> command(argument.begin(), argument.end());
     command.push_back(L'\0');
@@ -3141,6 +3244,8 @@ void poll_device_detection(HWND window) {
         }
         g_state.last_auto_device_probe_exit = exit_code;
         g_state.auto_device_profile_completed = false;
+        // This physical connection is gone; a later reconnect may resume again.
+        g_state.auto_resume_triggered = false;
         // 这次识别对应的物理 USB 连接已经失效。重新插线并重新授权后，
         // 下一次成功探测必须再次自动执行“识别已连接设备”。
         g_state.auto_device_profile_attempted = false;
@@ -3165,6 +3270,29 @@ void poll_device_detection(HWND window) {
         g_state.auto_device_profile_completed = true;
         g_state.device_profile_refresh_requested = false;
         (void)start_session(window, false, false, true);
+    }
+
+    // Reconnect auto-resume: once the same tablet that last streamed is attached
+    // and the identification probe has finished, repeat the mode it used before.
+    if (g_state.auto_resume_enabled && !g_state.auto_resume_triggered &&
+        g_state.shell_process == nullptr && g_state.device_connected &&
+        !g_state.auto_resume_device.empty() &&
+        g_state.device_model == g_state.auto_resume_device) {
+        g_state.auto_resume_triggered = true;
+        const bool extend = g_state.auto_resume_mode == L"extend";
+        set_status(extend
+            ? L"已连接上次使用的平板，正在自动恢复扩展屏幕…"
+            : L"已连接上次使用的平板，正在自动恢复复制屏幕…");
+        log_control_event(L"auto-resume", extend ? L"extend" : L"copy");
+        g_state.web_extend_mode = extend;
+        if (extend) {
+            begin_simple_extension(g_state.session_input_enabled);
+        } else {
+            begin_simple_copy(g_state.session_input_enabled);
+        }
+#ifdef WIREVIEW_WEBVIEW_UI
+        publish_web_state();
+#endif
     }
 }
 
@@ -4360,6 +4488,14 @@ void publish_web_state() {
     add_string(L"frameRate", frame_rate);
     add_string(L"displayName", selected_display == nullptr ? L"--" : selected_display->device_name);
     add_bool(L"parsecAvailable", g_state.parsec_vdd_available);
+    add_bool(L"autoResume", g_state.auto_resume_enabled);
+    add_string(L"autoResumeMode", g_state.auto_resume_mode);
+    add_string(L"autoResumeDevice", g_state.auto_resume_device);
+    add_string(L"outputFps", g_state.live_output_fps);
+    add_string(L"bitrateMbps", g_state.live_bitrate_mbps);
+    add_string(L"latencyMs", g_state.live_latency_p50_ms);
+    add_string(L"latencyP95Ms", g_state.live_latency_p95_ms);
+    add_bool(L"lowLatencyDecode", g_state.low_latency_decode);
     add_number(L"parsecVersion", g_state.parsec_vdd_version);
     add_number(L"parsecDisplayCount", g_state.parsec_display_count);
     add_array(L"displays", combo_options_as_json(g_state.display_selector));
@@ -4403,12 +4539,23 @@ void handle_web_message(std::wstring_view message) {
         refresh_popup_theme(g_diagnostics_window);
         return;
     }
-    if (message == L"mode-copy") {
-        g_state.web_extend_mode = false;
-        begin_simple_copy(g_state.session_input_enabled);
-    } else if (message == L"mode-extend") {
-        g_state.web_extend_mode = true;
-        begin_simple_extension(g_state.session_input_enabled);
+    if (message == L"mode-copy" || message == L"mode-extend") {
+        const bool extend = message == L"mode-extend";
+        const bool live_session = g_state.shell_process != nullptr &&
+            !g_state.preview_active && !g_state.profile_probe_active;
+        g_state.web_extend_mode = extend;
+        if (live_session) {
+            // Simple mode asks before switching; the user already confirmed, so
+            // stop the running session and start the other mode right away.
+            set_status(extend ? L"正在切换到扩展屏幕…" : L"正在切换到复制屏幕…");
+            log_control_event(L"mode-switch", extend ? L"copy -> extend" : L"extend -> copy");
+            stop_session();
+        }
+        if (extend) {
+            begin_simple_extension(g_state.session_input_enabled);
+        } else {
+            begin_simple_copy(g_state.session_input_enabled);
+        }
     } else if (message == L"input-off") {
         g_state.session_input_enabled = false;
     } else if (message == L"input-on") {
@@ -4419,6 +4566,23 @@ void handle_web_message(std::wstring_view message) {
         notify_android_of_user_stop();
         stop_session();
         set_status(L"WireView 已停止。");
+    } else if (message == L"auto-resume-on" || message == L"auto-resume-off") {
+        g_state.auto_resume_enabled = message == L"auto-resume-on";
+        save_auto_resume_settings();
+        set_status(g_state.auto_resume_enabled
+            ? (g_state.auto_resume_device.empty()
+                ? std::wstring(L"已开启自动投屏；先成功投屏一次，重连时才会自动恢复。")
+                : std::wstring(L"已开启自动投屏：重新连接该平板后会自动恢复") +
+                    (g_state.auto_resume_mode == L"extend" ? L"扩展屏幕。" : L"复制屏幕。"))
+            : std::wstring(L"已关闭自动投屏。"));
+        publish_web_state();
+    } else if (message == L"low-latency-on" || message == L"low-latency-off") {
+        g_state.low_latency_decode = message == L"low-latency-on";
+        save_auto_resume_settings();
+        set_status(g_state.low_latency_decode
+            ? std::wstring(L"已开启低延迟解码（实验）；重新开始投屏后生效。")
+            : std::wstring(L"已关闭低延迟解码；重新开始投屏后生效。"));
+        publish_web_state();
     } else if (message == L"display-settings") {
         open_windows_display_settings();
     } else if (message == L"refresh-displays") {
@@ -5630,7 +5794,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     }
     if (!g_state.settings_file.empty()) {
         g_state.custom_modes_file = g_state.settings_file.parent_path() / L"custom-modes.ini";
+        g_state.auto_resume_file = g_state.settings_file.parent_path() / L"auto-resume.ini";
     }
+    load_auto_resume_settings();
     load_custom_modes();
     initialize_ui_theme();
     load_control_ui_assets();
