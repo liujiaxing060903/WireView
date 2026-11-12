@@ -63,3 +63,11 @@ Windows 使用 DXGI 捕获桌面、Media Foundation 编码 H.264，Android 使�
 ## 反馈问题
 
 欢迎通过 [GitHub Issues](https://github.com/liujiaxing060903/WireView/issues) 提交问题或建议。反馈连接、黑屏或卡顿问题时，请附上 Windows 版本、显卡型号、Android 设备型号、所用分辨率与帧率，以及能够复现问题的操作步骤。需要进一步定位时，可从控制中心的“诊断与日志”收集对应会话日志。
+
+## 关于本仓库
+
+本仓库基于 [liujiaxing060903/WireView](https://github.com/liujiaxing060903/WireView) 的 v1.1.20 修改而来，
+上游仓库当前未附带开源许可证，因此本仓库的公开分发需以取得原作者许可为前提。
+
+相对上游的改动清单见 [docs/LOCAL-CHANGES.md](docs/LOCAL-CHANGES.md)，
+版本记录见 [CHANGELOG.md](CHANGELOG.md)。

@@ -1,0 +1,17 @@
+# 统一换行符与二进制识别。
+# 本仓库当前所有文本文件在索引与工作区中均为 LF，本文件不会引起重写。
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.bmp binary
+*.lib binary
+*.nupkg binary
+*.apk binary
+*.exe binary
+*.dll binary
+*.pdb binary
+*.pfx binary
