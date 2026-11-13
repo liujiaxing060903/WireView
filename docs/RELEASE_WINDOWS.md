@@ -14,7 +14,7 @@ Android 包沿用上一公开版 1.1.20 的签名，可以保留数据覆盖安�
 ## 运行环境
 
 - Windows 10 / Windows 11，x64。
-- Android 推荐 10 及以上。Android 10 小米 8 已有实际复制、扩展和托盘启停记录；APK 最低可安装到 Android 6.0，但 6～9 尚未完成真机验证。
+- Android 6.0 及以上。已在 vivo Y66（Android 6.0.1）和小米 8（Android 10）上使用 2.0.0 真机验证复制和扩展；小米 8 另有托盘启停记录。
 - 一根可传数据的 USB 线；只支持充电的线不能用于投屏。
 - [Microsoft WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。主界面打不开且暂时不能安装 Runtime 时，可试用包内的 `wireview_control_legacy.exe` 原生回退入口，其界面和功能与主控制中心有所不同。
 - 官方完整的 [Android SDK Platform Tools](https://developer.android.google.cn/tools/releases/platform-tools?hl=zh-cn)。

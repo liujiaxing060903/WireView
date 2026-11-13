@@ -40,12 +40,12 @@ WireView 通过 USB 数据线把电脑画面传到 Android 设备：既能复制
 ## 需要准备什么
 
 - Windows 10 / Windows 11 x64 电脑。
-- Android 手机或平板，推荐 Android 10 及以上；Android 10 的小米 8 已有真实复制和扩展验证。
+- Android 6.0 及以上的手机或平板；已在 vivo Y66（Android 6.0.1）和小米 8（Android 10）上使用 2.0.0 真机验证复制和扩展。
 - 支持数据传输的 USB 线，Android 端开启 USB 调试并授权电脑。
 - Windows 端安装 [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)，并准备官方完整的 [Android SDK Platform Tools](https://developer.android.google.cn/tools/releases/platform-tools?hl=zh-cn)。
 - 使用扩展桌面时，另行安装 [Parsec Virtual Display Driver](https://github.com/nomi-san/parsec-vdd)。普通复制不要求安装这个驱动。
 
-Windows 包不捆绑 Platform Tools 或第三方驱动安装器，包内的「安装依赖」文件夹提供获取说明。APK 的最低安装级别为 Android 6.0，但 Android 6～9 尚未完成真机验证。
+Windows 包不捆绑 Platform Tools 或第三方驱动安装器，包内的「安装依赖」文件夹提供获取说明。
 
 ## 五步开始
 
