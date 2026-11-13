@@ -14,13 +14,15 @@ android {
         applicationId = "com.wireview.receiver"
         minSdk = 23
         targetSdk = 36
-        versionCode = 20000
-        versionName = "2.0.0"
+        versionCode = 20002
+        versionName = "2.0.2"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

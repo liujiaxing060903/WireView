@@ -76,6 +76,12 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .settings-panel.is-open { opacity: 1; visibility: visible; transform: translateY(0) scale(1); pointer-events: auto; }
 .settings-panel-heading { display: flex; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border-subtle); }
 .settings-panel-heading > div { display: grid; gap: 3px; }
+.settings-panel-heading { align-items: center; justify-content: space-between; }
+.settings-check-update { flex-shrink: 0; }
+#update-dialog { color: var(--text); background: var(--bg-panel-elevated); border: 1px solid var(--border-default); border-radius: 12px; padding: 22px; max-width: calc(100vw - 40px); }
+#update-dialog::backdrop { background: #0008; }
+#update-dialog h2 { margin-top: 0; }
+#update-dialog p { color: var(--muted); font-size: 13px; }
 .settings-eyebrow { color: var(--blue); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
 .settings-panel-heading strong { font-size: 17px; }
 .settings-panel-heading small, .settings-description, .settings-developer p, .support-content small, .settings-toggle-row small { color: var(--muted); font-size: 11px; line-height: 1.45; }
@@ -1085,6 +1091,12 @@ body.theme-light .is-device-disconnected:hover {
   content: ""; width: 88px; height: 54px; border: 4px solid #687383; border-radius: 10px;
   background: linear-gradient(145deg, #1a4395, #091830 80%);
   box-shadow: inset 0 0 0 2px #101928, 0 5px 14px #0004;
+}
+body.theme-light .dashboard-device-art::before,
+body.theme-light .device-art::before {
+  border-color: #91a6c2;
+  background: linear-gradient(145deg, #f7fbff, #c4d9f5 80%);
+  box-shadow: inset 0 0 0 2px #f9fcff, 0 4px 10px #425d7b24;
 }
 .dashboard-device-art.is-phone::before { width: 34px; height: 62px; border-width: 3px; }
 .dashboard-overview:not(.is-online) .dashboard-device-art { opacity: .5; }

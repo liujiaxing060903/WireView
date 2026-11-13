@@ -1,6 +1,7 @@
 package com.wireview.receiver;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -19,6 +20,7 @@ import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.net.Uri;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -32,6 +34,7 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.ImageButton;
+import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.FrameLayout;
@@ -70,6 +73,14 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     private ConnectionStatus connectionStatus = new ConnectionStatus();
     private TextView deviceInfoView;
     private TextView versionView;
+    private Button updateButton;
+    private boolean updateChecking;
+    private final Runnable checkUpdates = new Runnable() {
+        @Override public void run() {
+            checkForUpdates();
+            inputHandler.postDelayed(this, 6 * 60 * 60 * 1000L);
+        }
+    };
     private LinearLayout connectionPanel;
     private FrameLayout videoContainer;
     private SurfaceView displaySurface;
@@ -401,6 +412,13 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                         ViewGroup.LayoutParams.WRAP_CONTENT));
 
         versionView = new TextView(this);
+        updateButton = new Button(this);
+        updateButton.setText("下载新版");
+        updateButton.setVisibility(View.GONE);
+        updateButton.setAllCaps(false);
+        updateButton.setTextSize(14);
+        updateButton.setOnClickListener(view -> showUpdateDownloads());
+        connectionPanel.addView(updateButton);
         versionView.setTextColor(Color.rgb(124, 130, 140));
         versionView.setTextSize(12.0f);
         versionView.setGravity(Gravity.END);
@@ -472,6 +490,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     @Override
     protected void onStart() {
         super.onStart();
+        inputHandler.post(checkUpdates);
         PersistentDiagnosticLog.record("MainActivity", "onStart");
         activityStarted = true;
         getSystemService(DisplayManager.class).registerDisplayListener(displayListener, inputHandler);
@@ -484,6 +503,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
 
     @Override
     protected void onStop() {
+        inputHandler.removeCallbacks(checkUpdates);
         PersistentDiagnosticLog.record("MainActivity", "onStop");
         activityStarted = false;
         getSystemService(DisplayManager.class).unregisterDisplayListener(displayListener);
@@ -514,6 +534,37 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         return new RotationState(connectionStatus,
                 idleNoticeActive ? statusView.getText().toString() : null,
                 explicitStopNoticeActive, rotationStep);
+    }
+
+    private void showUpdateDownloads() {
+        new AlertDialog.Builder(this).setTitle("下载 WireView")
+                .setItems(new String[] {"GitHub 发布页", "网盘下载（密码：df73）"}, (dialog, which) -> {
+                    String url = which == 0 ? UpdateChecker.DOWNLOAD_URL : "https://wwbkc.lanzoue.com/b01euxnp0d";
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+                    catch (android.content.ActivityNotFoundException error) { versionView.setText("未找到浏览器，请手动打开下载链接"); }
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private void checkForUpdates() {
+        if (updateChecking) return;
+        updateChecking = true;
+        updateButton.setEnabled(false);
+        new Thread(() -> {
+            String latest = null;
+            try { latest = UpdateChecker.latestVersion(); }
+            catch (Exception error) { Log.w(TAG, "Update check failed", error); }
+            final String version = latest;
+            runOnUiThread(() -> {
+                updateChecking = false;
+                if (isFinishing() || isDestroyed()) return;
+                updateButton.setEnabled(true);
+                if (version == null) return;
+                boolean available = VersionNumber.isNewer(version, DISPLAY_VERSION);
+                updateButton.setText("发现 " + version + " · 下载新版");
+                updateButton.setVisibility(available ? View.VISIBLE : View.GONE);
+                Log.i(TAG, "Update check complete: current=" + DISPLAY_VERSION + " latest=" + version);
+            });
+        }, "WireViewUpdate").start();
     }
 
     @Override

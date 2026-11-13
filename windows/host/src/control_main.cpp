@@ -5698,6 +5698,35 @@ bool parse_web_selector_index(std::wstring_view message, std::wstring_view prefi
 
 void handle_web_message(std::wstring_view message) {
     log_control_event(L"web-click", std::wstring(message));
+    if (message == L"open-release-page" || message == L"open-mirror-page") {
+        if (message == L"open-mirror-page") {
+            HGLOBAL password = GlobalAlloc(GMEM_MOVEABLE, sizeof(L"df73"));
+            bool copied = false;
+            if (password != nullptr) {
+                if (void* memory = GlobalLock(password)) {
+                    CopyMemory(memory, L"df73", sizeof(L"df73"));
+                    GlobalUnlock(password);
+                    if (OpenClipboard(g_state.window)) {
+                        if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, password)) {
+                            copied = true;
+                            password = nullptr;
+                        }
+                        CloseClipboard();
+                    }
+                }
+                if (password != nullptr) { GlobalFree(password); }
+            }
+            if (!copied) {
+                MessageBoxW(g_state.window, L"自动复制失败，请在网盘输入密码 df73。", L"网盘下载", MB_OK);
+            }
+        }
+        const auto* url = message == L"open-mirror-page" ? L"https://wwbkc.lanzoue.com/b01euxnp0d"
+            : L"https://github.com/liujiaxing060903/WireView/releases/latest";
+        const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open",
+            url, nullptr, nullptr, SW_SHOWNORMAL));
+        if (result <= 32) { set_status(L"无法打开浏览器，请从 GitHub 下载新版 WireView。"); }
+        return;
+    }
     if (message == L"page-ready") {
         publish_web_state();
         return;

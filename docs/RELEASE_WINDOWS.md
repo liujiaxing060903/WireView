@@ -1,4 +1,4 @@
-# WireView 2.0.0 使用说明
+# WireView 2.0.2 使用说明
 
 WireView 通过 USB 把 Android 手机或平板作为 Windows 的复制屏幕或扩展桌面。Windows 端是便携程序，Android 端安装 APK；复制和扩展都可以从控制中心或托盘启动。
 
@@ -6,15 +6,26 @@ WireView 通过 USB 把 Android 手机或平板作为 Windows 的复制屏幕或
 
 从 [GitHub Releases](https://github.com/liujiaxing060903/WireView/releases) 下载同一版本的：
 
-- `WireView-2.0.0-Windows-x64.zip`：电脑端，完整解压后运行 `WireView 控制中心.exe`。
-- `WireView-2.0.0-debug.apk`：Android 接收端，侧载安装并打开。
+- `WireView-2.0.2-Windows-x64.zip`：电脑端，完整解压后运行 `WireView 控制中心.exe`。
+- `WireView-2.0.2-release.apk`：Android 接收端，侧载安装并打开。
 
 Android 包沿用上一公开版 1.1.20 的签名，可以保留数据覆盖安装；不要为升级先卸载旧应用。更新 Windows 时使用完整的新文件夹，不要只替换单个 EXE。原设备设置保存在用户目录中。
+
+## 检查更新与下载
+
+控制中心和安卓接收端会在启动及运行中每6小时检查 GitHub 最新正式版，控制中心也可点击「检查更新」。发现新版后提示下载，由用户安装；检查失败不会停止投屏，可以稍后重试。
+
+- 控制中心：在右上角设置的「关于 WireView」标题右侧检查更新，有新版时弹出下载选项；点击网盘会先将密码df73复制到剪贴板，再打开网盘。平常不额外显示下载区域。
+- 安卓端：打开后自动检查，仅发现新版时在待投屏界面显示「下载新版」，点击可选择下载方式；无需更新时界面保持原样。
+- [GitHub 发布页](https://github.com/liujiaxing060903/WireView/releases/latest)。
+- [网盘下载](https://wwbkc.lanzoue.com/b01euxnp0d)，密码：`df73`。
+
+2.0.0及更早版本需要先手动升级一次到2.0.2，之后即可使用更新提示。网盘文件由发布者同步，版本判断以 GitHub 最新正式版为准。
 
 ## 运行环境
 
 - Windows 10 / Windows 11，x64。
-- Android 6.0 及以上。已在 vivo Y66（Android 6.0.1）和小米 8（Android 10）上使用 2.0.0 真机验证复制和扩展；小米 8 另有托盘启停记录。
+- Android 6.0 及以上。既有复制和扩展已在 vivo Y66（Android 6.0.1）和小米 8（Android 10）上使用2.0.0真机验证；2.0.2新增更新功能使用小米8验证。
 - 一根可传数据的 USB 线；只支持充电的线不能用于投屏。
 - [Microsoft WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。主界面打不开且暂时不能安装 Runtime 时，可试用包内的 `wireview_control_legacy.exe` 原生回退入口，其界面和功能与主控制中心有所不同。
 - 官方完整的 [Android SDK Platform Tools](https://developer.android.google.cn/tools/releases/platform-tools?hl=zh-cn)。
@@ -105,4 +116,4 @@ Android 包沿用上一公开版 1.1.20 的签名，可以保留数据覆盖安�
 
 60 FPS 为常用档位，120 FPS 仍是实验性编码／发送目标；设备最终显示帧率还取决于硬件和系统。暂不支持音频、Wi-Fi／远程连接、Windows 登录前显示和 HDR／10-bit 桌面。
 
-Windows 程序尚未配置正式代码签名，Android 为沿用原证书的调试签名侧载包。Platform Tools、Parsec 管理工具和驱动安装器不随包分发。WebView2 和 AMD AMF 相关许可材料保存在包内 `licenses/`；AMD 运行库由显卡驱动提供，本包不分发该运行库或 FFmpeg。
+Windows 程序尚未配置正式代码签名，Android 为关闭调试的 Release 构建，沿用旧版证书以保持覆盖升级。Platform Tools、Parsec 管理工具和驱动安装器不随包分发。WebView2 和 AMD AMF 相关许可材料保存在包内 `licenses/`；AMD 运行库由显卡驱动提供，本包不分发该运行库或 FFmpeg。

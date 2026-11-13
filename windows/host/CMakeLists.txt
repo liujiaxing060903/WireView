@@ -217,6 +217,8 @@ if(BUILD_TESTING)
         add_test(NAME wireview_web_device_selection COMMAND ${WIREVIEW_NODE_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/web_device_selection_test.mjs
             ${CMAKE_CURRENT_SOURCE_DIR}/assets/web/app.js)
+        add_test(NAME wireview_web_update_check COMMAND ${WIREVIEW_NODE_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/update_check_test.mjs)
         add_test(NAME wireview_host_tcp_port COMMAND ${WIREVIEW_NODE_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/host_tcp_port_test.mjs $<TARGET_FILE:wireview_host>)
         set_tests_properties(wireview_host_tcp_port PROPERTIES TIMEOUT 12)

@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([switch]$CursorDiagnostics)
+param(
+    [switch]$CursorDiagnostics,
+    [ValidateSet('Debug', 'Release')][string]$BuildType = 'Release'
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -32,12 +35,13 @@ $gradleUserHome = if ($env:USERPROFILE) {
 $env:GRADLE_USER_HOME = $gradleUserHome
 
 $cursorDiagnosticsProperty = 'wireviewCursorDiagnostics=' + $CursorDiagnostics.IsPresent.ToString().ToLowerInvariant()
-& $gradleWrapper -p $androidRoot --gradle-user-home $gradleUserHome --offline "-P$cursorDiagnosticsProperty" :app:assembleDebug
+& $gradleWrapper -p $androidRoot --gradle-user-home $gradleUserHome --offline "-P$cursorDiagnosticsProperty" ":app:assemble$BuildType"
 if ($LASTEXITCODE -ne 0) {
     throw "Android build failed with exit code $LASTEXITCODE."
 }
 
-$apk = Join-Path $androidRoot 'app\build\outputs\apk\debug\app-debug.apk'
+$variant = $BuildType.ToLowerInvariant()
+$apk = Join-Path $androidRoot "app\build\outputs\apk\$variant\app-$variant.apk"
 if (-not (Test-Path -LiteralPath $apk)) {
     throw "Gradle completed but the expected APK was not found: $apk"
 }

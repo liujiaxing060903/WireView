@@ -9,8 +9,9 @@
 <body>
   <main class="app-shell">
     <header class="app-header">
-      <div class="brand"><span class="brand-mark"><img src="ui/wireview-app-icon.png" alt=""></span><span>WireView 有线副屏 <small class="brand-version">版本 2.0.0</small></span></div>
+      <div class="brand"><span class="brand-mark"><img src="ui/wireview-app-icon.png" alt=""></span><span>WireView 有线副屏 <small class="brand-version">版本 2.0.2</small></span></div>
       <div class="header-actions">
+        <button id="update-download" class="dashboard-display-settings" type="button" hidden>发现新版本</button>
         <button class="dashboard-display-settings" data-command="display-settings" type="button">Windows 显示设置</button>
         <button id="settings-toggle" class="icon-button" type="button" title="设置" aria-label="设置" aria-expanded="false">⚙</button>
         <section id="settings-panel" class="settings-panel" aria-hidden="true">
@@ -18,8 +19,9 @@
             <div>
               <span class="settings-eyebrow">设置</span>
               <strong>关于 WireView</strong>
-              <small>版本 2.0.0 · USB Android 副屏工具</small>
+              <small>版本 2.0.2 · USB Android 副屏工具</small>
             </div>
+            <button id="check-update" class="dashboard-quiet settings-check-update" type="button" aria-live="polite">检查更新</button>
           </div>
           <p class="settings-description">视频和控制数据仅通过 USB / 本机 ADB 通道传输，不经过云端服务器。</p>
           <div class="settings-developer">
@@ -72,6 +74,16 @@
         </details>
       </section>
     </div>
+    <dialog id="update-dialog" aria-labelledby="update-dialog-title">
+      <h2 id="update-dialog-title">发现新版本</h2>
+      <p>请选择下载方式，下载后按提示更新。</p>
+      <div class="dashboard-tools">
+        <button id="update-github" type="button">GitHub 下载</button>
+        <button id="update-mirror" type="button">网盘下载</button>
+      </div>
+      <p>网盘密码：<code>df73</code>，点击网盘下载时自动复制。</p>
+      <button id="update-close" class="dashboard-quiet" type="button">稍后再说</button>
+    </dialog>
     <dialog id="custom-resolution-dialog" aria-labelledby="custom-resolution-title">
       <form id="custom-resolution-form">
         <h2 id="custom-resolution-title">自定义扩展桌面</h2>
@@ -86,6 +98,7 @@
     </dialog>
     <footer id="status-bar" class="status-bar"></footer>
   </main>
+  <script src="update.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

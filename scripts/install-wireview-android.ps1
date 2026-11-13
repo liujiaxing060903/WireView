@@ -11,9 +11,9 @@ if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build-android.ps1')
 }
 
-$apkPath = Join-Path $repoRoot 'android\app\build\outputs\apk\debug\app-debug.apk'
+$apkPath = Join-Path $repoRoot 'android\app\build\outputs\apk\release\app-release.apk'
 if (-not (Test-Path -LiteralPath $apkPath)) {
-    throw 'WireView Debug APK is missing. Run without -SkipBuild or build the Android project first.'
+    throw 'WireView Release APK is missing. Run without -SkipBuild or build the Android project first.'
 }
 
 $adbCandidates = [Collections.Generic.List[string]]::new()

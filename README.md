@@ -6,9 +6,17 @@ WireView 通过 USB 数据线把电脑画面传到 Android 设备：既能复制
 
 视频在电脑与设备之间通过 USB 传输，不依赖 Wi-Fi 或投屏云服务，也不要求手机支持 USB-C DP 视频输出。
 
-[下载安装包](https://github.com/liujiaxing060903/WireView/releases) · [第一次使用](docs/RELEASE_WINDOWS.md) · [2.0.0 更新说明](docs/releases/v2.0.0.md) · [反馈问题](https://github.com/liujiaxing060903/WireView/issues)
+[下载安装包](https://github.com/liujiaxing060903/WireView/releases) · [第一次使用](docs/RELEASE_WINDOWS.md) · [2.0.2 更新说明](docs/releases/v2.0.2.md) · [反馈问题](https://github.com/liujiaxing060903/WireView/issues)
 
-## 2.0.0：在一个控制中心管理你的副屏
+## 2.0.2：浅色设备图标与更新提示
+
+设备卡片中的手机、平板图标在浅色模式使用浅蓝屏面、浅色边框和柔和阴影。更新入口收在「关于 WireView」标题右侧，平时不额外占行；有新版时弹出 GitHub 和网盘下载选择，电脑端点击网盘会自动复制密码。
+
+控制中心与安卓接收端在启动和运行中每6小时自动检查，控制中心另提供手动检查。安卓仅发现新版时显示下载入口，无需更新时保持原界面。发现新版后可选择 [GitHub](https://github.com/liujiaxing060903/WireView/releases/latest) 或 [网盘](https://wwbkc.lanzoue.com/b01euxnp0d) 下载，网盘密码 `df73`。安卓使用关闭调试的 Release 构建，沿用旧证书，可保留数据覆盖升级。
+
+2.0.0及更早版本需要先手动升级到2.0.2，之后才能收到更新提示。
+
+## 在一个控制中心管理你的副屏
 
 ![WireView 2.0.0 浅色控制中心](docs/images/wireview-2.0.0-light.png)
 

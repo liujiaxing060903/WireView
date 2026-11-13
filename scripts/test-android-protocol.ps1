@@ -9,13 +9,13 @@ $sourceRoot = Join-Path $workspace 'android\app\src\main\java\com\wireview\recei
 $sources = @(
     'Protocol', 'TransportConnection', 'TransportConnector', 'TcpTransportConnector',
     'PersistentDiagnosticLog', 'PacketReadTrace', 'DecoderOutputPump', 'DecoderRecoveryState',
-    'FramePresentationClock', 'SurfaceFrameMarker', 'ConnectionStatus'
+    'FramePresentationClock', 'SurfaceFrameMarker', 'ConnectionStatus', 'VersionNumber'
 ) | ForEach-Object { Join-Path $sourceRoot ($_.ToString() + '.java') }
 $testRoot = Join-Path $workspace 'android\protocol-test'
 $tests = @(
     'ProtocolSelfTest', 'TransportSelfTest', 'PersistentDiagnosticLogSelfTest',
     'DecoderOutputPumpSelfTest', 'DecoderRecoverySelfTest', 'FramePresentationClockSelfTest',
-    'SurfaceFrameMarkerSelfTest', 'ConnectionStatusSelfTest'
+    'SurfaceFrameMarkerSelfTest', 'ConnectionStatusSelfTest', 'VersionNumberSelfTest'
 )
 $testSources = $tests | ForEach-Object { Join-Path $testRoot ('com\wireview\receiver\' + $_ + '.java') }
 $platformStubs = @(Get-ChildItem -LiteralPath (Join-Path $testRoot 'stubs') -Filter '*.java' -Recurse |

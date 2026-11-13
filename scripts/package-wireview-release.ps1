@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '2.0.0',
-    [string]$BuildDirectory = 'build/windows-version-2.0.0'
+    [string]$Version = '2.0.2',
+    [string]$BuildDirectory = 'build/windows-version-2.0.2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,9 +18,9 @@ $releaseDirectory = Join-Path $repoRoot 'release'
 $packageName = "WireView-$Version-Windows-x64"
 $packageDirectory = Join-Path $releaseDirectory $packageName
 $archivePath = Join-Path $releaseDirectory "$packageName.zip"
-$apkSource = Join-Path $repoRoot 'android/app/build/outputs/apk/debug/app-debug.apk'
-$apkDestination = Join-Path $releaseDirectory "WireView-$Version-debug.apk"
-$apkMetadataPath = Join-Path $repoRoot 'android/app/build/outputs/apk/debug/output-metadata.json'
+$apkSource = Join-Path $repoRoot 'android/app/build/outputs/apk/release/app-release.apk'
+$apkDestination = Join-Path $releaseDirectory "WireView-$Version-release.apk"
+$apkMetadataPath = Join-Path $repoRoot 'android/app/build/outputs/apk/release/output-metadata.json'
 $webViewLicenseDirectory = Join-Path $repoRoot 'external/webview2/sdk'
 $amfLicenseDirectory = Join-Path $repoRoot 'external/amf'
 

@@ -7,6 +7,43 @@
     copySources: [], copySource: '', copyResolution: 'auto', copyFrameRate: 60
   };
   const send = command => window.chrome?.webview?.postMessage(command);
+  let updateChecking = false;
+  let updateVersion = '';
+  let promptedUpdate = '';
+  const showUpdateDialog = () => {
+    if (!updateVersion) return;
+    const dialog = document.querySelector('#update-dialog');
+    document.querySelector('#update-dialog-title').textContent = `发现新版本 ${updateVersion}`;
+    if (!dialog.open) dialog.showModal();
+  };
+  const checkUpdates = async (manual = false) => {
+    const button = document.querySelector('#check-update');
+    if (updateChecking || !window.WireViewUpdate || !button) return;
+    updateChecking = true;
+    button.disabled = true;
+    if (manual) button.textContent = '检查中…';
+    try {
+      const current = document.querySelector('.brand-version').textContent.match(/\d+\.\d+\.\d+/)[0];
+      const result = await window.WireViewUpdate.check(current);
+      const download = document.querySelector('#update-download');
+      download.hidden = !result.newer;
+      download.textContent = `发现新版本 ${result.version} · 前往下载`;
+      updateVersion = result.newer ? result.version : '';
+      button.textContent = manual && !result.newer ? '已是最新' : '检查更新';
+      button.title = result.newer ? `最新版本 ${result.version}` : '当前已是最新版本';
+      if (result.newer && (manual || promptedUpdate !== result.version)) {
+        promptedUpdate = result.version;
+        showUpdateDialog();
+      }
+    } catch {
+      if (manual) button.textContent = '检查失败';
+      button.title = '暂时无法检查更新，请稍后重试';
+    } finally {
+      updateChecking = false;
+      button.disabled = false;
+      if (manual) window.setTimeout(() => { if (!updateChecking) button.textContent = '检查更新'; }, 2200);
+    }
+  };
   let dashboard = { dashboard: true, devices: [], availableDevices: [], selectedDevice: '', extensionCount: 0 };
   let pickerOpen = false;
   let focusDevice = '';
@@ -545,6 +582,13 @@
     document.querySelector('#custom-resolution-dialog').close();
   });
   wireSettingsEvents();
+  document.querySelector('#check-update')?.addEventListener('click', () => { void checkUpdates(true); });
+  document.querySelector('#update-download')?.addEventListener('click', showUpdateDialog);
+  document.querySelector('#update-close')?.addEventListener('click', () => document.querySelector('#update-dialog').close());
+  document.querySelector('#update-github')?.addEventListener('click', () => send('open-release-page'));
+  document.querySelector('#update-mirror')?.addEventListener('click', () => send('open-mirror-page'));
+  void checkUpdates();
+  window.setInterval?.(() => { void checkUpdates(); }, 6 * 60 * 60 * 1000);
   updateSettingsPanel();
   send(darkMode ? 'theme-dark' : 'theme-light');
   render();
