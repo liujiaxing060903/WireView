@@ -6,6 +6,7 @@
 
 #include "parsec_vdd.hpp"
 #include "parsec_vdd_custom_modes.hpp"
+#include "process_identity.hpp"
 
 #include <algorithm>
 #include <array>
@@ -49,7 +50,24 @@ struct BrokerOptions {
     std::wstring stop_event_name;
     std::filesystem::path status_file;
     std::optional<wireview::host::ParsecVddCustomMode> requested_mode;
+    bool allow_additional{false};
+    bool lid_copy{false};
 };
+
+[[nodiscard]] HANDLE reserve_extension_slot() {
+    // Keeping the event handle open reserves this slot across control windows.
+    // Windows releases it when the broker exits, including after a crash.
+    for (const auto* name : wireview::host::kExtensionSlotNames) {
+        SetLastError(ERROR_SUCCESS);
+        HANDLE slot = CreateEventW(nullptr, TRUE, FALSE, name);
+        if (slot == nullptr) {
+            throw std::runtime_error("无法分配 WireView 扩展屏名额。");
+        }
+        if (GetLastError() != ERROR_ALREADY_EXISTS) { return slot; }
+        CloseHandle(slot);
+    }
+    throw std::runtime_error("WireView 最多支持两块独立扩展屏，请先停止其中一块。");
+}
 
 [[nodiscard]] wireview::host::ParsecVddCustomMode parse_mode(std::wstring_view text) {
     const std::size_t x = text.find_first_of(L"xX");
@@ -92,6 +110,14 @@ struct BrokerOptions {
         }
         if (option == L"--mode" && index + 1 < argument_count && !options.requested_mode) {
             options.requested_mode = parse_mode(arguments[++index]);
+            continue;
+        }
+        if (option == L"--allow-additional" && !options.allow_additional) {
+            options.allow_additional = true;
+            continue;
+        }
+        if (option == L"--lid-copy" && !options.lid_copy) {
+            options.lid_copy = true;
             continue;
         }
         throw std::invalid_argument("invalid WireView VDD broker arguments");
@@ -146,7 +172,9 @@ void publish_status(
         }
         output << "state=" << state << '\n'
                << "owner_pid=" << owner_process_id << '\n'
-               << "broker_pid=" << GetCurrentProcessId() << '\n';
+               << "broker_pid=" << GetCurrentProcessId() << '\n'
+               << "owner_created=" << wireview::host::process_creation_time(owner_process_id) << '\n'
+               << "broker_created=" << wireview::host::process_creation_time(GetCurrentProcess()) << '\n';
         if (display_index >= 0) {
             output << "driver_index=" << display_index << '\n';
         }
@@ -184,6 +212,8 @@ int run_self_test() {
         return contents.find("state=ready\n") != std::string::npos &&
                 contents.find("owner_pid=1234\n") != std::string::npos &&
                 contents.find("broker_pid=") != std::string::npos &&
+                contents.find("broker_created=" + std::to_string(
+                    wireview::host::process_creation_time(GetCurrentProcess()))) != std::string::npos &&
                 contents.find("driver_index=7\n") != std::string::npos &&
                 contents.find(R"(display=\\.\DISPLAY42)") != std::string::npos
             ? 0
@@ -207,6 +237,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return run_self_test();
     }
 
+    if (argument_count >= 2 && std::wstring_view(arguments[1]) == L"--ensure-custom-mode") {
+        const std::filesystem::path result_file = argument_count == 5 &&
+                std::wstring_view(arguments[3]) == L"--status-file"
+            ? std::filesystem::path(arguments[4]) : std::filesystem::path{};
+        try {
+            if (argument_count != 3 && result_file.empty()) { throw std::invalid_argument("expected one custom mode"); }
+            wireview::host::ensure_parsec_vdd_custom_mode(parse_mode(arguments[2]));
+            if (!result_file.empty()) { publish_status(result_file, "completed", 0U); }
+            LocalFree(arguments);
+            return 0;
+        } catch (const std::exception& error) {
+            if (!result_file.empty()) {
+                try { publish_status(result_file, "error", 0U, -1, {}, error.what()); }
+                catch (const std::exception&) {}
+            }
+            LocalFree(arguments);
+            return 1;
+        }
+    }
     if (argument_count >= 2 && std::wstring_view(arguments[1]) == L"--apply-custom-modes") {
         try {
             const int result = apply_custom_modes(argument_count, arguments);
@@ -236,10 +285,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             throw std::runtime_error("the WireView VDD stop event is unavailable");
         }
 
+        const UniqueHandle extension_slot(options.lid_copy ? nullptr : reserve_extension_slot());
         wireview::host::ParsecVddSession session;
         std::string display_device;
         try {
-            session.start();
+            session.start(options.allow_additional);
             display_device = session.wait_for_display(std::chrono::seconds(30));
         } catch (const std::exception& first_attempt_error) {
             const std::string first_detail(first_attempt_error.what());
@@ -254,12 +304,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             // DISPLAY path. Remove that unusable instance and retry once; the
             // next allocation commonly receives a distinct Windows output.
             session.stop();
+            if (!session.last_error().empty()) { throw std::runtime_error(session.last_error()); }
             publish_status(options.status_file, "retrying", options.owner_process_id, -1, {},
                 "first VDD attempt did not become a separate attached Windows display; "
                 "removed it and retrying once: " +
                     first_detail);
             Sleep(1'000U);
-            session.start();
+            session.start(options.allow_additional);
             display_device = session.wait_for_display(std::chrono::seconds(30));
         }
         if (options.requested_mode) {
@@ -268,20 +319,31 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             wireview::host::set_parsec_vdd_display_mode(
                 display.c_str(), mode.width, mode.height, mode.refresh_hz);
         }
+        const std::wstring added_display(display_device.begin(), display_device.end());
+        std::string diagnostic = session.creation_diagnostic();
+        if (const auto result = session.restore_previous_vdd_desktop(added_display)) {
+            if (!diagnostic.empty()) { diagnostic += " | "; }
+            diagnostic += "Existing VDD layout restore result=" + std::to_string(*result);
+        }
         publish_status(
             options.status_file,
             "ready",
             options.owner_process_id,
             session.display_index(),
             display_device,
-            session.creation_diagnostic());
+            diagnostic);
 
         const HANDLE wait_handles[]{owner_process.get(), stop_event.get()};
-        const DWORD wait_result = WaitForMultipleObjects(2U, wait_handles, FALSE, INFINITE);
+        DWORD wait_result{};
+        do {
+            wait_result = WaitForMultipleObjects(2U, wait_handles, FALSE, 500U);
+            if (!session.running()) { throw std::runtime_error(session.last_error()); }
+        } while (wait_result == WAIT_TIMEOUT);
         if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_OBJECT_0 + 1U) {
             throw std::runtime_error("waiting for WireView VDD shutdown failed");
         }
         session.stop();
+        if (!session.last_error().empty()) { throw std::runtime_error(session.last_error()); }
         std::error_code error;
         std::filesystem::remove(options.status_file, error);
         LocalFree(arguments);

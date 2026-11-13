@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 
 namespace wireview::host {
@@ -29,6 +30,7 @@ public:
     WindowsInputInjector& operator=(const WindowsInputInjector&) = delete;
 
     bool inject_batch(const wireview::protocol::InputBatch& batch);
+    void update_target(DesktopCaptureArea target);
 
     [[nodiscard]] std::uint64_t injected_records() const noexcept;
     [[nodiscard]] const InputInjectionMetrics& metrics() const noexcept;
@@ -59,6 +61,7 @@ private:
 
     void* touch_device_{nullptr};
     void* pen_device_{nullptr};
+    std::mutex target_mutex_;
     DesktopCaptureArea target_{};
     std::map<std::uint16_t, TouchContact> active_touches_;
     std::optional<std::uint16_t> primary_touch_id_;

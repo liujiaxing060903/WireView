@@ -23,20 +23,26 @@ public:
         MessageHandler message_handler, ReadyHandler ready_handler,
         ErrorHandler error_handler);
     void resize();
+    void set_visible(bool visible);
     void post_json(const std::wstring& json) const;
     void shutdown();
-    [[nodiscard]] bool ready() const { return webview_ != nullptr; }
+    [[nodiscard]] bool is_visible() const { return visible_; }
+    [[nodiscard]] bool accepts_state() const { return page_loaded_ && visible_; }
 
 private:
+    void apply_visibility();
+
     HWND parent_{};
     bool com_initialized_{};
+    bool page_loaded_{};
+    bool visible_{};
     std::filesystem::path assets_directory_;
     MessageHandler message_handler_;
     ReadyHandler ready_handler_;
     ErrorHandler error_handler_;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> environment_;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller_;
-    Microsoft::WRL::ComPtr<ICoreWebView2> webview_;
+    Microsoft::WRL::ComPtr<ICoreWebView2_3> webview_;
 };
 
 }  // namespace wireview::host

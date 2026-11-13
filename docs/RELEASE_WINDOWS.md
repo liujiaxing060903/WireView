@@ -1,36 +1,100 @@
-# WireView 1.1.20 使用说明
+# WireView 2.0.0 使用说明
+
+WireView 通过 USB 把 Android 手机或平板作为 Windows 的复制屏幕或扩展桌面。Windows 端是便携程序，Android 端安装 APK；复制和扩展都可以从控制中心或托盘启动。
+
+## 下载与升级
+
+从 [GitHub Releases](https://github.com/liujiaxing060903/WireView/releases) 下载同一版本的：
+
+- `WireView-2.0.0-Windows-x64.zip`：电脑端，完整解压后运行 `WireView 控制中心.exe`。
+- `WireView-2.0.0-debug.apk`：Android 接收端，侧载安装并打开。
+
+Android 包沿用上一公开版 1.1.20 的签名，可以保留数据覆盖安装；不要为升级先卸载旧应用。更新 Windows 时使用完整的新文件夹，不要只替换单个 EXE。原设备设置保存在用户目录中。
 
 ## 运行环境
 
-- Windows 10 或 Windows 11（x64）。
-- 主控制中心使用 Microsoft Edge WebView2 Evergreen Runtime。若启动时提示缺失，请从 <https://developer.microsoft.com/microsoft-edge/webview2/> 安装 Evergreen Runtime。
-- WireView 的日常传输使用 ADB。请从 <https://developer.android.google.cn/tools/releases/platform-tools?hl=zh-cn> 下载官方 Android SDK Platform Tools，解压其中完整的 `platform-tools` 文件夹到本发布包根目录。不要只复制 `adb.exe`。
+- Windows 10 / Windows 11，x64。
+- Android 推荐 10 及以上。Android 10 小米 8 已有实际复制、扩展和托盘启停记录；APK 最低可安装到 Android 6.0，但 6～9 尚未完成真机验证。
+- 一根可传数据的 USB 线；只支持充电的线不能用于投屏。
+- [Microsoft WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。主界面打不开且暂时不能安装 Runtime 时，可试用包内的 `wireview_control_legacy.exe` 原生回退入口，其界面和功能与主控制中心有所不同。
+- 官方完整的 [Android SDK Platform Tools](https://developer.android.google.cn/tools/releases/platform-tools?hl=zh-cn)。
 
-## 第一次使用
+## 第一次连接
 
-1. 从同一 Release 下载并安装 `WireView-1.1.20-debug.apk` 到 Android 11 或更新版本的设备，然后打开 WireView。
-2. 在 Android 的“设置 → 关于手机”中连续点击“版本号”或“MIUI 版本”七次，开启开发者选项。
-3. 进入“设置 → 系统 / 更多设置 → 开发者选项”，开启“USB 调试”。
-4. 用可传输数据的 USB 线连接电脑，在 Android 弹窗中允许此电脑进行 USB 调试；必要时切换到“文件传输”并检查 ADB 是否识别设备。
-5. 如需“扩展屏幕”，先按 `安装依赖/Parsec VDD 下载说明.txt` 获取并安装 Parsec VDD；也可查看[上游项目说明](https://github.com/nomi-san/parsec-vdd)和[下载页面](https://github.com/nomi-san/parsec-vdd/releases)。完成后确认设备管理器的 `Parsec Virtual Display Adapter` 没有黄色感叹号。复制主屏无需安装该驱动。
-6. 运行 `WireView 控制中心.exe`。设备连接后可选复制屏幕或扩展屏幕。
+1. 在 Android 上安装并打开 WireView。
+2. 打开设备的开发者选项，启用「USB 调试」。如果尚未开启开发者选项，通常可在「关于手机／平板」中连续点击版本号开启；具体菜单随厂商不同。
+3. 用 USB 数据线连接电脑，解锁设备，在提示中允许这台电脑进行 USB 调试。
+4. 把官方压缩包中的**整个 `platform-tools` 文件夹**放到 Windows 程序根目录，与 `web`、`assets`、`data` 同级。应存在 `platform-tools/adb.exe`、`AdbWinApi.dll`、`AdbWinUsbApi.dll`，不要只复制 EXE，也不要多套一层目录。
+5. 打开 `WireView 控制中心.exe`，在左侧设备列表中选择目标，等待显示「待投屏」。接收端应保持在前台。
 
-## Parsec VDD 兼容性回退
+普通复制可以直接开始；使用扩展屏幕前，还需按包内 `安装依赖/Parsec VDD 下载说明.txt` 安装 [Parsec VDD](https://github.com/nomi-san/parsec-vdd)。[驱动下载页面](https://github.com/nomi-san/parsec-vdd/releases)。
 
-若 Parsec VDD 显示 `UNKNOW_PROBLEM`，或设备管理器报告代码 31：
+## 复制屏幕
 
-1. 先停止使用 Parsec/Sunshine 等虚拟显示器的程序，保存工作；卸载失效的 Parsec VDD 程序和驱动，并重启 Windows。
-2. 从上游项目获取兼容性回退版本，以管理员身份运行 `parsec-vdd-0.41.0.0.exe`。
-3. 从上游项目获取并解压 `ParsecVDisplay-v0.45-portable.zip`，只运行其中的 `ParsecVDisplay.exe`。
-4. 不要运行压缩包内的 `parsec-vdd-0.45.0.0.exe`，否则会覆盖已安装的 0.41 驱动。
+在「复制设置」中选择复制来源，再点击上方「复制屏幕」。不改参数时会沿用该设备保存的选择。
 
-这是在部分电脑上验证过的兼容性回退方案；默认优先使用 0.45 安装器。
+「预览画面范围」可先查看比例。高级设置中的视频分辨率和发送帧率限制传输画面，不会把来源显示器改成另一个 Windows 分辨率；画面按比例缩放，比例不同时可能留边。
 
-## 说明
+普通复制直接发送来源屏幕，Windows 显示设置中通常不会新增显示器。同一复制来源同时只允许一台设备使用；另一台可选不同来源或独立扩展。
 
-- Parsec VDD 是第三方驱动，WireView 不会自动安装或删除用户已有的其他 Parsec/Sunshine 显示器。
-- ParsecVDisplay 与 Parsec VDD 驱动安装器不随本包分发；第三方许可说明保留在 `licenses/`。
-- Android SDK Platform Tools 不随公开包分发；其官方 SDK 许可限制再分发。控制中心会自动识别放在本包根目录的 `platform-tools\\adb.exe`。
-- Windows 与 Android 安装包当前均未使用代码签名证书。Windows 可能显示 SmartScreen 警告；Android APK 为调试签名包，适合直接侧载测试，不可作为已具备正式发布签名的应用商店包。
-- 主控制中心无法使用 WebView2 时，可运行本包内的 `wireview_control_legacy.exe`。
-- 60 FPS 为已验证的可靠档；120 FPS 为实验性主机编码/发送目标，不保证设备面板实际以 120 Hz 显示。
+## 扩展屏幕
+
+先在「扩展设置」选择桌面分辨率和发送帧率，需要时使用「自定义分辨率」，再点上方「扩展屏幕」。不调整时会使用该设备保存的参数。常用尺寸按成功使用情况优先显示。
+
+扩展成功后，设备是一块独立的 Windows 桌面。将窗口沿排布方向拖过去即可使用；只有桌面背景不代表投屏失败。最多同时创建两块 WireView 独立扩展屏。
+
+投屏后原设置区切换成「屏幕位置」。点击「标识屏幕」，各屏左下角会短暂显示大编号；点击「调整屏幕位置」进入 Windows 设置调整排布。停止后才能修改 WireView 的启动参数。
+
+## 输入、鼠标和旋转
+
+- 默认「仅显示」，适合把设备当普通副屏。需要控制电脑时，在投屏前选「触控与手写笔」。笔压、倾角等能力取决于设备、笔及 Windows 应用。
+- 鼠标大小可输入 50%～300%，按设备分别记住；停止后调整，下次启动生效。默认 100% 使用目标屏幕的指针尺寸。
+- Android 端旋转按钮在待投屏时可用。需要先调整方向再开始；投屏中按钮隐藏，停止后恢复。
+
+## 多设备与托盘
+
+已添加设备在左侧集中管理，新设备可通过「添加设备」加入。每台设备保留自己的参数和连接，切换左侧选择不会停止另一台。
+
+右键 Windows 托盘的 WireView 图标，中间只显示当前已授权连接的设备。悬停设备可选择「复制屏幕」「扩展屏幕」或「停止此设备」，无需先打开控制中心，操作沿用该设备保存的设置。刚连接的设备可能先显示「正在识别」，稍后重新悬停或打开菜单即可。
+
+正在投屏时复制与扩展入口变灰，先停止这台设备再切换。指定停止不会主动结束另一台的会话；增减虚拟屏时 Windows 仍可能短暂刷新桌面。
+
+右上角 X 隐藏窗口，投屏继续。从托盘选「显示 WireView」可唤回；选「退出 WireView」会正常关闭电脑端和会话。不要用任务管理器代替日常停止。
+
+## 拔插、后台与合盖
+
+拔线、设备进入后台或锁屏可能中断画面。接回并把接收端留在前台后，程序会尝试恢复连接；主动停止则取消原投屏意图。若旧连接没有清理完成，可先点一次停止，等待恢复待投屏后重新开始。
+
+笔记本合盖使用前，在 Windows 电源设置中把相应供电方式的「盖上盖子」设为「不执行任何操作」。扩展是已实测的合盖方式。仅有笔记本内屏、已安装 Parsec VDD 且能够配对时，复制也可能通过配对副屏继续工作；这与普通复制不同，不能推定所有显示器组合均支持。
+
+## 排查连接问题
+
+从「连接诊断」查看对应设备的状态和日志。也可在 Windows 包根目录打开 PowerShell 检查：
+
+```powershell
+./platform-tools/adb.exe devices -l
+```
+
+| 结果 | 接下来做什么 |
+| --- | --- |
+| 缺少 DLL 或无法运行 | 重新完整解压官方 Platform Tools，检查文件夹位置 |
+| 没有设备 | 检查数据线、USB 调试和对应机型的 ADB 驱动；能看到手机文件夹不等于调试连接正常 |
+| `unauthorized` | 解锁 Android，允许此电脑的 USB 调试授权 |
+| `offline` | 解锁并重插，检查是否有其他手机助手占用或使用不同的 ADB |
+| `device` 但未识别 WireView | 安装并打开本版接收端，将它保持在前台 |
+
+不必为了排查直接重启全部 ADB 服务，以免影响其他正在使用的调试任务。
+
+## 排查副屏和画面问题
+
+- 扩展前确认 Parsec VDD 安装正常、设备管理器没有错误标记。包内没有捆绑驱动安装器。
+- Windows 的 `DISPLAY1/2/…` 会随显示器重建而变化。复制来源失效时重新选择，不要照搬历史编号。
+- 刚扩展后找不到窗口，先看屏幕排布，再把普通窗口拖过去。
+- 编码或捕获失败时，可先关闭 HDR，使用 SDR、较低分辨率和 60 FPS。部分显卡／驱动组合仍需兼容性验证。
+- 停止会请求移除 WireView 本次持有的副屏，并清理对应连接；其他软件创建的屏幕由原软件管理，不要为了排查删除所有虚拟屏。
+
+## 当前范围和第三方材料
+
+60 FPS 为常用档位，120 FPS 仍是实验性编码／发送目标；设备最终显示帧率还取决于硬件和系统。暂不支持音频、Wi-Fi／远程连接、Windows 登录前显示和 HDR／10-bit 桌面。
+
+Windows 程序尚未配置正式代码签名，Android 为沿用原证书的调试签名侧载包。Platform Tools、Parsec 管理工具和驱动安装器不随包分发。WebView2 和 AMD AMF 相关许可材料保存在包内 `licenses/`；AMD 运行库由显卡驱动提供，本包不分发该运行库或 FFmpeg。

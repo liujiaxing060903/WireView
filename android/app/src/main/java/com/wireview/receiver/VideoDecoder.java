@@ -6,17 +6,18 @@ import android.os.Build;
 import android.util.Log;
 import android.view.Surface;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 final class VideoDecoder implements AutoCloseable {
@@ -26,6 +27,8 @@ final class VideoDecoder implements AutoCloseable {
         void onStreamConfigured(int width, int height, int frameRate);
 
         void onFirstFrameRendered(long presentationTimeUs, long startupMillis);
+
+        void onFrameSurfaceTarget(long presentationTimeUs, long wantedNanos);
 
         void onDecoderHealth(
                 long receivedFrames,
@@ -48,48 +51,54 @@ final class VideoDecoder implements AutoCloseable {
     private static final int STREAM_CONFIG_SIZE = 16;
     private static final int CODEC_AVC = 1;
     private static final int FORMAT_ANNEX_B = 1;
-    // A 60 FPS frame budget is 16.67 ms. Two short dequeue attempts made
-    // some Qualcomm decoders discard an inter frame just before an output
-    // buffer became reusable, which corrupts the reference chain until GOP.
-    private static final long INPUT_RETRY_TIMEOUT_US = 12_000L;
-    private static final long OUTPUT_DRAIN_TIMEOUT_US = 0L;
-    private static final long OUTPUT_POLL_INTERVAL_MILLIS = 2L;
+    private static final long INPUT_WAIT_BUDGET_US = 24_000L;
+    private static final long OUTPUT_WAIT_US = 10_000L;
+    private static final long MI8_REFRESH_NANOS = 1_000_000_000L / 60L;
 
     private final CodecProbe.Result selectedDecoder;
     private final boolean forceLowLatency;
+    private final FramePresentationClock mi8PresentationClock;
+    private final FramePresentationClock highRefreshPresentationClock = new FramePresentationClock();
     private final Listener listener;
+    private final File traceFile;
+    private final OneRefreshDemoClock demoClock;
+    private BufferedWriter pipelineTrace;
+    private int traceRows;
     private final ExecutorService worker;
-    private final ScheduledExecutorService outputPoller;
+    private DecoderOutputPump outputPump;
 
     private Surface surface;
     private StreamConfig streamConfig;
+    private long streamConfigArrivalNanos;
+    private long streamWorkerNanos;
     private MediaCodec codec;
-    private boolean firstFrameRendered;
-    private long firstInputQueuedNanos;
+    private volatile boolean firstFrameRendered;
+    private volatile long firstInputQueuedNanos;
     private long codecGeneration;
-    private boolean outputPollScheduled;
-    private long receivedFrames;
-    private long queuedFrames;
-    private long droppedFrames;
+    private volatile long receivedFrames;
+    private volatile long queuedFrames;
+    private volatile long droppedFrames;
     private boolean awaitingRecoveryKeyframe;
-    private int decoderErrors;
+    private volatile int decoderErrors;
     private long lastHealthReportNanos;
-    private final Map<Long, FrameTiming> pendingFrameTimings = new HashMap<>();
+    private final Map<Long, FrameTiming> pendingFrameTimings = new ConcurrentHashMap<>();
 
     VideoDecoder(
             CodecProbe.Result selectedDecoder,
             boolean forceLowLatency,
-            Listener listener) {
+            Listener listener,
+            File filesDirectory, long gridNs, long periodNs, long leadNs, int warmupFrames) {
+        this.traceFile = new File(filesDirectory, "pipeline-android.csv");
+        this.demoClock = new OneRefreshDemoClock(gridNs, periodNs, leadNs, warmupFrames);
         this.selectedDecoder = selectedDecoder;
         this.forceLowLatency = forceLowLatency;
+        this.mi8PresentationClock = Build.VERSION.SDK_INT == Build.VERSION_CODES.Q
+                && "dipper".equals(Build.DEVICE)
+                && "OMX.qcom.video.decoder.avc".equals(selectedDecoder.name)
+                ? new FramePresentationClock() : null;
         this.listener = listener;
         worker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "WireViewVideoDecoder");
-            thread.setDaemon(true);
-            return thread;
-        });
-        outputPoller = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "WireViewOutputPoller");
             thread.setDaemon(true);
             return thread;
         });
@@ -106,6 +115,7 @@ final class VideoDecoder implements AutoCloseable {
     }
 
     void startStream(byte[] payload) {
+        final long receivedNanos = System.nanoTime();
         final StreamConfig config;
         try {
             config = StreamConfig.parse(payload);
@@ -115,7 +125,10 @@ final class VideoDecoder implements AutoCloseable {
         }
 
         worker.execute(() -> {
+            streamWorkerNanos = System.nanoTime();
+            streamConfigArrivalNanos = receivedNanos;
             releaseCodec();
+            openPipelineTrace();
             streamConfig = config;
             if (surface != null && surface.isValid()) {
                 configureCodec();
@@ -127,12 +140,20 @@ final class VideoDecoder implements AutoCloseable {
 
     void queueFrame(Protocol.Packet packet) {
         long arrivalMicros = System.nanoTime() / 1_000L;
+        if (BuildConfig.CURSOR_DIAGNOSTICS && mi8PresentationClock == null
+                && !isHighRefresh(streamConfig)) {
+            // release(true) keeps the video PTS as the requested Surface timestamp.
+            // The collector still checks actual presentation before counting a frame.
+            final long pts = packet.header.timestampMicros;
+            listener.onFrameSurfaceTarget(pts, pts * 1_000L);
+        }
         worker.execute(() -> queueFrameOnWorker(packet, arrivalMicros));
     }
 
     void stopStream() {
         worker.execute(() -> {
             releaseCodec();
+            closePipelineTrace();
             streamConfig = null;
             listener.onDecoderStatus("视频流已停止");
         });
@@ -144,6 +165,7 @@ final class VideoDecoder implements AutoCloseable {
         }
 
         resetDecoderHealth();
+        final long beginNanos = System.nanoTime();
         try {
             MediaFormat format = MediaFormat.createVideoFormat(
                     MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -151,14 +173,25 @@ final class VideoDecoder implements AutoCloseable {
                     streamConfig.height);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, streamConfig.frameRateNumerator);
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024);
-            if (selectedDecoder.lowLatency || forceLowLatency) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    && (selectedDecoder.lowLatency || forceLowLatency)) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
             }
 
+            final long createBeginNanos = System.nanoTime();
             codec = MediaCodec.createByCodecName(selectedDecoder.name);
+            final long createdNanos = System.nanoTime();
             applyVendorLowLatencyParameters(codec, format);
+            final long configureBeginNanos = System.nanoTime();
             codec.configure(format, surface, null, 0);
+            final long configuredNanos = System.nanoTime();
+            highRefreshPresentationClock.reset(
+                    streamConfig.frameRateNumerator, streamConfig.frameRateDenominator);
+            if (mi8PresentationClock != null) {
+                mi8PresentationClock.reset(streamConfig.frameRateNumerator, streamConfig.frameRateDenominator);
+            }
             codec.start();
+            final long startedNanos = System.nanoTime();
             firstFrameRendered = false;
             firstInputQueuedNanos = 0L;
             listener.onStreamConfigured(
@@ -171,7 +204,27 @@ final class VideoDecoder implements AutoCloseable {
                             + "@" + streamConfig.frameRateNumerator);
             Log.i(TAG, "Configured " + selectedDecoder.name + " with " + streamConfig
                     + ", standardLowLatency=" + selectedDecoder.lowLatency
-                    + ", forcedLowLatency=" + forceLowLatency);
+                    + ", forcedLowLatency=" + forceLowLatency + ", outputMode=dedicated");
+            PersistentDiagnosticLog.record(TAG, "startupUs"
+                    + " configReceived=" + streamConfigArrivalNanos / 1_000L
+                    + " worker=" + streamWorkerNanos / 1_000L
+                    + " begin=" + beginNanos / 1_000L
+                    + " createBegin=" + createBeginNanos / 1_000L
+                    + " created=" + createdNanos / 1_000L
+                    + " configureBegin=" + configureBeginNanos / 1_000L
+                    + " configured=" + configuredNanos / 1_000L
+                    + " started=" + startedNanos / 1_000L);
+            final long generation = codecGeneration;
+            outputPump = new DecoderOutputPump(() -> drainOutput(OUTPUT_WAIT_US), error ->
+                    worker.execute(() -> {
+                        if (generation == codecGeneration) {
+                            Log.e(TAG, "Decoder failed while polling output", error);
+                            ++decoderErrors;
+                            releaseCodec();
+                            reportDecoderHealth(true);
+                            listener.onDecoderStatus("解码失败：" + error.getMessage());
+                        }
+                    }));
         } catch (IOException | IllegalArgumentException | IllegalStateException error) {
             Log.e(TAG, "Cannot configure decoder", error);
             ++decoderErrors;
@@ -182,6 +235,7 @@ final class VideoDecoder implements AutoCloseable {
     }
 
     private void queueFrameOnWorker(Protocol.Packet packet, long arrivalMicros) {
+        final long workerMicros = System.nanoTime() / 1_000L;
         if (codec == null) {
             return;
         }
@@ -195,15 +249,7 @@ final class VideoDecoder implements AutoCloseable {
                 reportDecoderHealth(false);
                 return;
             }
-            // Reclaim rendered output before requesting more input. Some hardware
-            // decoders expose only a small shared buffer pool, so waiting for input
-            // first can cause avoidable starvation during a sustained 60 Hz stream.
-            drainOutput(0L);
-            int inputIndex = codec.dequeueInputBuffer(0L);
-            if (inputIndex < 0) {
-                drainOutput(INPUT_RETRY_TIMEOUT_US);
-                inputIndex = codec.dequeueInputBuffer(INPUT_RETRY_TIMEOUT_US);
-            }
+            int inputIndex = codec.dequeueInputBuffer(INPUT_WAIT_BUDGET_US);
             if (inputIndex < 0) {
                 requestRecoveryKeyframe(packet, "没有可用解码输入缓冲区");
                 return;
@@ -221,15 +267,25 @@ final class VideoDecoder implements AutoCloseable {
             if (firstInputQueuedNanos == 0L) {
                 firstInputQueuedNanos = System.nanoTime();
             }
-            pendingFrameTimings.put(
-                    packet.header.timestampMicros,
-                    new FrameTiming(packet.header.sequence, packet.header.timestampMicros, arrivalMicros));
+            FrameTiming timing = new FrameTiming(packet.header.sequence, packet.header.timestampMicros,
+                    arrivalMicros, workerMicros, keyframe);
+            pendingFrameTimings.put(packet.header.timestampMicros, timing);
+            timing.queueStartMicros = System.nanoTime() / 1_000L;
             codec.queueInputBuffer(
                     inputIndex,
                     0,
                     packet.payload.length,
                     packet.header.timestampMicros,
                     0);
+            final long queueReturnMicros = System.nanoTime() / 1_000L;
+            if (BuildConfig.CURSOR_DIAGNOSTICS) {
+                synchronized (timing) {
+                    timing.queueReturnMicros = queueReturnMicros;
+                    if (timing.releaseMicros != 0L) {
+                        recordPipelineFrame(timing);
+                    }
+                }
+            }
             if (awaitingRecoveryKeyframe && keyframe) {
                 awaitingRecoveryKeyframe = false;
                 listener.onDecoderStatus("已收到恢复关键帧，解码继续");
@@ -237,9 +293,6 @@ final class VideoDecoder implements AutoCloseable {
             }
             ++queuedFrames;
             reportDecoderHealth(false);
-            // Drain any output that became ready while this input was submitted.
-            drainOutput(OUTPUT_DRAIN_TIMEOUT_US);
-            scheduleOutputPoll();
         } catch (IllegalStateException error) {
             Log.e(TAG, "Decoder failed while queuing a frame", error);
             ++decoderErrors;
@@ -261,54 +314,64 @@ final class VideoDecoder implements AutoCloseable {
         reportDecoderHealth(true);
     }
 
-    private void scheduleOutputPoll() {
-        if (codec == null || outputPollScheduled) {
-            return;
-        }
-        final long generation = codecGeneration;
-        outputPollScheduled = true;
-        outputPoller.schedule(() -> {
-            try {
-                worker.execute(() -> {
-                    if (generation != codecGeneration) {
-                        return;
-                    }
-                    outputPollScheduled = false;
-                    try {
-                        drainOutput(0L);
-                    } catch (IllegalStateException error) {
-                        Log.e(TAG, "Decoder failed while polling output", error);
-                        ++decoderErrors;
-                        releaseCodec();
-                        reportDecoderHealth(true);
-                        listener.onDecoderStatus("解码失败：" + error.getMessage());
-                        return;
-                    }
-                    if (!pendingFrameTimings.isEmpty()) {
-                        scheduleOutputPoll();
-                    }
-                });
-            } catch (RejectedExecutionException ignored) {
-                // Activity shutdown raced with a final output poll.
-            }
-        }, OUTPUT_POLL_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+    private static boolean isHighRefresh(StreamConfig config) {
+        return config != null
+                && config.frameRateNumerator >= 120L * config.frameRateDenominator;
     }
 
     private void drainOutput(long firstTimeoutMicros) {
+        final StreamConfig config = streamConfig;
+        final boolean paceHighRefresh = isHighRefresh(config);
+        final boolean paceMi8 = mi8PresentationClock != null && config != null
+                && config.width == 2248 && config.height == 1080
+                && config.frameRateNumerator == 60L * config.frameRateDenominator;
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         long timeoutMicros = firstTimeoutMicros;
         while (codec != null) {
             int outputIndex = codec.dequeueOutputBuffer(info, timeoutMicros);
             timeoutMicros = 0L;
             if (outputIndex >= 0) {
-                codec.releaseOutputBuffer(outputIndex, true);
+                final long readyNs = System.nanoTime();
+                final long outputMicros = readyNs / 1_000L;
+                // On the Mi 8, using Android time lets the display catch up instead of
+                // queuing buffers with Windows timestamps. One refresh of headroom keeps
+                // most of the native 60 Hz stream in separate display slots.
+                // High-rate streams also use Android time with one refresh of headroom;
+                // the existing clock bounds each target within two refreshes of readiness.
+                final long targetNs = paceMi8 ? mi8PresentationClock.renderTimeNanos(
+                        info.presentationTimeUs, readyNs + MI8_REFRESH_NANOS)
+                        : paceHighRefresh ? highRefreshPresentationClock.renderTimeNanos(
+                                info.presentationTimeUs, readyNs + 1_000_000_000L
+                                        * config.frameRateDenominator / config.frameRateNumerator) : 0L;
+                if (targetNs == 0L) {
+                    codec.releaseOutputBuffer(outputIndex, true);
+                } else {
+                    codec.releaseOutputBuffer(outputIndex, targetNs);
+                }
+                final long releaseMicros = System.nanoTime() / 1_000L;
+                if (BuildConfig.CURSOR_DIAGNOSTICS && (mi8PresentationClock != null || paceHighRefresh)) {
+                    listener.onFrameSurfaceTarget(info.presentationTimeUs,
+                            targetNs != 0L ? targetNs : info.presentationTimeUs * 1_000L);
+                }
                 FrameTiming timing = pendingFrameTimings.remove(info.presentationTimeUs);
+                if (timing != null && BuildConfig.CURSOR_DIAGNOSTICS) {
+                    synchronized (timing) {
+                        timing.outputMicros = outputMicros;
+                        timing.readyNs = readyNs;
+                        timing.targetNs = targetNs;
+                        timing.releaseMicros = releaseMicros;
+                        timing.pendingAfterOutput = pendingFrameTimings.size();
+                        if (timing.queueReturnMicros != 0L) {
+                            recordPipelineFrame(timing);
+                        }
+                    }
+                }
                 if (timing != null && timing.sequence % 60L == 0L) {
                     listener.onFrameTiming(
                             timing.sequence,
                             timing.hostTimestampMicros,
                             timing.arrivalMicros,
-                            System.nanoTime() / 1_000L);
+                            releaseMicros);
                 }
                 if (!firstFrameRendered) {
                     firstFrameRendered = true;
@@ -341,7 +404,7 @@ final class VideoDecoder implements AutoCloseable {
         lastHealthReportNanos = 0L;
     }
 
-    private void reportDecoderHealth(boolean force) {
+    private synchronized void reportDecoderHealth(boolean force) {
         long now = System.nanoTime();
         if (!force && lastHealthReportNanos != 0L
                 && now - lastHealthReportNanos < TimeUnit.SECONDS.toNanos(1L)) {
@@ -359,7 +422,10 @@ final class VideoDecoder implements AutoCloseable {
 
     private void releaseCodec() {
         ++codecGeneration;
-        outputPollScheduled = false;
+        if (outputPump != null) {
+            outputPump.close();
+            outputPump = null;
+        }
         if (codec == null) {
             pendingFrameTimings.clear();
             return;
@@ -380,6 +446,15 @@ final class VideoDecoder implements AutoCloseable {
         }
 
         List<String> parameters = activeCodec.getSupportedVendorParameters();
+        final String pictureOrder = "vendor.qti-ext-dec-picture-order.enable";
+        if (BuildConfig.CURSOR_DIAGNOSTICS
+                && streamConfig.frameRateNumerator >= 120L * streamConfig.frameRateDenominator
+                && activeCodec.getName().equals("c2.qti.avc.decoder")
+                && parameters.contains(pictureOrder)) {
+            // The WireView AVC encoders produce the stream without B-frames.
+            format.setInteger(pictureOrder, 1);
+            Log.i(TAG, "Requested Qualcomm decode-order output");
+        }
         for (String parameter : parameters) {
             String normalized = parameter.toLowerCase(Locale.ROOT);
             if (!normalized.contains("latency")) {
@@ -400,11 +475,63 @@ final class VideoDecoder implements AutoCloseable {
         }
     }
 
+    private void openPipelineTrace() {
+        closePipelineTrace();
+        if (!BuildConfig.CURSOR_DIAGNOSTICS) {
+            return;
+        }
+        try {
+            pipelineTrace = new BufferedWriter(new FileWriter(traceFile));
+            pipelineTrace.write("pts_us,sequence,keyframe,arrival_us,worker_us,queue_begin_us,"
+                    + "queue_end_us,output_us,release_us,pending_after_output,ready_ns,target_ns\n");
+            traceRows = 0;
+        } catch (IOException error) {
+            Log.w(TAG, "Cannot open decoder pipeline trace", error);
+            closePipelineTrace();
+        }
+    }
+
+    private synchronized void recordPipelineFrame(FrameTiming timing) {
+        if (pipelineTrace == null) {
+            return;
+        }
+        try {
+            pipelineTrace.write(timing.hostTimestampMicros + "," + timing.sequence + ","
+                    + (timing.keyframe ? 1 : 0) + "," + timing.arrivalMicros + ","
+                    + timing.workerMicros + "," + timing.queueStartMicros + "," + timing.queueReturnMicros
+                    + "," + timing.outputMicros + "," + timing.releaseMicros + ","
+                    + timing.pendingAfterOutput + "," + timing.readyNs + "," + timing.targetNs + "\n");
+            if (++traceRows % 32 == 0) {
+                pipelineTrace.flush();
+            }
+        } catch (IOException error) {
+            Log.w(TAG, "Cannot write decoder pipeline trace", error);
+            closePipelineTrace();
+        }
+    }
+
+    private void closePipelineTrace() {
+        if (pipelineTrace == null) {
+            return;
+        }
+        try {
+            pipelineTrace.close();
+        } catch (IOException error) {
+            Log.w(TAG, "Cannot close decoder pipeline trace", error);
+        }
+        pipelineTrace = null;
+    }
+
     @Override
     public void close() {
-        outputPoller.shutdownNow();
-        worker.execute(this::releaseCodec);
-        worker.shutdown();
+        worker.execute(() -> {
+            try {
+                releaseCodec();
+                closePipelineTrace();
+            } finally {
+                worker.shutdown();
+            }
+        });
         try {
             worker.awaitTermination(2, TimeUnit.SECONDS);
         } catch (InterruptedException ignored) {
@@ -462,11 +589,22 @@ final class VideoDecoder implements AutoCloseable {
         final long sequence;
         final long hostTimestampMicros;
         final long arrivalMicros;
+        final long workerMicros;
+        final boolean keyframe;
+        long queueStartMicros;
+        long queueReturnMicros;
+        long outputMicros;
+        long releaseMicros;
+        int pendingAfterOutput;
+        long readyNs, targetNs;
 
-        FrameTiming(long sequence, long hostTimestampMicros, long arrivalMicros) {
+        FrameTiming(long sequence, long hostTimestampMicros, long arrivalMicros,
+                long workerMicros, boolean keyframe) {
             this.sequence = sequence;
             this.hostTimestampMicros = hostTimestampMicros;
             this.arrivalMicros = arrivalMicros;
+            this.workerMicros = workerMicros;
+            this.keyframe = keyframe;
         }
     }
 }

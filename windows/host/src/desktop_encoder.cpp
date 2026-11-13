@@ -1,4 +1,7 @@
 #include "windows_video.hpp"
+#include "cursor_settings.hpp"
+#include "frame_pacer.hpp"
+#include "parsec_vdd.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -16,10 +19,17 @@
 #include <mftransform.h>
 #include <strmif.h>
 #include <wrl/client.h>
+#include <core/Factory.h>
+#include <core/Buffer.h>
+#include <components/VideoEncoderVCE.h>
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
+#include <optional>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
@@ -43,7 +53,6 @@ using Clock = std::chrono::steady_clock;
 
 constexpr UINT32 kBitRate = 24'000'000U;
 constexpr LONGLONG kHundredNanosecondsPerSecond = 10'000'000LL;
-constexpr float kCursorHardwareScaleCompensation = 3.11F;
 
 [[nodiscard]] std::string hresult_text(HRESULT value) {
     std::ostringstream output;
@@ -65,9 +74,9 @@ void check_hresult(HRESULT value, const char* operation) {
 // connection; keep it distinct so the active TCP session can survive it.
 class DesktopDuplicationLost final : public std::runtime_error {
 public:
-    explicit DesktopDuplicationLost(HRESULT result)
+    explicit DesktopDuplicationLost(HRESULT result, const char* operation = "")
         : std::runtime_error("DXGI desktop duplication temporarily unavailable: " +
-              hresult_text(result)) {
+              hresult_text(result) + (*operation == '\0' ? "" : std::string(" in ") + operation)) {
     }
 };
 
@@ -185,6 +194,21 @@ struct CaptureTarget {
 }
 
 [[nodiscard]] CaptureTarget find_capture_target(std::string_view device_name) {
+    const bool monitor_bound = device_name.starts_with(R"(\\?\)");
+    std::string requested(device_name);
+    if (monitor_bound) {
+        const int bytes = static_cast<int>(device_name.size());
+        const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+            device_name.data(), bytes, nullptr, 0);
+        std::wstring monitor_path(static_cast<std::size_t>(length), L'\0');
+        if (length != 0) {
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, device_name.data(),
+                bytes, monitor_path.data(), length);
+        }
+        const auto source = desktop_source_for_monitor(monitor_path);
+        if (source.device_name.empty()) { throw DesktopDuplicationLost(DXGI_ERROR_ACCESS_LOST); }
+        requested = utf8(source.device_name.c_str());
+    }
     const auto targets = enumerate_capture_targets();
     if (device_name.empty()) {
         const auto primary = std::find_if(
@@ -192,7 +216,6 @@ struct CaptureTarget {
             [](const CaptureTarget& target) { return target.primary; });
         return primary != targets.end() ? *primary : targets.front();
     }
-    const std::string requested(device_name);
     const auto target = std::find_if(
         targets.begin(), targets.end(),
         [&requested](const CaptureTarget& candidate) {
@@ -200,6 +223,7 @@ struct CaptureTarget {
                 requested.c_str()) == 0;
         });
     if (target == targets.end()) {
+        if (monitor_bound) { throw DesktopDuplicationLost(DXGI_ERROR_ACCESS_LOST); }
         throw std::runtime_error(
             "requested capture display is unavailable: " + requested +
             ". Run wireview_host --list-displays and ensure Windows is extending it.");
@@ -207,16 +231,30 @@ struct CaptureTarget {
     return *target;
 }
 
+[[nodiscard]] DesktopCaptureArea capture_area(const CaptureTarget& target) {
+    const RECT& bounds = target.output_description.DesktopCoordinates;
+    if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
+        throw std::runtime_error("requested capture display has invalid desktop bounds");
+    }
+    return {bounds.left, bounds.top, static_cast<std::uint32_t>(bounds.right - bounds.left),
+        static_cast<std::uint32_t>(bounds.bottom - bounds.top)};
+}
+
 struct D3DDevice {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
 };
 
+enum class CursorShapeUpdate : std::uint32_t {
+    unchanged,
+    captured,
+    reused,
+    unavailable,
+};
+
 struct DesktopPointer {
     bool visible{false};
     bool system_cursor_shape{false};
-    float render_scale_adjustment{1.0F};
-    float render_width_adjustment{1.0F};
     LONG x{};
     LONG y{};
     UINT width{};
@@ -272,14 +310,14 @@ struct DesktopPointer {
     return result;
 }
 
-[[nodiscard]] float monitor_cursor_scale(HMONITOR monitor) {
+[[nodiscard]] UINT monitor_cursor_dpi(HMONITOR monitor) {
     UINT dpi_x = 96U;
     UINT dpi_y = 96U;
     if (monitor != nullptr && SUCCEEDED(GetDpiForMonitor(
             monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y)) && dpi_x >= 96U) {
-        return static_cast<float>(dpi_x) / 96.0F;
+        return dpi_x;
     }
-    return 1.0F;
+    return 96U;
 }
 
 class AcquiredFrame {
@@ -300,9 +338,12 @@ public:
 
     void release() {
         if (active_) {
-            check_hresult(duplication_->ReleaseFrame(),
-                          "IDXGIOutputDuplication::ReleaseFrame");
+            const HRESULT result = duplication_->ReleaseFrame();
             active_ = false;
+            if (result == DXGI_ERROR_ACCESS_LOST || result == DXGI_ERROR_SESSION_DISCONNECTED) {
+                throw DesktopDuplicationLost(result, "IDXGIOutputDuplication::ReleaseFrame");
+            }
+            check_hresult(result, "IDXGIOutputDuplication::ReleaseFrame");
         }
     }
 
@@ -321,7 +362,8 @@ public:
         ID3D11Device* device,
         ID3D11DeviceContext* context,
         const RECT& desktop_bounds,
-        bool use_system_cursor_fallback)
+        bool use_system_cursor_fallback,
+        bool renderable_copy)
         : device_(device),
           context_(context),
           desktop_bounds_(desktop_bounds),
@@ -345,14 +387,14 @@ public:
         texture_description.Format = description_.ModeDesc.Format;
         texture_description.SampleDesc.Count = 1;
         texture_description.Usage = D3D11_USAGE_DEFAULT;
-        texture_description.BindFlags = 0;
+        texture_description.BindFlags = renderable_copy ? D3D11_BIND_RENDER_TARGET : 0U;
         check_hresult(
             device_->CreateTexture2D(&texture_description, nullptr, &latest_),
             "ID3D11Device::CreateTexture2D(desktop copy)");
+        desktop_trace_.reserve(20000);
     }
 
-    [[nodiscard]] bool refresh(UINT timeout_milliseconds) {
-        dxgi_pointer_updated_this_frame_ = false;
+    [[nodiscard]] bool refresh(UINT timeout_milliseconds, bool flush_copy = false) {
         DXGI_OUTDUPL_FRAME_INFO frame_info{};
         ComPtr<IDXGIResource> resource;
         AcquiredFrame guard(duplication_.Get());
@@ -366,13 +408,32 @@ public:
         }
         check_hresult(result, "IDXGIOutputDuplication::AcquireNextFrame");
         guard.activate();
+        const auto acquire_ready_us = frame_info.LastPresentTime.QuadPart != 0
+            ? static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                Clock::now().time_since_epoch()).count())
+            : 0U;
 
         update_pointer(frame_info);
 
-        ComPtr<ID3D11Texture2D> texture;
-        check_hresult(resource.As(&texture), "desktop frame QueryInterface(ID3D11Texture2D)");
-        context_->CopyResource(latest_.Get(), texture.Get());
+        const bool desktop_changed = frame_info.LastPresentTime.QuadPart != 0;
+        // DXGI can wake for just the mouse. Keep the copied desktop in that case.
+        if (desktop_changed || updates_ == 0U) {
+            ComPtr<ID3D11Texture2D> texture;
+            check_hresult(resource.As(&texture), "desktop frame QueryInterface(ID3D11Texture2D)");
+            context_->CopyResource(latest_.Get(), texture.Get());
+            if (flush_copy) { context_->Flush(); }
+        }
         guard.release();
+        if (desktop_changed) {
+            ++desktop_update_id_;
+            desktop_present_qpc_ = static_cast<std::uint64_t>(frame_info.LastPresentTime.QuadPart);
+            desktop_acquire_us_ = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    Clock::now().time_since_epoch()).count());
+            desktop_accumulated_frames_ = frame_info.AccumulatedFrames;
+            desktop_trace_.push_back({desktop_update_id_, desktop_present_qpc_, acquire_ready_us,
+                                      desktop_acquire_us_, desktop_accumulated_frames_, flush_copy ? 1U : 0U});
+        }
         ++updates_;
         return true;
     }
@@ -380,6 +441,47 @@ public:
     [[nodiscard]] ID3D11Texture2D* texture() const noexcept {
         return latest_.Get();
     }
+
+    void dump_desktop_trace() const {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        std::cout << "Desktop timing QPC frequency: " << frequency.QuadPart << '\n';
+        for (const auto& row : desktop_trace_) {
+            std::cout << "Desktop timing: " << row[0] << ',' << row[1] << ',' << row[2] << ','
+                      << row[3] << ',' << row[4] << ',' << row[5] << '\n';
+        }
+    }
+
+    void dump_desktop_preview(LONG generation, std::uint64_t origin_us) const {
+        LARGE_INTEGER frequency{};
+        QueryPerformanceFrequency(&frequency);
+        std::cout << "Desktop preview begin: " << generation << ',' << origin_us << ','
+                  << frequency.QuadPart << '\n';
+        const auto first = desktop_trace_.size() - std::min<std::size_t>(1800U, desktop_trace_.size());
+        for (auto i = first; i < desktop_trace_.size(); ++i) {
+            const auto& row = desktop_trace_[i];
+            std::cout << "Desktop preview: " << row[1] << ',' << row[3] << '\n';
+        }
+        std::cout << "Desktop preview end: " << generation << std::endl;
+    }
+
+    [[nodiscard]] std::uint64_t desktop_update_id() const noexcept {
+        return desktop_update_id_;
+    }
+
+    void record_desktop_timing(DesktopFrameTiming& timing) const noexcept {
+        timing.desktop_update_id = desktop_update_id_;
+        timing.desktop_present_qpc = desktop_present_qpc_;
+        timing.desktop_acquire_us = desktop_acquire_us_;
+        timing.desktop_accumulated_frames = desktop_accumulated_frames_;
+    }
+
+    void finish_frame() noexcept {
+        // Idle prefetches belong to the same encoded frame. A later empty poll
+        // must not erase the DXGI pointer update used to recognize VDD dragging.
+        dxgi_pointer_updated_this_frame_ = false;
+    }
+
 
     [[nodiscard]] UINT width() const noexcept {
         return description_.ModeDesc.Width;
@@ -406,9 +508,9 @@ public:
     // drag). Polling the Windows cursor keeps an independently captured VDD
     // display responsive during ordinary moves and when its cursor shape
     // changes to text, hand, or resize.
-    void refresh_system_cursor() {
+    [[nodiscard]] CursorShapeUpdate refresh_system_cursor() {
         if (!use_system_cursor_fallback_) {
-            return;
+            return CursorShapeUpdate::unchanged;
         }
 
         CURSORINFO cursor_info{};
@@ -420,20 +522,21 @@ public:
             cursor_info.ptScreenPos.y < desktop_bounds_.top ||
             cursor_info.ptScreenPos.y >= desktop_bounds_.bottom) {
             pointer_.visible = false;
-            return;
+            return CursorShapeUpdate::unchanged;
         }
 
-        // On this capture path GetCursorInfo's location already aligns with
-        // the cursor image top-left used by Windows' virtual display. Applying
-        // ICONINFO's hotspot again shifts hand/resize cursors left or up.
+        // GetCursorInfo reports the physical hotspot. The compositor anchors
+        // the actual cursor image there, independent of its transparent padding.
         if (cursor_info.hCursor == nullptr) {
             pointer_.visible = false;
-            return;
+            return CursorShapeUpdate::unchanged;
         }
+        auto shape_update = CursorShapeUpdate::unchanged;
         if (cursor_info.hCursor != system_cursor_ || !system_shape_available_) {
-            if (!capture_system_cursor_shape(cursor_info.hCursor, system_pointer_)) {
+            shape_update = select_system_cursor_shape(cursor_info.hCursor);
+            if (shape_update == CursorShapeUpdate::unavailable) {
                 pointer_.visible = false;
-                return;
+                return shape_update;
             }
             system_cursor_ = cursor_info.hCursor;
             system_shape_available_ = true;
@@ -448,15 +551,43 @@ public:
             // that native cursor path is confirmed, then hide it to avoid both
             // a blank flash and a second cursor throughout the operation.
             pointer_.visible = false;
-            return;
+            return shape_update;
         }
         pointer_ = system_pointer_;
         pointer_.visible = true;
         pointer_.x = cursor_info.ptScreenPos.x - desktop_bounds_.left;
         pointer_.y = cursor_info.ptScreenPos.y - desktop_bounds_.top;
+        return shape_update;
     }
 
 private:
+    struct StockCursorShape {
+        LPCSTR resource;
+        HCURSOR cursor{};
+        DesktopPointer shape;
+    };
+
+    [[nodiscard]] CursorShapeUpdate select_system_cursor_shape(HCURSOR cursor) {
+        // Reuse only shared Windows cursors. App-owned handles can be replaced
+        // or recycled while the capture session is running.
+        auto stock = std::find_if(stock_cursor_shapes_.begin(), stock_cursor_shapes_.end(),
+            [cursor](const StockCursorShape& entry) { return is_stock_cursor(cursor, entry.resource); });
+        if (stock != stock_cursor_shapes_.end() && stock->cursor == cursor) {
+            const auto next_version = system_pointer_.shape_version + 1U;
+            system_pointer_ = stock->shape;
+            system_pointer_.shape_version = next_version;
+            return CursorShapeUpdate::reused;
+        }
+        if (!capture_system_cursor_shape(cursor, system_pointer_)) {
+            return CursorShapeUpdate::unavailable;
+        }
+        if (stock != stock_cursor_shapes_.end()) {
+            stock->cursor = cursor;
+            stock->shape = system_pointer_;
+        }
+        return CursorShapeUpdate::captured;
+    }
+
     [[nodiscard]] static bool mouse_button_is_down() noexcept {
         constexpr int buttons[]{VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
         return std::any_of(std::begin(buttons), std::end(buttons), [](int button) {
@@ -510,21 +641,12 @@ private:
             (icon_info.xHotspot == 14U && icon_info.yHotspot == 15U);
     }
 
-    [[nodiscard]] static float system_cursor_scale_adjustment(
-        HCURSOR cursor,
-        const ICONINFO& icon_info) noexcept {
-        if (is_text_cursor(cursor, icon_info)) {
-            return 25.0F / 35.0F;
-        }
-        if (is_stock_cursor(cursor, IDC_SIZEWE) ||
-            is_stock_cursor(cursor, IDC_SIZENS)) {
-            return 33.0F / 34.0F;
-        }
-        if (is_stock_cursor(cursor, IDC_ARROW) ||
-            (icon_info.xHotspot == 0U && icon_info.yHotspot == 0U)) {
-            return 21.0F / 25.0F;
-        }
-        return 1.0F;
+    [[nodiscard]] static bool is_shared_system_cursor(HCURSOR cursor) noexcept {
+        const LPCSTR resources[]{IDC_ARROW, IDC_IBEAM, IDC_WAIT, IDC_CROSS,
+            IDC_UPARROW, IDC_SIZENWSE, IDC_SIZENESW, IDC_SIZEWE, IDC_SIZENS,
+            IDC_SIZEALL, IDC_NO, IDC_HAND, IDC_APPSTARTING, IDC_HELP};
+        return std::any_of(std::begin(resources), std::end(resources),
+            [cursor](LPCSTR resource) { return is_stock_cursor(cursor, resource); });
     }
 
     [[nodiscard]] static std::size_t draw_text_cursor_fallback(
@@ -588,17 +710,41 @@ private:
     [[nodiscard]] bool capture_system_cursor_shape(
         HCURSOR cursor,
         DesktopPointer& captured_pointer) {
+        const HCURSOR original_cursor = cursor;
+        const UINT dpi = monitor_cursor_dpi(MonitorFromRect(&desktop_bounds_, MONITOR_DEFAULTTONEAREST));
+        // A shared cursor handle may still contain the resource for another
+        // monitor's DPI. Ask Windows for this monitor's resource; do not resize
+        // application-owned cursors, whose dimensions are part of their design.
+        const int cursor_width = GetSystemMetricsForDpi(SM_CXCURSOR, dpi);
+        const int cursor_height = GetSystemMetricsForDpi(SM_CYCURSOR, dpi);
+        HCURSOR sized_cursor = is_shared_system_cursor(cursor)
+            ? static_cast<HCURSOR>(CopyImage(cursor, IMAGE_CURSOR,
+                cursor_width, cursor_height, LR_COPYFROMRESOURCE))
+            : nullptr;
+        if (sized_cursor != nullptr) {
+            // COPYFROMRESOURCE chooses the closest available resource; the
+            // monochrome I-beam can still be 32px when Windows requests 48px.
+            const auto exact = static_cast<HCURSOR>(CopyImage(
+                sized_cursor, IMAGE_CURSOR, cursor_width, cursor_height, 0U));
+            if (exact != nullptr) {
+                DestroyCursor(sized_cursor);
+                sized_cursor = exact;
+            }
+            cursor = sized_cursor;
+        }
         ICONINFO icon_info{};
         if (!GetIconInfo(cursor, &icon_info)) {
+            if (sized_cursor != nullptr) { DestroyCursor(sized_cursor); }
             return false;
         }
-        const auto release_icon_bitmaps = [&icon_info] {
+        const auto release_icon_bitmaps = [&icon_info, sized_cursor] {
             if (icon_info.hbmColor != nullptr) {
                 DeleteObject(icon_info.hbmColor);
             }
             if (icon_info.hbmMask != nullptr) {
                 DeleteObject(icon_info.hbmMask);
             }
+            if (sized_cursor != nullptr) { DestroyCursor(sized_cursor); }
         };
 
         const HBITMAP source_bitmap = icon_info.hbmColor != nullptr
@@ -707,7 +853,7 @@ private:
                     pixels[offset + 3U] = static_cast<std::uint8_t>(alpha);
                 }
             }
-            if (opaque_pixels == 0U && is_text_cursor(cursor, icon_info)) {
+            if (opaque_pixels == 0U && is_text_cursor(original_cursor, icon_info)) {
                 opaque_pixels = draw_text_cursor_fallback(
                     pixels, width, height, icon_info.xHotspot, icon_info.yHotspot);
             }
@@ -718,16 +864,10 @@ private:
             captured_pointer.hotspot_y = icon_info.yHotspot;
             captured_pointer.type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
             captured_pointer.system_cursor_shape = true;
-            captured_pointer.render_scale_adjustment =
-                system_cursor_scale_adjustment(cursor, icon_info);
-            // The first 14/13 correction crossed two raster boundaries and
-            // measured 15 pixels. Applying 14/15 to that measured result gives
-            // a near-neutral 196/195 source-width adjustment for 14 pixels.
-            captured_pointer.render_width_adjustment =
-                is_text_cursor(cursor, icon_info) ? (196.0F / 195.0F) : 1.0F;
             captured_pointer.bytes = std::move(pixels);
             ++captured_pointer.shape_version;
             std::cout << "System cursor captured: size=" << width << 'x' << height
+                      << " | targetDpi=" << dpi
                       << " | hotspot=" << icon_info.xHotspot << ',' << icon_info.yHotspot
                       << " | monochrome=" << (icon_info.hbmColor == nullptr ? "yes" : "no")
                       << " | opaquePixels=" << opaque_pixels << '\n';
@@ -798,6 +938,7 @@ private:
     DesktopPointer pointer_;
     DesktopPointer dxgi_pointer_;
     DesktopPointer system_pointer_;
+    std::array<StockCursorShape, 3> stock_cursor_shapes_{{{IDC_ARROW}, {IDC_SIZENS}, {IDC_SIZEWE}}};
     bool use_system_cursor_fallback_{false};
     HCURSOR system_cursor_{};
     bool system_shape_available_{false};
@@ -807,6 +948,11 @@ private:
     bool native_drag_cursor_confirmed_{false};
     Clock::time_point mouse_button_down_at_{};
     std::uint64_t updates_{0};
+    std::uint64_t desktop_update_id_{};
+    std::uint64_t desktop_present_qpc_{};
+    std::uint64_t desktop_acquire_us_{};
+    std::uint32_t desktop_accumulated_frames_{};
+    std::vector<std::array<std::uint64_t, 6>> desktop_trace_;
 };
 
 class CursorCompositor {
@@ -817,31 +963,36 @@ public:
         UINT width,
         UINT height,
         DXGI_FORMAT format,
-        float cursor_scale)
+        float cursor_scale,
+        float cursor_size_scale,
+        ID3D11Texture2D* in_place_desktop = nullptr)
         : device_(device),
           context_(context),
+          in_place_desktop_(in_place_desktop),
           width_(width),
           height_(height),
-          cursor_scale_(cursor_scale) {
+          cursor_scale_(cursor_scale),
+          cursor_size_scale_(cursor_size_scale) {
         if (format != DXGI_FORMAT_B8G8R8A8_UNORM &&
             format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) {
             throw std::runtime_error("cursor compositor requires BGRA desktop frames");
         }
 
-        D3D11_TEXTURE2D_DESC output_description{};
-        output_description.Width = width_;
-        output_description.Height = height_;
-        output_description.MipLevels = 1;
-        output_description.ArraySize = 1;
-        output_description.Format = format;
-        output_description.SampleDesc.Count = 1;
-        output_description.Usage = D3D11_USAGE_DEFAULT;
-        output_description.BindFlags = D3D11_BIND_RENDER_TARGET;
+        overlay_description_.MipLevels = 1;
+        overlay_description_.ArraySize = 1;
+        overlay_description_.Format = format;
+        overlay_description_.SampleDesc.Count = 1;
+        overlay_description_.Usage = D3D11_USAGE_DEFAULT;
+        if (!in_place_desktop_) {
+            overlay_description_.Width = width_;
+            overlay_description_.Height = height_;
+            overlay_description_.BindFlags = D3D11_BIND_RENDER_TARGET;
+            check_hresult(
+                device_->CreateTexture2D(&overlay_description_, nullptr, &overlay_storage_),
+                "ID3D11Device::CreateTexture2D(cursor compositor)");
+        }
         check_hresult(
-            device_->CreateTexture2D(&output_description, nullptr, &composited_),
-            "ID3D11Device::CreateTexture2D(cursor compositor)");
-        check_hresult(
-            device_->CreateRenderTargetView(composited_.Get(), nullptr, &render_target_),
+            device_->CreateRenderTargetView(texture(), nullptr, &render_target_),
             "ID3D11Device::CreateRenderTargetView(cursor compositor)");
 
         D3D11_TEXTURE2D_DESC pointer_description{};
@@ -903,10 +1054,13 @@ public:
             device_->CreateBlendState(&blend_description, &blend_state_),
             "ID3D11Device::CreateBlendState(cursor compositor)");
         std::cout << "Cursor overlay scale=" << cursor_scale_ << "x\n";
+        std::cout << "Cursor size setting=" << cursor_size_scale_ * 100.0F << "%\n";
     }
 
     void compose(ID3D11Texture2D* desktop, const DesktopPointer& pointer) {
-        context_->CopyResource(composited_.Get(), desktop);
+        if (!in_place_desktop_) {
+            context_->CopyResource(overlay_storage_.Get(), desktop);
+        }
         const UINT shape_height = rendered_height(pointer);
         if (!pointer.visible || !is_supported_shape(pointer) || pointer.bytes.empty() ||
             pointer.width == 0U || shape_height == 0U ||
@@ -948,30 +1102,36 @@ public:
             uploaded_shape_version_ = pointer.shape_version;
         }
 
-        const bool is_standard_arrow = pointer.system_cursor_shape &&
-            pointer.hotspot_x == 0U && pointer.hotspot_y == 0U;
-        const float effective_cursor_scale = cursor_scale_ *
-            (is_standard_arrow ? (21.0F / 18.0F) : 1.0F) *
-            pointer.render_scale_adjustment;
-        const float base_cursor_width =
-            static_cast<float>(pointer.width) * effective_cursor_scale;
-        const float cursor_width = base_cursor_width * pointer.render_width_adjustment;
-        const float cursor_height = static_cast<float>(shape_height) * effective_cursor_scale;
-        const float system_cursor_hotspot_adjustment = pointer.system_cursor_shape
-            // The virtual desktop reports physical cursor coordinates while
-            // WireView enlarges the cursor image for the tablet. One native
-            // hotspot unit is the calibrated midpoint between no adjustment
-            // (right/down) and full scaled adjustment (left/up).
-            ? 1.0F
-            : 0.0F;
+        const float cursor_width = static_cast<float>(pointer.width) * cursor_scale_;
+        const float cursor_height = static_cast<float>(shape_height) * cursor_scale_;
+        // System coordinates identify the hotspot; DXGI already supplies the
+        // image's top-left. User resizing keeps that same hotspot fixed.
+        const float system_cursor_hotspot_adjustment = pointer.system_cursor_shape ? cursor_scale_ : 0.0F;
         const float cursor_x = static_cast<float>(pointer.x) -
-            static_cast<float>(pointer.hotspot_x) * system_cursor_hotspot_adjustment -
-            (cursor_width - base_cursor_width) * 0.5F;
+            static_cast<float>(pointer.hotspot_x) * system_cursor_hotspot_adjustment;
         const float cursor_y = static_cast<float>(pointer.y) -
             static_cast<float>(pointer.hotspot_y) * system_cursor_hotspot_adjustment;
-        if (cursor_x >= static_cast<float>(width_) || cursor_y >= static_cast<float>(height_) ||
-            cursor_x + cursor_width <= 0.0F || cursor_y + cursor_height <= 0.0F) {
+        const auto rect = resize_cursor({cursor_x, cursor_y, cursor_width, cursor_height},
+            static_cast<float>(pointer.hotspot_x) / static_cast<float>(pointer.width),
+            static_cast<float>(pointer.hotspot_y) / static_cast<float>(shape_height), cursor_size_scale_);
+        if (rect.x >= static_cast<float>(width_) || rect.y >= static_cast<float>(height_) ||
+            rect.x + rect.width <= 0.0F || rect.y + rect.height <= 0.0F) {
             return;
+        }
+
+        if (in_place_desktop_) {
+            const D3D11_BOX region{
+                static_cast<UINT>(std::max(0.0F, std::floor(rect.x))),
+                static_cast<UINT>(std::max(0.0F, std::floor(rect.y))),
+                0U,
+                static_cast<UINT>(std::min(static_cast<float>(width_), std::ceil(rect.x + rect.width))),
+                static_cast<UINT>(std::min(static_cast<float>(height_), std::ceil(rect.y + rect.height))),
+                1U,
+            };
+            ensure_cursor_background(region.right - region.left, region.bottom - region.top);
+            context_->CopySubresourceRegion(overlay_storage_.Get(), 0, 0, 0, 0,
+                                           in_place_desktop_, 0, &region);
+            saved_region_ = region;
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -979,12 +1139,14 @@ public:
             context_->Map(constant_buffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped),
             "ID3D11DeviceContext::Map(cursor constants)");
         *static_cast<CursorConstants*>(mapped.pData) = CursorConstants{
-            .x = cursor_x,
-            .y = cursor_y,
-            .width = cursor_width,
-            .height = cursor_height,
+            .x = rect.x,
+            .y = rect.y,
+            .width = rect.width,
+            .height = rect.height,
             .output_width = static_cast<float>(width_),
             .output_height = static_cast<float>(height_),
+            .texture_width = static_cast<float>(pointer.width) / kMaximumPointerDimension,
+            .texture_height = static_cast<float>(shape_height) / kMaximumPointerDimension,
         };
         context_->Unmap(constant_buffer_.Get(), 0);
 
@@ -1017,10 +1179,33 @@ public:
     }
 
     [[nodiscard]] ID3D11Texture2D* texture() const noexcept {
-        return composited_.Get();
+        return in_place_desktop_ ? in_place_desktop_ : overlay_storage_.Get();
+    }
+
+    void restore_desktop() {
+        if (!saved_region_) {
+            return;
+        }
+        const auto& region = *saved_region_;
+        const D3D11_BOX saved{0U, 0U, 0U, region.right - region.left, region.bottom - region.top, 1U};
+        context_->CopySubresourceRegion(in_place_desktop_, 0, region.left, region.top, 0,
+                                       overlay_storage_.Get(), 0, &saved);
+        saved_region_.reset();
     }
 
 private:
+    void ensure_cursor_background(UINT width, UINT height) {
+        if (width <= overlay_description_.Width && height <= overlay_description_.Height) {
+            return;
+        }
+        // Grow in buckets so moving along an edge does not reallocate each frame.
+        overlay_description_.Width = std::max(overlay_description_.Width, std::min(width_, std::bit_ceil(width)));
+        overlay_description_.Height = std::max(overlay_description_.Height, std::min(height_, std::bit_ceil(height)));
+        check_hresult(
+            device_->CreateTexture2D(&overlay_description_, nullptr, overlay_storage_.ReleaseAndGetAddressOf()),
+            "ID3D11Device::CreateTexture2D(cursor background)");
+    }
+
     struct CursorConstants {
         float x;
         float y;
@@ -1028,8 +1213,8 @@ private:
         float height;
         float output_width;
         float output_height;
-        float padding_x{};
-        float padding_y{};
+        float texture_width;
+        float texture_height;
     };
 
     [[nodiscard]] static ComPtr<ID3DBlob> compile_shader(
@@ -1147,13 +1332,14 @@ cbuffer CursorConstants : register(b0) {
     float2 origin;
     float2 extent;
     float2 outputSize;
+    float2 textureExtent;
 };
 struct VertexOutput { float4 position : SV_POSITION; float2 uv : TEXCOORD0; };
 VertexOutput main(uint vertexId : SV_VertexID) {
     const float2 uv[4] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
     VertexOutput output;
-    output.uv = uv[vertexId];
-    float2 pixel = origin + output.uv * extent;
+    output.uv = uv[vertexId] * textureExtent;
+    float2 pixel = origin + uv[vertexId] * extent;
     output.position = float4(
         (pixel.x / outputSize.x) * 2.0 - 1.0,
         1.0 - (pixel.y / outputSize.y) * 2.0,
@@ -1172,7 +1358,10 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
-    ComPtr<ID3D11Texture2D> composited_;
+    ComPtr<ID3D11Texture2D> overlay_storage_;
+    D3D11_TEXTURE2D_DESC overlay_description_{};
+    ID3D11Texture2D* in_place_desktop_{};
+    std::optional<D3D11_BOX> saved_region_;
     ComPtr<ID3D11RenderTargetView> render_target_;
     ComPtr<ID3D11Texture2D> pointer_texture_;
     ComPtr<ID3D11ShaderResourceView> pointer_view_;
@@ -1184,6 +1373,7 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     UINT width_{};
     UINT height_{};
     float cursor_scale_{1.0F};
+    float cursor_size_scale_{1.0F};
     std::array<std::uint8_t,
                static_cast<std::size_t>(kMaximumPointerDimension) *
                    kMaximumPointerDimension * 4U> transparent_pointer_pixels_{};
@@ -1192,11 +1382,17 @@ float4 main(float4 position : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
     std::uint64_t uploaded_shape_version_{std::numeric_limits<std::uint64_t>::max()};
 };
 
+class EncoderFailure final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 class GpuNv12Converter {
 public:
     struct ConvertedFrame {
         ID3D11Texture2D* texture{};
         std::size_t slot{};
+        amf::AMFSurfaceObserver* release_observer{};
     };
 
     GpuNv12Converter(
@@ -1330,14 +1526,13 @@ public:
     [[nodiscard]] ConvertedFrame convert() {
         std::size_t slot_index = kOutputSlotCount;
         for (std::size_t index = 0; index < kOutputSlotCount; ++index) {
-            if (!output_slots_[index].in_use) {
+            if (!output_slots_[index].in_use.exchange(true)) {
                 slot_index = index;
-                output_slots_[index].in_use = true;
                 break;
             }
         }
         if (slot_index == kOutputSlotCount) {
-            throw std::runtime_error("GPU NV12 output surface pool is exhausted");
+            throw EncoderFailure("H.264 encoder retained every GPU NV12 input surface without output");
         }
 
         D3D11_VIDEO_PROCESSOR_STREAM stream{};
@@ -1353,21 +1548,23 @@ public:
         return {
             .texture = output_slots_[slot_index].texture.Get(),
             .slot = slot_index,
+            .release_observer = &output_slots_[slot_index],
         };
     }
 
     void release_slot(std::size_t slot_index) {
-        if (slot_index >= kOutputSlotCount || !output_slots_[slot_index].in_use) {
+        if (slot_index >= kOutputSlotCount || !output_slots_[slot_index].in_use.load()) {
             throw std::runtime_error("GPU NV12 output surface pool release is invalid");
         }
-        output_slots_[slot_index].in_use = false;
+        output_slots_[slot_index].in_use.store(false);
     }
 
 private:
     void report_first_luma(ID3D11Texture2D* texture) {
-        if (diagnostic_luma_reported_) {
+        if (!diagnostic_staging_texture_) {
             return;
         }
+        const auto readback_started = Clock::now();
         context_->CopyResource(diagnostic_staging_texture_.Get(), texture);
         D3D11_MAPPED_SUBRESOURCE mapped{};
         check_hresult(
@@ -1387,16 +1584,21 @@ private:
             }
         }
         context_->Unmap(diagnostic_staging_texture_.Get(), 0);
-        diagnostic_luma_reported_ = true;
+        diagnostic_staging_texture_.Reset();
         std::cout << "Video diagnostic: first NV12 luma average="
                   << (samples == 0U ? 0U : luma_sum / samples)
-                  << " (16 is video black, 235 is video white)\n";
+                  << " (16 is video black, 235 is video white)"
+                  << " | readbackMs=" << std::chrono::duration<double, std::milli>(
+                      Clock::now() - readback_started).count() << '\n';
     }
 
-    struct OutputSlot {
+    struct OutputSlot final : amf::AMFSurfaceObserver {
         ComPtr<ID3D11Texture2D> texture;
         ComPtr<ID3D11VideoProcessorOutputView> view;
-        bool in_use{false};
+        std::atomic<bool> in_use{false};
+        void AMF_STD_CALL OnSurfaceDataRelease(amf::AMFSurface*) override {
+            in_use.store(false);
+        }
     };
 
     // Low-delay AVC with no B-frames needs only a small number of frames in
@@ -1415,7 +1617,6 @@ private:
     std::array<OutputSlot, kOutputSlotCount> output_slots_{};
     UINT output_width_{};
     UINT output_height_{};
-    bool diagnostic_luma_reported_{false};
 };
 
 [[nodiscard]] std::string activation_name(IMFActivate* activation) {
@@ -1547,6 +1748,170 @@ bool set_codec_uint32(
     return type;
 }
 
+struct AvcEncodedFrame {
+    LONGLONG timestamp{-1};
+    std::vector<std::uint8_t> bytes;
+    bool keyframe{false};
+    bool annex_b{false};
+};
+
+class AmfAvcEncoder {
+public:
+    AmfAvcEncoder(ID3D11Device* device, UINT32 width, UINT32 height, UINT32 frame_rate)
+        : gop_length_(frame_rate) {
+        check(runtime_.factory->CreateContext(&context_), "CreateContext");
+        check(context_->InitDX11(device), "InitDX11");
+        check(runtime_.factory->CreateComponent(context_, AMFVideoEncoderVCE_AVC, &encoder_), "CreateComponent(H.264)");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_USAGE,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY)), "ultra-low-latency usage");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_FRAMESIZE, AMFConstructSize(width, height)), "frame size");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, AMFConstructRate(frame_rate, 1)), "frame rate");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_PROFILE,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_PROFILE_HIGH)), "High profile");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_QUALITY_PRESET,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED)), "speed preset");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR)), "CBR");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE,
+            static_cast<amf_int64>(kBitRate) * frame_rate / 60), "target bitrate");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_B_PIC_PATTERN, static_cast<amf_int64>(0)), "no B frames");
+        // Match the existing MF low-delay stream instead of AMF's four-frame DPB.
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_MAX_NUM_REFRAMES, static_cast<amf_int64>(1)), "one reference frame");
+        check(encoder_->Init(amf::AMF_SURFACE_NV12, static_cast<amf_int32>(width),
+            static_cast<amf_int32>(height)), "Init(NV12)");
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_QUERY_TIMEOUT, static_cast<amf_int64>(0)), "query timeout");
+        std::cout << "AMD AMF H.264: GPU NV12 | preset=speed | referenceFrames=1 | maximumInFlight=2\n";
+    }
+
+    ~AmfAvcEncoder() {
+        if (encoder_) { encoder_->Terminate(); }
+        if (context_) { context_->Terminate(); }
+    }
+
+    void submit(ID3D11Texture2D* texture, LONGLONG timestamp, LONGLONG duration,
+        amf::AMFSurfaceObserver* release_observer) {
+        amf::AMFSurfacePtr surface;
+        auto release = std::make_unique<InputRelease>(inputs_, release_observer);
+        check(context_->CreateSurfaceFromDX11Native(texture, &surface, release.get()), "wrap NV12 texture");
+        ++inputs_.in_use;
+        release.release(); // AMF owns the notification until this surface is released.
+        surface->SetPts(timestamp);
+        surface->SetDuration(duration);
+        // The driver accepted IDRPeriod but produced no periodic IDRs in a
+        // 130-frame regression. Request recovery pictures on the input itself.
+        const bool idr = force_idr_ || frames_since_idr_ >= gop_length_;
+        if (idr) {
+            check(surface->SetProperty(AMF_VIDEO_ENCODER_FORCE_PICTURE_TYPE,
+                static_cast<amf_int64>(AMF_VIDEO_ENCODER_PICTURE_TYPE_IDR)), "force IDR");
+            check(surface->SetProperty(AMF_VIDEO_ENCODER_INSERT_SPS, true), "insert SPS");
+            check(surface->SetProperty(AMF_VIDEO_ENCODER_INSERT_PPS, true), "insert PPS");
+        }
+        check(encoder_->SubmitInput(surface), "SubmitInput");
+        frames_since_idr_ = idr ? 1U : frames_since_idr_ + 1U;
+        force_idr_ = false;
+        ++in_flight_;
+    }
+
+    void force_keyframe() noexcept { force_idr_ = true; }
+
+    MediaEventType next_event() {
+        if (!ready_ && !complete_) { poll_output(); }
+        if (ready_) { return METransformHaveOutput; }
+        if (complete_) { return METransformDrainComplete; }
+        if (!draining_ && in_flight_ < 2U && inputs_.in_use.load() < 2U) { return METransformNeedInput; }
+        return MEUnknown;
+    }
+
+    void wait_for_event(DWORD timeout_millis) {
+        if (ready_ || complete_) { return; }
+        if (in_flight_ == 0U && !draining_) {
+            WaitForSingleObject(inputs_.released, timeout_millis);
+            return;
+        }
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_QUERY_TIMEOUT,
+            static_cast<amf_int64>(timeout_millis)), "blocking query timeout");
+        poll_output();
+        check(encoder_->SetProperty(AMF_VIDEO_ENCODER_QUERY_TIMEOUT, static_cast<amf_int64>(0)), "nonblocking query timeout");
+    }
+
+    AvcEncodedFrame take_output() {
+        AvcEncodedFrame output;
+        output.timestamp = ready_->GetPts();
+        amf_int64 type{};
+        check(ready_->GetProperty(AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE, &type), "output picture type");
+        output.keyframe = type == AMF_VIDEO_ENCODER_OUTPUT_DATA_TYPE_IDR;
+        amf::AMFBufferPtr buffer(ready_);
+        const auto* data = static_cast<const std::uint8_t*>(buffer->GetNative());
+        const auto size = buffer->GetSize();
+        output.annex_b = size >= 4U && data[0] == 0U && data[1] == 0U &&
+            (data[2] == 1U || (data[2] == 0U && data[3] == 1U));
+        output.bytes.assign(data, data + size);
+        ready_.Release();
+        --in_flight_;
+        return output;
+    }
+
+    void drain() {
+        check(encoder_->Drain(), "Drain");
+        draining_ = true;
+    }
+
+private:
+    static void check(AMF_RESULT result, const char* operation) {
+        if (result != AMF_OK) {
+            throw EncoderFailure(std::string("AMD AMF ") + operation + " failed: " + std::to_string(result));
+        }
+    }
+    void poll_output() {
+        const auto result = encoder_->QueryOutput(&ready_);
+        if (result == AMF_EOF) { complete_ = true; }
+        else if (result != AMF_REPEAT) { check(result, "QueryOutput"); }
+    }
+    struct Runtime {
+        HMODULE library{};
+        amf::AMFFactory* factory{};
+        Runtime() {
+            library = LoadLibraryExW(AMF_DLL_NAME, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (!library) { throw EncoderFailure("AMD AMF runtime unavailable: " + std::to_string(GetLastError())); }
+            const auto init = reinterpret_cast<AMFInit_Fn>(GetProcAddress(library, AMF_INIT_FUNCTION_NAME));
+            const auto result = init ? init(AMF_FULL_VERSION, &factory) : AMF_NOT_FOUND;
+            if (result != AMF_OK) {
+                FreeLibrary(library);
+                check(result, "AMFInit");
+            }
+        }
+        ~Runtime() { FreeLibrary(library); }
+    } runtime_;
+    struct InputLifetimes {
+        std::atomic<unsigned> in_use{};
+        HANDLE released{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
+        InputLifetimes() {
+            if (!released) { throw EncoderFailure("CreateEvent(AMD input release) failed"); }
+        }
+        ~InputLifetimes() { CloseHandle(released); }
+    } inputs_;
+    struct InputRelease final : amf::AMFSurfaceObserver {
+        InputLifetimes& inputs;
+        amf::AMFSurfaceObserver* destination;
+        InputRelease(InputLifetimes& state, amf::AMFSurfaceObserver* observer) : inputs(state), destination(observer) {}
+        void AMF_STD_CALL OnSurfaceDataRelease(amf::AMFSurface* surface) override {
+            if (destination) { destination->OnSurfaceDataRelease(surface); }
+            --inputs.in_use;
+            SetEvent(inputs.released);
+            delete this;
+        }
+    };
+    amf::AMFContextPtr context_;
+    amf::AMFComponentPtr encoder_;
+    amf::AMFDataPtr ready_;
+    unsigned in_flight_{};
+    UINT32 gop_length_{};
+    UINT32 frames_since_idr_{};
+    bool force_idr_{true};
+    bool draining_{};
+    bool complete_{};
+};
+
 class HardwareAvcEncoder {
 public:
     HardwareAvcEncoder(
@@ -1554,12 +1919,20 @@ public:
         ID3D11Device* device,
         UINT32 width,
         UINT32 height,
-        UINT32 frame_rate)
+        UINT32 frame_rate,
+        bool use_amf = false)
         : activation_(activation),
           width_(width),
           height_(height),
           frame_rate_(frame_rate),
           bit_rate_(kBitRate * frame_rate / 60U) {
+        if (use_amf) {
+            amf_ = std::make_unique<AmfAvcEncoder>(device, width, height, frame_rate);
+            asynchronous_ = true;
+            direct3d_aware_ = true;
+            low_latency_enabled_ = true;
+            return;
+        }
         check_hresult(
             activation_->ActivateObject(IID_PPV_ARGS(&transform_)),
             "IMFActivate::ActivateObject(H.264 encoder)");
@@ -1651,6 +2024,7 @@ public:
     }
 
     void start() {
+        if (amf_) { return; }
         check_hresult(
             transform_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0),
             "MFT_MESSAGE_NOTIFY_BEGIN_STREAMING");
@@ -1660,7 +2034,12 @@ public:
         started_ = true;
     }
 
-    void submit(ID3D11Texture2D* texture, LONGLONG timestamp, LONGLONG duration) {
+    void submit(ID3D11Texture2D* texture, LONGLONG timestamp, LONGLONG duration,
+        amf::AMFSurfaceObserver* release_observer) {
+        if (amf_) {
+            amf_->submit(texture, timestamp, duration, release_observer);
+            return;
+        }
         ComPtr<IMFMediaBuffer> buffer;
         check_hresult(
             MFCreateDXGISurfaceBuffer(
@@ -1682,6 +2061,7 @@ public:
     }
 
     void force_keyframe() {
+        if (amf_) { amf_->force_keyframe(); return; }
         // A decoder that discarded any inter frame must not continue from its
         // old reference picture. Request an IDR on the encoder thread before
         // submitting the next source frame, then let the receiver resume only
@@ -1692,7 +2072,16 @@ public:
         }
     }
 
+    void wait_for_event(DWORD timeout_millis) {
+        if (amf_) {
+            amf_->wait_for_event(timeout_millis);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
     [[nodiscard]] MediaEventType next_event() {
+        if (amf_) { return amf_->next_event(); }
         ComPtr<IMFMediaEvent> event;
         const HRESULT result = events_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
         if (result == MF_E_NO_EVENTS_AVAILABLE) {
@@ -1707,14 +2096,10 @@ public:
         return type;
     }
 
-    struct Output {
-        LONGLONG timestamp{-1};
-        std::vector<std::uint8_t> bytes;
-        bool keyframe{false};
-        bool annex_b{false};
-    };
+    using Output = AvcEncodedFrame;
 
     [[nodiscard]] Output take_output() {
+        if (amf_) { return amf_->take_output(); }
         for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
             ComPtr<IMFSample> allocated_sample;
             const bool transform_provides_sample =
@@ -1795,6 +2180,7 @@ public:
     }
 
     void drain() {
+        if (amf_) { amf_->drain(); return; }
         if (!started_ || draining_) {
             return;
         }
@@ -1837,6 +2223,7 @@ private:
         log_h264_media_type("Encoder renegotiated output type", output_type.Get());
     }
 
+    std::unique_ptr<AmfAvcEncoder> amf_;
     ComPtr<IMFActivate> activation_;
     ComPtr<IMFTransform> transform_;
     ComPtr<ICodecAPI> codec_api_;
@@ -1863,7 +2250,8 @@ int run_desktop_encode_session(
     std::uint16_t requested_output_width,
     std::uint16_t requested_output_height,
     std::uint16_t frame_rate,
-    std::string_view capture_display_device) {
+    std::string_view capture_display_device,
+    float cursor_size_scale) {
     if (duration <= std::chrono::seconds::zero()) {
         throw std::invalid_argument("encode duration must be positive");
     }
@@ -1873,14 +2261,21 @@ int run_desktop_encode_session(
 
     ComApartment apartment;
     MediaFoundationSession media_foundation;
+    const auto startup_begin = Clock::now();
+    const auto log_startup = [&](const char* stage) {
+        std::cout << "Host startup: stage=" << stage << " | elapsedMs="
+            << std::chrono::duration<double, std::milli>(Clock::now() - startup_begin).count() << '\n';
+    };
     auto target = std::make_unique<CaptureTarget>(find_capture_target(capture_display_device));
+    const bool use_amf = frame_rate == 120U && target->adapter_description.VendorId == 0x1002U;
     auto d3d = std::make_unique<D3DDevice>(create_video_device(target->adapter.Get()));
     auto frames = std::make_unique<DesktopFrameSource>(
         target->output.Get(),
         d3d->device.Get(),
         d3d->context.Get(),
         target->output_description.DesktopCoordinates,
-        !target->primary);
+        !target->primary,
+        use_amf);
     if (!frames->refresh(1'000)) {
         throw std::runtime_error("desktop duplication did not produce an initial frame");
     }
@@ -1888,23 +2283,41 @@ int run_desktop_encode_session(
         throw std::invalid_argument(
             "desktop encoder output dimensions must be both set or both zero");
     }
-    const UINT output_width = requested_output_width == 0U
-        ? frames->width()
-        : requested_output_width;
-    const UINT output_height = requested_output_height == 0U
-        ? frames->height()
-        : requested_output_height;
-    if ((output_width % 2U) != 0U || (output_height % 2U) != 0U) {
-        throw std::invalid_argument("desktop encoder output dimensions must be even for H.264 NV12");
-    }
+    const bool follows_windows = follows_windows_display(capture_display_device);
+    const auto output_dimensions = [&](const DesktopFrameSource& source) {
+        UINT width = requested_output_width == 0U ? source.width() : requested_output_width;
+        UINT height = requested_output_height == 0U ? source.height() : requested_output_height;
+        if ((width % 2U) != 0U || (height % 2U) != 0U) {
+            throw std::invalid_argument("desktop encoder output dimensions must be even for H.264 NV12");
+        }
+        if (width > std::numeric_limits<std::uint16_t>::max() ||
+            height > std::numeric_limits<std::uint16_t>::max()) {
+            throw std::runtime_error("desktop dimensions exceed the WireView protocol limit");
+        }
+        if (follows_windows && requested_output_width != 0U) {
+            // Keep the receiver's selected size as a limit, and let Android
+            // fit the resulting frame without stretching the desktop.
+            const auto scaled_width = static_cast<std::uint64_t>(source.width()) * height;
+            const auto scaled_height = static_cast<std::uint64_t>(source.height()) * width;
+            if (scaled_width > scaled_height) {
+                height = std::max(2U, static_cast<UINT>(scaled_height / source.width()) & ~1U);
+            } else {
+                width = std::max(2U, static_cast<UINT>(scaled_width / source.height()) & ~1U);
+            }
+        }
+        return std::pair(width, height);
+    };
+    const auto [output_width, output_height] = output_dimensions(*frames);
+    log_startup("capture-ready");
     auto cursor_compositor = std::make_unique<CursorCompositor>(
         d3d->device.Get(),
         d3d->context.Get(),
         frames->width(),
         frames->height(),
         frames->format(),
-        monitor_cursor_scale(target->output_description.Monitor) *
-            kCursorHardwareScaleCompensation);
+        1.0F, cursor_size_scale,
+        use_amf ? frames->texture() : nullptr);
+    log_startup("cursor-ready");
     auto converter = std::make_unique<GpuNv12Converter>(
         d3d->device.Get(),
         d3d->context.Get(),
@@ -1915,17 +2328,20 @@ int run_desktop_encode_session(
         output_height,
         frames->format(),
         frame_rate);
+    log_startup("converter-ready");
     const UINT capture_width = frames->width();
     const UINT capture_height = frames->height();
     const DXGI_FORMAT capture_format = frames->format();
     const LUID capture_adapter_luid = target->adapter_description.AdapterLuid;
 
-    ComPtr<IMFActivate> activation = find_hardware_encoder(
-        target->adapter_description.AdapterLuid);
+    ComPtr<IMFActivate> activation;
+    if (!use_amf) {
+        activation = find_hardware_encoder(target->adapter_description.AdapterLuid);
+    }
     const RECT& desktop_bounds = target->output_description.DesktopCoordinates;
     std::cout << "Encoding " << utf8(target->output_description.DeviceName)
               << " at " << output_width << 'x' << output_height << '@'
-              << frame_rate << " with " << activation_name(activation.Get()) << '\n'
+              << frame_rate << " with " << (use_amf ? "AMD AMF H.264" : activation_name(activation.Get())) << '\n'
               << "Capture target: rect=" << desktop_bounds.left << ',' << desktop_bounds.top
               << '-' << desktop_bounds.right << ',' << desktop_bounds.bottom
               << " | primary=" << (target->primary ? "yes" : "no") << '\n'
@@ -1939,16 +2355,13 @@ int run_desktop_encode_session(
                   ? "DXGI desktop duplication"
                   : "DXGI with Windows system-cursor fallback") << '\n';
     auto encoder = std::make_unique<HardwareAvcEncoder>(
-        activation.Get(), d3d->device.Get(), output_width, output_height, frame_rate);
+        activation.Get(), d3d->device.Get(), output_width, output_height, frame_rate, use_amf);
     std::cout << "Encoder path: asynchronous=yes | d3d11Aware="
               << (encoder->direct3d_aware() ? "yes" : "no")
               << " | lowLatencySet="
               << (encoder->low_latency_enabled() ? "yes" : "no") << '\n';
 
-    if (output_width > std::numeric_limits<std::uint16_t>::max() ||
-        output_height > std::numeric_limits<std::uint16_t>::max()) {
-        throw std::runtime_error("desktop dimensions exceed the WireView protocol limit");
-    }
+    log_startup("encoder-ready");
     if (callbacks.on_started) {
         callbacks.on_started(
             static_cast<std::uint16_t>(output_width),
@@ -1960,6 +2373,7 @@ int run_desktop_encode_session(
     struct SubmittedFrame {
         Clock::time_point submitted_at;
         std::size_t converter_slot;
+        DesktopFrameTiming timing;
     };
     std::unordered_map<LONGLONG, SubmittedFrame> submitted_at;
     std::uint64_t submitted = 0;
@@ -1975,20 +2389,53 @@ int run_desktop_encode_session(
     const auto stream_timestamp_base = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(
             started.time_since_epoch()).count());
-    const auto deadline = started + duration;
+    auto deadline = started + duration;
     auto drain_deadline = deadline + std::chrono::seconds(5);
     bool draining = false;
     bool drained = false;
     std::uint64_t desktop_updates_before_reset = 0;
     encoder->start();
+    const auto micros = [](Clock::time_point now) {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+    };
+    std::uint64_t empty_polls = 0;
+    std::uint64_t poll_wait_us = 0;
+    std::uint64_t pace_wait_us = 0;
 
+    std::optional<FramePacer> amf_pacer;
+    if (use_amf) { amf_pacer.emplace(); }
+    auto next_capture_poll = Clock::time_point{};
+    bool prefetched_fresh = false;
+    std::unique_ptr<void, decltype(&UnmapViewOfFile)> probe_phase(nullptr, &UnmapViewOfFile);
+    const bool preview = GetEnvironmentVariableW(L"WIREVIEW_PHASE_PREVIEW", nullptr, 0) != 0U;
+    LONG preview_generation{};
+    const bool pending_probe = true;
+    std::uint64_t last_selected_desktop{};
+    wchar_t mapping_name[96]{};
+    if (use_amf && GetEnvironmentVariableW(L"WIREVIEW_PHASE_PROBE", mapping_name,
+            static_cast<DWORD>(std::size(mapping_name))) != 0U) {
+        const HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name);
+        if (!mapping) { throw std::runtime_error("phase probe OpenFileMappingW failed"); }
+        probe_phase.reset(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, (preview ? 2U : 1U) * sizeof(LONG)));
+        CloseHandle(mapping);
+        if (!probe_phase) { throw std::runtime_error("phase probe MapViewOfFile failed"); }
+    }
+    std::int64_t probe_shift_us{};
+    std::uint64_t probe_frame = std::numeric_limits<std::uint64_t>::max();
     while (!drained) {
+        if (pending_probe && probe_phase && *static_cast<const volatile LONG*>(probe_phase.get()) == 2) {
+            deadline = std::min(deadline, Clock::now());
+        }
         const MediaEventType event = encoder->next_event();
         if (event == MEUnknown) {
             if (draining && Clock::now() > drain_deadline) {
                 throw std::runtime_error("hardware encoder drain timed out");
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const auto poll_started = micros(Clock::now());
+            encoder->wait_for_event(50U);
+            poll_wait_us += micros(Clock::now()) - poll_started;
+            ++empty_polls;
             continue;
         }
 
@@ -2003,13 +2450,60 @@ int run_desktop_encode_session(
                 continue;
             }
 
+            if (probe_phase && !pending_probe && probe_frame != submitted) {
+                probe_frame = submitted;
+                const auto* values = static_cast<const volatile LONG*>(probe_phase.get());
+                const LONG phase_target = values[0];
+                if (preview && values[1] != preview_generation) {
+                    preview_generation = values[1];
+                    frames->dump_desktop_preview(preview_generation, micros(started));
+                }
+                probe_shift_us += std::clamp(static_cast<std::int64_t>(phase_target) - probe_shift_us,
+                    std::int64_t{-200}, std::int64_t{200});
+            }
             const auto scheduled = started +
                 std::chrono::nanoseconds(
-                    (submitted * 1'000'000'000ULL) / frame_rate);
-            std::this_thread::sleep_until(scheduled);
+                    (submitted * 1'000'000'000ULL) / frame_rate) +
+                std::chrono::microseconds(probe_shift_us);
+            DesktopFrameTiming timing;
+            const bool keep_pending = pending_probe &&
+                (!probe_phase || *static_cast<const volatile LONG*>(probe_phase.get()) != 0) &&
+                frames->desktop_update_id() != last_selected_desktop;
             try {
-                (void)frames->refresh(0);
+                if (use_amf) {
+                    const auto now = Clock::now();
+                    const auto until = std::min(scheduled, deadline);
+                    if (now < until) {
+                        // Query encoder output first on each loop. While input
+                        // is not due, keep only the latest available desktop;
+                        // never wait for a desktop update or queue older copies.
+                        if (now >= next_capture_poll && !keep_pending) {
+                            if (frames->refresh(0U, true)) { prefetched_fresh = true; }
+                            next_capture_poll = Clock::now() + std::chrono::milliseconds(1);
+                        }
+                        const auto wait_started = Clock::now();
+                        if (submitted > encoded && until - wait_started >= std::chrono::microseconds(1500)) {
+                            encoder->wait_for_event(1U);
+                        } else {
+                            amf_pacer->wait_until(std::min(until, wait_started + std::chrono::microseconds(500)));
+                        }
+                        pace_wait_us += micros(Clock::now()) - micros(wait_started);
+                        continue;
+                    }
+                }
+                const auto pace_started = micros(Clock::now());
+                std::this_thread::sleep_until(scheduled);
+                timing.capture_begin_us = micros(Clock::now());
+                pace_wait_us += timing.capture_begin_us - pace_started;
+                const bool fresh_at_submit = keep_pending ? false : frames->refresh(0U);
+                timing.fresh_capture = fresh_at_submit || prefetched_fresh;
+                prefetched_fresh = false;
+                timing.capture_end_us = micros(Clock::now());
+                frames->record_desktop_timing(timing);
             } catch (const DesktopDuplicationLost& error) {
+                prefetched_fresh = false;
+                next_capture_poll = Clock::time_point{};
+                if (callbacks.on_capture_area_changed) { callbacks.on_capture_area_changed({}); }
                 std::cout << "Desktop capture paused for the Windows secure desktop; "
                              "keeping the Android connection alive: " << error.what() << '\n';
                 // A secure-desktop switch can invalidate more than the
@@ -2019,6 +2513,7 @@ int run_desktop_encode_session(
                 // device. Tear down every device-bound stage, including the
                 // Media Foundation encoder, and rebuild the complete GPU
                 // pipeline on a fresh D3D11 device.
+                last_selected_desktop = 0;
                 desktop_updates_before_reset += frames->updates();
                 submitted_at.clear();
                 encoder.reset();
@@ -2036,12 +2531,8 @@ int run_desktop_encode_session(
                                 capture_adapter_luid.LowPart ||
                             refreshed_target->adapter_description.AdapterLuid.HighPart !=
                                 capture_adapter_luid.HighPart ||
-                            refreshed_target->output_description.DesktopCoordinates.right -
-                                    refreshed_target->output_description.DesktopCoordinates.left !=
-                                static_cast<LONG>(capture_width) ||
-                            refreshed_target->output_description.DesktopCoordinates.bottom -
-                                    refreshed_target->output_description.DesktopCoordinates.top !=
-                                static_cast<LONG>(capture_height)) {
+                            (!follows_windows && (capture_area(*refreshed_target).width != capture_width ||
+                                capture_area(*refreshed_target).height != capture_height))) {
                             throw std::runtime_error(
                                 "capture display changed while Windows secure desktop was active");
                         }
@@ -2052,7 +2543,8 @@ int run_desktop_encode_session(
                             refreshed_d3d->device.Get(),
                             refreshed_d3d->context.Get(),
                             refreshed_target->output_description.DesktopCoordinates,
-                            !refreshed_target->primary);
+                            !refreshed_target->primary,
+                            use_amf);
                         if (replacement->format() != capture_format) {
                             throw std::runtime_error(
                                 "capture display format changed while Windows secure desktop was active");
@@ -2061,29 +2553,33 @@ int run_desktop_encode_session(
                             std::this_thread::sleep_for(std::chrono::milliseconds(100));
                             continue;
                         }
+                        const auto [replacement_width, replacement_height] = output_dimensions(*replacement);
                         auto replacement_cursor = std::make_unique<CursorCompositor>(
                             refreshed_d3d->device.Get(),
                             refreshed_d3d->context.Get(),
                             replacement->width(),
                             replacement->height(),
                             replacement->format(),
-                            monitor_cursor_scale(refreshed_target->output_description.Monitor) *
-                                kCursorHardwareScaleCompensation);
+                            1.0F, cursor_size_scale,
+                            use_amf ? replacement->texture() : nullptr);
                         auto replacement_converter = std::make_unique<GpuNv12Converter>(
                             refreshed_d3d->device.Get(),
                             refreshed_d3d->context.Get(),
                             replacement_cursor->texture(),
                             replacement->width(),
                             replacement->height(),
-                            output_width,
-                            output_height,
+                            replacement_width,
+                            replacement_height,
                             replacement->format(),
                             frame_rate);
-                        ComPtr<IMFActivate> replacement_activation = find_hardware_encoder(
-                            refreshed_target->adapter_description.AdapterLuid);
+                        ComPtr<IMFActivate> replacement_activation;
+                        if (!use_amf) {
+                            replacement_activation = find_hardware_encoder(
+                                refreshed_target->adapter_description.AdapterLuid);
+                        }
                         auto replacement_encoder = std::make_unique<HardwareAvcEncoder>(
                             replacement_activation.Get(), refreshed_d3d->device.Get(),
-                            output_width, output_height, frame_rate);
+                            replacement_width, replacement_height, frame_rate, use_amf);
                         replacement_encoder->start();
 
                         target = std::move(refreshed_target);
@@ -2093,6 +2589,9 @@ int run_desktop_encode_session(
                         converter = std::move(replacement_converter);
                         activation = std::move(replacement_activation);
                         encoder = std::move(replacement_encoder);
+                        if (callbacks.on_capture_area_changed) {
+                            callbacks.on_capture_area_changed(capture_area(*target));
+                        }
                         const auto elapsed = Clock::now() - started;
                         const auto elapsed_ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
                         submitted = std::max(submitted, static_cast<std::uint64_t>(
@@ -2103,13 +2602,15 @@ int run_desktop_encode_session(
                         // be an IDR.
                         if (callbacks.on_started) {
                             callbacks.on_started(
-                                static_cast<std::uint16_t>(output_width),
-                                static_cast<std::uint16_t>(output_height),
+                                static_cast<std::uint16_t>(replacement_width),
+                                static_cast<std::uint16_t>(replacement_height),
                                 frame_rate);
                         }
                         resumed = true;
                         std::cout << "Desktop capture resumed after Windows secure desktop closed; "
-                                     "rebuilt D3D11 capture, conversion, encoder, and Android decoder pipelines\n";
+                                     "rebuilt D3D11 capture, conversion, encoder, and Android decoder pipelines\n"
+                                  << "Desktop capture resumed on " << utf8(target->output_description.DeviceName)
+                                  << " at " << frames->width() << 'x' << frames->height() << '\n';
                     } catch (const DesktopDuplicationLost&) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(150));
                     }
@@ -2125,21 +2626,42 @@ int run_desktop_encode_session(
                 // METransformNeedInput event.
                 continue;
             }
-            frames->refresh_system_cursor();
+            last_selected_desktop = timing.desktop_update_id;
+            const auto shape_update = frames->refresh_system_cursor();
+            if (callbacks.collect_prepare_timing) {
+                timing.cursor_ready_us = micros(Clock::now());
+                timing.system_cursor_shape_update = static_cast<std::uint32_t>(shape_update);
+            }
+            frames->finish_frame();
             cursor_compositor->compose(frames->texture(), frames->pointer());
+            if (callbacks.collect_prepare_timing) { timing.compose_ready_us = micros(Clock::now()); }
+            if (callbacks.on_cursor_sample && frames->pointer().visible) {
+                callbacks.on_cursor_sample(stream_timestamp_base +
+                    static_cast<std::uint64_t>((static_cast<LONGLONG>(submitted) * frame_duration) / 10),
+                    frames->pointer().x, frames->pointer().y);
+            }
+            if (callbacks.collect_prepare_timing) { timing.cursor_diagnostics_ready_us = micros(Clock::now()); }
             const GpuNv12Converter::ConvertedFrame nv12 = converter->convert();
+            if (callbacks.collect_prepare_timing) { timing.convert_ready_us = micros(Clock::now()); }
+            // Queue the restore after NV12 conversion reads the overlay. The
+            // next capture or repeat always starts with clean desktop pixels.
+            cursor_compositor->restore_desktop();
             const LONGLONG timestamp = static_cast<LONGLONG>(submitted) * frame_duration;
             if (callbacks.consume_keyframe_request && callbacks.consume_keyframe_request()) {
                 std::cout << "Android requested H.264 recovery keyframe; forcing next frame\n";
                 encoder->force_keyframe();
             }
+            const auto submit_started = Clock::now();
+            timing.submit_begin_us = micros(submit_started);
+            encoder->submit(nv12.texture, timestamp, frame_duration, nv12.release_observer);
+            timing.submit_end_us = micros(Clock::now());
             submitted_at.emplace(
                 timestamp,
                 SubmittedFrame{
-                    .submitted_at = Clock::now(),
+                    .submitted_at = submit_started,
                     .converter_slot = nv12.slot,
+                    .timing = timing,
                 });
-            encoder->submit(nv12.texture, timestamp, frame_duration);
             ++submitted;
             continue;
         }
@@ -2150,8 +2672,11 @@ int run_desktop_encode_session(
             total_bytes += output.bytes.size();
             keyframes += output.keyframe ? 1U : 0U;
             annex_b_outputs += output.annex_b ? 1U : 0U;
+            const auto output_at = Clock::now();
+            DesktopFrameTiming timing;
             const auto input = submitted_at.find(output.timestamp);
             if (input != submitted_at.end()) {
+                timing = input->second.timing;
                 const double latency_ms = std::chrono::duration<double, std::milli>(
                     Clock::now() - input->second.submitted_at).count();
                 total_latency_ms += latency_ms;
@@ -2159,15 +2684,22 @@ int run_desktop_encode_session(
                 if (encoded == 1U) {
                     first_frame_latency_ms = latency_ms;
                 }
-                converter->release_slot(input->second.converter_slot);
+                if (!use_amf) { converter->release_slot(input->second.converter_slot); }
                 submitted_at.erase(input);
             }
+            timing.output_us = micros(output_at);
+            timing.empty_polls = empty_polls;
+            timing.poll_wait_us = poll_wait_us;
+            timing.pace_wait_us = pace_wait_us;
+            empty_polls = 0;
+            poll_wait_us = 0;
+            pace_wait_us = 0;
             if (callbacks.on_frame) {
                 const std::uint64_t timestamp_micros = output.timestamp >= 0
                     ? stream_timestamp_base + static_cast<std::uint64_t>(output.timestamp / 10)
                     : stream_timestamp_base;
                 callbacks.on_frame(
-                    output.bytes, output.keyframe, timestamp_micros);
+                    output.bytes, output.keyframe, timestamp_micros, timing);
             }
             continue;
         }
@@ -2208,6 +2740,7 @@ int run_desktop_encode_session(
               << " ms | average=" << average_latency_ms
               << " ms | maximum=" << maximum_latency_ms << " ms\n"
               << "Bitstream framing: AnnexB=" << annex_b_outputs << '/' << encoded << '\n';
+    frames->dump_desktop_trace();
     return encoded > 0U && encoder->low_latency_enabled() ? 0 : 2;
 }
 
@@ -2234,17 +2767,7 @@ int run_desktop_display_list() {
 
 DesktopCaptureArea resolve_desktop_capture_area(std::string_view capture_display_device) {
     ComApartment apartment;
-    const CaptureTarget target = find_capture_target(capture_display_device);
-    const RECT& bounds = target.output_description.DesktopCoordinates;
-    if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) {
-        throw std::runtime_error("requested capture display has invalid desktop bounds");
-    }
-    return DesktopCaptureArea{
-        .left = bounds.left,
-        .top = bounds.top,
-        .width = static_cast<std::uint32_t>(bounds.right - bounds.left),
-        .height = static_cast<std::uint32_t>(bounds.bottom - bounds.top),
-    };
+    return capture_area(find_capture_target(capture_display_device));
 }
 
 }  // namespace wireview::host

@@ -95,6 +95,15 @@ if ($Transport -eq 'Adb' -and -not $adb) {
     throw 'adb.exe was not found. Install Android SDK Platform Tools or set ANDROID_HOME.'
 }
 
+function Assert-AdbDependencies {
+    foreach ($name in @('AdbWinApi.dll', 'AdbWinUsbApi.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $adb) $name) -PathType Leaf)) {
+            throw "ADB dependency missing: $name. Re-extract the COMPLETE official platform-tools folder; do not copy adb.exe alone. Selected ADB: $adb"
+        }
+    }
+}
+if ($Transport -eq 'Adb') { Assert-AdbDependencies }
+
 if (($StreamWidth -eq 0) -xor ($StreamHeight -eq 0)) {
     throw 'StreamWidth and StreamHeight must be set together, or both left at zero for the native desktop size.'
 }
@@ -128,8 +137,11 @@ function Assert-CaptureDisplayAttached {
 }
 
 function Get-AuthorizedSerial {
+    Assert-AdbDependencies
+    $deviceOutput = @(& $adb devices 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "ADB devices command failed (not an empty device list): $($deviceOutput -join ' ')" }
     $serials = @(
-        & $adb devices |
+        $deviceOutput |
             Select-Object -Skip 1 |
             Where-Object { $_ -match "\tdevice$" } |
             ForEach-Object { ($_ -split "\t")[0] }
@@ -171,12 +183,15 @@ while ([DateTime]::UtcNow -lt $deadline) {
         }
 
         $packagePath = (& $adb -s $serial shell pm path com.wireview.receiver).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'ADB shell package query failed; this does not prove that the APK is missing.' }
         if (-not $packagePath.StartsWith('package:')) {
             throw 'WireView is not installed on the connected device. Run the Android project from Android Studio once.'
         }
 
         & $adb -s $serial reverse tcp:39871 tcp:39871 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'ADB reverse failed; stopped instead of repeatedly relaunching.' }
         & $adb -s $serial shell am start -n 'com.wireview.receiver/.MainActivity' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'ADB Activity launch failed; open WireView on Android and retry.' }
         Start-Sleep -Milliseconds 800
     }
 
@@ -253,6 +268,10 @@ while ([DateTime]::UtcNow -lt $deadline) {
         break
     }
     if ($hostExitCode -ne 0 -and [DateTime]::UtcNow -lt $deadline) {
+        if ($hostErrors -match 'H\.264|IMFTransform|encoder|requires BGRA desktop frames') {
+            Publish-Status "Host encoder/format failed after its bounded recovery attempts. See $errorLog" 'error'
+            throw "Host startup/encoding failure; automatic relaunch stopped. $hostErrors"
+        }
         ++$script:ReconnectCount
         $errorSummary = ($hostErrors -split "`r?`n" | Where-Object { $_ }) | Select-Object -Last 1
         if ($errorSummary) {

@@ -10,6 +10,7 @@ final class InputBatch {
     private static final int SCHEMA_VERSION = 1;
     private static final int RECORD_SIZE = 20;
     private static final int HEADER_SIZE = 8;
+    private static final int MAX_RECORDS = 64;
 
     private static final int ACTION_DOWN = 1;
     private static final int ACTION_MOVE = 2;
@@ -41,11 +42,24 @@ final class InputBatch {
         boolean includeAllPointers = maskedAction == MotionEvent.ACTION_MOVE
                 || maskedAction == MotionEvent.ACTION_CANCEL
                 || maskedAction == MotionEvent.ACTION_HOVER_MOVE;
-        int recordCount = includeAllPointers ? event.getPointerCount() : 1;
-        if (recordCount <= 0 || recordCount > 64) {
+        int currentCount = includeAllPointers ? event.getPointerCount() : 1;
+        if (currentCount <= 0 || currentCount > MAX_RECORDS) {
             return null;
         }
 
+        int historySize = maskedAction == MotionEvent.ACTION_MOVE ? event.getHistorySize() : 0;
+        int penCount = 0;
+        if (historySize > 0) {
+            for (int index = 0; index < currentCount; index++) {
+                if (isPenTool(mapTool(event.getToolType(index)))) {
+                    penCount++;
+                }
+            }
+        }
+        // Preserve recent pen samples within the existing packet size limit.
+        int historyCount = penCount == 0 ? 0 : Math.min(historySize,
+                (MAX_RECORDS - currentCount) / penCount);
+        int recordCount = currentCount + historyCount * penCount;
         ByteBuffer output = ByteBuffer
                 .allocate(HEADER_SIZE + recordCount * RECORD_SIZE)
                 .order(ByteOrder.LITTLE_ENDIAN);
@@ -55,32 +69,48 @@ final class InputBatch {
         output.putShort((short) width);
         output.putShort((short) height);
 
-        for (int record = 0; record < recordCount; record++) {
+        MotionEvent.PointerCoords point = new MotionEvent.PointerCoords();
+        int buttons = event.getButtonState();
+        for (int history = historySize - historyCount; history < historySize; history++) {
+            for (int index = 0; index < currentCount; index++) {
+                int tool = mapTool(event.getToolType(index));
+                if (isPenTool(tool)) {
+                    event.getHistoricalPointerCoords(index, history, point);
+                    writeRecord(output, wireAction, tool, event.getPointerId(index),
+                            point, width, height, buttons);
+                }
+            }
+        }
+        for (int record = 0; record < currentCount; record++) {
             int pointerIndex = includeAllPointers ? record : event.getActionIndex();
             int tool = mapTool(event.getToolType(pointerIndex));
-            int normalizedX = normalize(event.getX(pointerIndex), width);
-            int normalizedY = normalize(event.getY(pointerIndex), height);
-            int pressure = normalizeUnit(event.getPressure(pointerIndex));
-
-            float tiltRadians = event.getAxisValue(MotionEvent.AXIS_TILT, pointerIndex);
-            float orientation = event.getOrientation(pointerIndex);
-            int tiltX = clampTiltHundredths(
-                    Math.toDegrees(tiltRadians * Math.sin(orientation)));
-            int tiltY = clampTiltHundredths(
-                    Math.toDegrees(-tiltRadians * Math.cos(orientation)));
-
-            output.put((byte) wireAction);
-            output.put((byte) tool);
-            output.putShort((short) event.getPointerId(pointerIndex));
-            output.putShort((short) normalizedX);
-            output.putShort((short) normalizedY);
-            output.putShort((short) pressure);
-            output.putShort((short) tiltX);
-            output.putShort((short) tiltY);
-            output.putShort((short) (event.getButtonState() & 0xffff));
-            output.putInt(0);
+            event.getPointerCoords(pointerIndex, point);
+            writeRecord(output, wireAction, tool, event.getPointerId(pointerIndex),
+                    point, width, height, buttons);
         }
         return output.array();
+    }
+
+    private static boolean isPenTool(int tool) {
+        return tool == TOOL_STYLUS || tool == TOOL_ERASER;
+    }
+
+    private static void writeRecord(ByteBuffer output, int action, int tool, int pointerId,
+            MotionEvent.PointerCoords point, int width, int height, int buttons) {
+        float tilt = point.getAxisValue(MotionEvent.AXIS_TILT);
+        int tiltX = clampTiltHundredths(Math.toDegrees(tilt * Math.sin(point.orientation)));
+        int tiltY = clampTiltHundredths(Math.toDegrees(-tilt * Math.cos(point.orientation)));
+
+        output.put((byte) action);
+        output.put((byte) tool);
+        output.putShort((short) pointerId);
+        output.putShort((short) normalize(point.x, width));
+        output.putShort((short) normalize(point.y, height));
+        output.putShort((short) normalizeUnit(point.pressure));
+        output.putShort((short) tiltX);
+        output.putShort((short) tiltY);
+        output.putShort((short) buttons);
+        output.putInt(0);
     }
 
     private static int mapAction(int action) {

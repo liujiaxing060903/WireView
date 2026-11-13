@@ -70,14 +70,18 @@ final class ConnectionClient implements AutoCloseable {
         publishStatus(waitingStatus());
         while (running.get()) {
             boolean handshakeCompleted = false;
+            PacketReadTrace readTrace = null;
             if (isUsbAccessory()) {
                 PersistentDiagnosticLog.record("ConnectionClient", "opening USB transport");
             }
             try (TransportConnection activeConnection = connector.open()) {
                 connection = activeConnection;
-                InputStream input = activeConnection.inputStream();
+                readTrace = new PacketReadTrace(activeConnection.inputStream(),
+                    activeConnection instanceof TcpTransportConnector.TcpConnection
+                        ? ((TcpTransportConnector.TcpConnection) activeConnection).descriptor() : null);
+                InputStream input = readTrace;
                 OutputStream output = activeConnection.outputStream();
-                publishStatus("已连接（" + activeConnection.displayName() + "），等待 WireView 握手");
+                publishStatus("正在连接电脑");
                 if (isUsbAccessory()) {
                     PersistentDiagnosticLog.record(
                             "ConnectionClient",
@@ -112,11 +116,15 @@ final class ConnectionClient implements AutoCloseable {
                             "ConnectionClient",
                             "HELLO_ACK written and flushed");
                 }
-                publishStatus("握手成功：" + android.os.Build.MODEL);
+                PersistentDiagnosticLog.record("ConnectionClient", "handshake complete: " + android.os.Build.MODEL);
                 handshakeCompleted = true;
 
                 while (running.get()) {
-                    listener.onPacket(Protocol.readPacket(input));
+                    readTrace.beginPacket();
+                    Protocol.Packet packet = Protocol.readPacket(input);
+                    long parsedMicros = System.nanoTime() / 1_000L;
+                    listener.onPacket(packet);
+                    readTrace.endPacket(packet, parsedMicros, System.nanoTime() / 1_000L);
                 }
             } catch (IOException | RuntimeException error) {
                 if (running.get()
@@ -138,6 +146,7 @@ final class ConnectionClient implements AutoCloseable {
                     sleepBeforeRetry();
                 }
             } finally {
+                if (readTrace != null) { readTrace.save(); }
                 connection = null;
                 if (isUsbAccessory()) {
                     PersistentDiagnosticLog.record("ConnectionClient", "USB connection attempt ended");

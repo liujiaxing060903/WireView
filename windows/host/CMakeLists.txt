@@ -13,6 +13,8 @@ add_executable(wireview_host
     src/windows_video.cpp
 )
 
+target_include_directories(wireview_host SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/external/amf/include)
+
 # 保留原生 GDI 控制中心，供未安装 Evergreen Runtime 的旧系统回退使用。
 add_executable(wireview_control_legacy WIN32
     src/control_main.cpp
@@ -99,8 +101,16 @@ add_custom_command(
     OUTPUT "${WIREVIEW_WEB_ASSET_STAMP}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${WIREVIEW_WEB_ASSET_DIR}" "$<TARGET_FILE_DIR:wireview_control>/web"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${WIREVIEW_CONTROL_UI_ASSET_DIR}/copy-screen-cutout.png"
+        "$<TARGET_FILE_DIR:wireview_control>/web/ui/copy-screen.png"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${WIREVIEW_CONTROL_UI_ASSET_DIR}/extend-screen-cutout.png"
+        "$<TARGET_FILE_DIR:wireview_control>/web/ui/extend-screen.png"
     COMMAND ${CMAKE_COMMAND} -E touch "${WIREVIEW_WEB_ASSET_STAMP}"
     DEPENDS ${WIREVIEW_WEB_ASSETS}
+        "${WIREVIEW_CONTROL_UI_ASSET_DIR}/copy-screen-cutout.png"
+        "${WIREVIEW_CONTROL_UI_ASSET_DIR}/extend-screen-cutout.png"
     COMMENT "Copying WireView web assets"
 )
 add_custom_target(wireview_web_assets DEPENDS "${WIREVIEW_WEB_ASSET_STAMP}")
@@ -130,7 +140,7 @@ add_custom_command(TARGET wireview_control POST_BUILD
         "$<TARGET_FILE_DIR:wireview_control>/data/device-models/android-cn-mobile.tsv"
 )
 
-target_link_libraries(wireview_session PRIVATE user32)
+target_link_libraries(wireview_session PRIVATE user32 ws2_32)
 target_compile_features(wireview_session PRIVATE cxx_std_20)
 
 target_link_libraries(wireview_vdd_broker PRIVATE setupapi shell32 user32 advapi32)
@@ -169,6 +179,98 @@ if(MSVC)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(wireview_cursor_compositor_tests tests/cursor_compositor_tests.cpp src/parsec_vdd.cpp)
+    target_include_directories(wireview_cursor_compositor_tests SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/external/amf/include)
+    target_compile_features(wireview_cursor_compositor_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_cursor_compositor_tests PRIVATE d3d11 d3d10_1 d3dcompiler dxgi mf mfplat mfuuid ole32 shcore user32 setupapi)
+    add_test(NAME wireview_cursor_compositor_tests COMMAND wireview_cursor_compositor_tests)
+    set_tests_properties(wireview_cursor_compositor_tests PROPERTIES TIMEOUT 10)
+    add_executable(wireview_display_layout_tests tests/display_layout_tests.cpp src/parsec_vdd_custom_modes.cpp)
+    target_include_directories(wireview_display_layout_tests PRIVATE src)
+    target_compile_features(wireview_display_layout_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_display_layout_tests PRIVATE user32 advapi32)
+    if(MSVC)
+        target_compile_options(wireview_display_layout_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(NAME wireview_display_layout_tests COMMAND wireview_display_layout_tests)
+    set_tests_properties(wireview_display_layout_tests PROPERTIES TIMEOUT 8)
+    add_executable(wireview_device_messages_tests tests/device_messages_tests.cpp)
+    target_include_directories(wireview_device_messages_tests PRIVATE src)
+    target_compile_features(wireview_device_messages_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_device_messages_tests PRIVATE user32)
+    if(MSVC)
+        target_compile_options(wireview_device_messages_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(NAME wireview_device_messages_tests COMMAND wireview_device_messages_tests)
+    set_tests_properties(wireview_device_messages_tests PROPERTIES TIMEOUT 10)
+    add_executable(wireview_amf_encoder_tests tests/amf_encoder_tests.cpp src/parsec_vdd.cpp)
+    target_include_directories(wireview_amf_encoder_tests SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/external/amf/include)
+    target_compile_features(wireview_amf_encoder_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_amf_encoder_tests PRIVATE d3d11 d3d10_1 d3dcompiler dxgi mf mfplat mfuuid ole32 shcore user32 setupapi)
+    add_test(NAME wireview_amf_encoder_tests COMMAND wireview_amf_encoder_tests)
+    set_tests_properties(wireview_amf_encoder_tests PROPERTIES TIMEOUT 10 SKIP_RETURN_CODE 77)
+    add_executable(wireview_send_rate_window_tests tests/send_rate_window_tests.cpp)
+    target_compile_features(wireview_send_rate_window_tests PRIVATE cxx_std_20)
+    add_test(NAME wireview_send_rate_window_tests COMMAND wireview_send_rate_window_tests)
+    find_program(WIREVIEW_NODE_EXECUTABLE NAMES node)
+    if(WIREVIEW_NODE_EXECUTABLE)
+        add_test(NAME wireview_web_device_selection COMMAND ${WIREVIEW_NODE_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/web_device_selection_test.mjs
+            ${CMAKE_CURRENT_SOURCE_DIR}/assets/web/app.js)
+        add_test(NAME wireview_host_tcp_port COMMAND ${WIREVIEW_NODE_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/host_tcp_port_test.mjs $<TARGET_FILE:wireview_host>)
+        set_tests_properties(wireview_host_tcp_port PROPERTIES TIMEOUT 12)
+    endif()
+    add_library(wireview_adb_loader_dependency SHARED tests/adb_loader_dependency.cpp)
+    add_executable(wireview_adb_loader_fixture tests/adb_loader_fixture.cpp)
+    target_link_libraries(wireview_adb_loader_fixture PRIVATE wireview_adb_loader_dependency)
+    set_target_properties(wireview_adb_loader_dependency PROPERTIES
+        OUTPUT_NAME AdbWinApi
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    set_target_properties(wireview_adb_loader_fixture PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    add_test(NAME wireview_session_loader_failures COMMAND powershell.exe -NoProfile
+        -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/session_loader_failure_test.ps1
+        -Session $<TARGET_FILE:wireview_session> -AdbFixture $<TARGET_FILE:wireview_adb_loader_fixture>
+        -ApiFixture $<TARGET_FILE:wireview_adb_loader_dependency>)
+    set_tests_properties(wireview_session_loader_failures PROPERTIES TIMEOUT 20)
+    add_test(NAME wireview_start_script_adb_dependency COMMAND powershell.exe -NoProfile
+        -ExecutionPolicy Bypass -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/start_script_adb_dependency_test.ps1
+        -Script ${CMAKE_SOURCE_DIR}/scripts/start-wireview.ps1)
+    set_tests_properties(wireview_start_script_adb_dependency PROPERTIES TIMEOUT 10)
+    add_executable(wireview_overlapped_completion_tests tests/overlapped_completion_tests.cpp)
+    target_include_directories(wireview_overlapped_completion_tests PRIVATE src)
+    target_compile_features(wireview_overlapped_completion_tests PRIVATE cxx_std_20)
+    add_test(NAME wireview_overlapped_completion_tests COMMAND wireview_overlapped_completion_tests)
+    set_tests_properties(wireview_overlapped_completion_tests PROPERTIES TIMEOUT 5)
+    add_executable(wireview_process_identity_tests tests/process_identity_tests.cpp)
+    target_include_directories(wireview_process_identity_tests PRIVATE src)
+    target_compile_features(wireview_process_identity_tests PRIVATE cxx_std_20)
+    add_test(NAME wireview_process_identity_tests COMMAND wireview_process_identity_tests)
+    add_executable(wireview_session_diagnostics_tests tests/session_diagnostics_tests.cpp)
+    add_executable(wireview_cursor_settings_tests tests/cursor_settings_tests.cpp)
+    target_include_directories(wireview_cursor_settings_tests PRIVATE src)
+    target_compile_features(wireview_cursor_settings_tests PRIVATE cxx_std_20)
+    add_test(NAME wireview_cursor_settings_tests COMMAND wireview_cursor_settings_tests)
+    add_executable(wireview_display_preferences_tests tests/display_preferences_tests.cpp)
+    target_include_directories(wireview_display_preferences_tests PRIVATE src)
+    target_compile_features(wireview_display_preferences_tests PRIVATE cxx_std_20)
+    add_test(NAME wireview_display_preferences_tests COMMAND wireview_display_preferences_tests)
+    add_executable(wireview_parsec_vdd_mode_cache_tests tests/parsec_vdd_mode_cache_tests.cpp)
+    target_include_directories(wireview_parsec_vdd_mode_cache_tests PRIVATE src)
+    target_compile_features(wireview_parsec_vdd_mode_cache_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(wireview_parsec_vdd_mode_cache_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(NAME wireview_parsec_vdd_mode_cache_tests COMMAND wireview_parsec_vdd_mode_cache_tests)
+    target_compile_features(wireview_session_diagnostics_tests PRIVATE cxx_std_20)
+    target_link_libraries(wireview_session_diagnostics_tests PRIVATE user32 shell32 ws2_32)
+    if(MSVC)
+        target_compile_options(wireview_session_diagnostics_tests PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(NAME wireview_session_diagnostics_tests COMMAND wireview_session_diagnostics_tests)
+    set_tests_properties(wireview_session_diagnostics_tests PROPERTIES TIMEOUT 30)
+
     add_executable(wireview_idd_frame_relay_tests
         src/idd_frame_relay.cpp
         tests/idd_frame_relay_tests.cpp

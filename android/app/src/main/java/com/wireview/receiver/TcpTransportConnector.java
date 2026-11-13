@@ -1,6 +1,8 @@
 package com.wireview.receiver;
 
 import java.io.IOException;
+import java.io.FileDescriptor;
+import android.os.ParcelFileDescriptor;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -40,12 +42,16 @@ final class TcpTransportConnector implements TransportConnector {
         }
     }
 
-    private static final class TcpConnection implements TransportConnection {
+    static final class TcpConnection implements TransportConnection {
         private final Socket socket;
+        private final ParcelFileDescriptor descriptor;
 
         TcpConnection(Socket socket) {
             this.socket = socket;
+            descriptor = ParcelFileDescriptor.fromSocket(socket);
         }
+
+        FileDescriptor descriptor() { return descriptor.getFileDescriptor(); }
 
         @Override
         public InputStream inputStream() throws IOException {
@@ -64,7 +70,7 @@ final class TcpTransportConnector implements TransportConnector {
 
         @Override
         public void close() throws IOException {
-            socket.close();
+            try { descriptor.close(); } finally { socket.close(); }
         }
     }
 }

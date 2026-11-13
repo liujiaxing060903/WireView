@@ -45,7 +45,8 @@ int run_development_desktop_stream_server(
     std::uint16_t frame_rate = 60U,
     std::string_view capture_display_device = {},
     std::string_view status_file = {},
-    std::uint64_t reconnect_count = 0U);
+    std::uint64_t reconnect_count = 0U,
+    float cursor_size_scale = 1.0F);
 
 int run_winusb_desktop_stream_session(
     std::chrono::milliseconds accessory_wait_timeout,
@@ -56,7 +57,8 @@ int run_winusb_desktop_stream_session(
     std::uint16_t frame_rate = 60U,
     std::string_view capture_display_device = {},
     std::string_view status_file = {},
-    std::uint64_t reconnect_count = 0U);
+    std::uint64_t reconnect_count = 0U,
+    float cursor_size_scale = 1.0F);
 
 int run_development_reconnecting_desktop_stream_server(
     std::uint16_t port,

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$CursorDiagnostics)
 
 $ErrorActionPreference = 'Stop'
 
@@ -31,7 +31,8 @@ $gradleUserHome = if ($env:USERPROFILE) {
 }
 $env:GRADLE_USER_HOME = $gradleUserHome
 
-& $gradleWrapper -p $androidRoot --gradle-user-home $gradleUserHome --offline :app:assembleDebug
+$cursorDiagnosticsProperty = 'wireviewCursorDiagnostics=' + $CursorDiagnostics.IsPresent.ToString().ToLowerInvariant()
+& $gradleWrapper -p $androidRoot --gradle-user-home $gradleUserHome --offline "-P$cursorDiagnosticsProperty" :app:assembleDebug
 if ($LASTEXITCODE -ne 0) {
     throw "Android build failed with exit code $LASTEXITCODE."
 }

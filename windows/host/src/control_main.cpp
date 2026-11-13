@@ -9,16 +9,24 @@
 #include <uxtheme.h>
 
 #include "parsec_vdd.hpp"
+#include "adb_diagnostics.hpp"
+#include "cursor_settings.hpp"
+#include "display_preferences.hpp"
+#include "screen_layout.hpp"
+#include "process_identity.hpp"
 #include "parsec_vdd_custom_modes.hpp"
 #ifdef WIREVIEW_WEBVIEW_UI
 #include "webview_host.hpp"
+#include "device_messages.hpp"
 #endif
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cwctype>
 #include <cwchar>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -48,6 +56,7 @@ constexpr int kPreviewDeviceButton = 1013;
 constexpr int kCustomModesButton = 1014;
 constexpr int kVddModeSelector = 1015;
 constexpr int kIdentifyDeviceButton = 1016;
+constexpr int kDeviceSelector = 1036;
 constexpr int kSimpleModeToggle = 1017;
 constexpr int kSimpleMirrorButton = 1018;
 constexpr int kSimpleInputButton = 1019;
@@ -75,6 +84,10 @@ constexpr int kCustomModeFieldStep = 45;
 constexpr UINT_PTR kProcessTimer = 1;
 constexpr UINT_PTR kVddTimer = 2;
 constexpr UINT_PTR kDeviceDetectTimer = 3;
+constexpr UINT_PTR kAdbCleanupTimer = 4;
+#ifdef WIREVIEW_WEBVIEW_UI
+constexpr UINT_PTR kDeviceCommandTimer = 5;
+#endif
 constexpr UINT kTrayMessage = WM_APP + 1U;
 constexpr UINT kFinalizeControlExit = WM_APP + 2U;
 constexpr UINT kTrayRestore = 2001U;
@@ -82,6 +95,9 @@ constexpr UINT kTrayStartMirror = 2002U;
 constexpr UINT kTrayStartInput = 2003U;
 constexpr UINT kTrayStop = 2004U;
 constexpr UINT kTrayExit = 2005U;
+constexpr UINT kAddDeviceWindow = 2006U;
+std::wstring g_device_window_serial;
+std::wstring g_control_window_class = L"WireViewControlWindow";
 constexpr wchar_t kControlCenterInstanceMutex[] = L"Local\\WireView.ControlCenter.Singleton.1";
 struct DisplayChoice {
     std::wstring device_name;
@@ -144,10 +160,26 @@ struct RecoveredVddSession {
     bool mapping_matches{false};
 };
 
+enum class PendingSessionAction { none, stream, profile, extend, copy, create_vdd };
+
 struct ControlState {
     HANDLE shell_process{nullptr};
     HANDLE device_probe_process{nullptr};
+    ULONGLONG next_device_probe_at{};
     HANDLE session_job{nullptr};
+    HANDLE adb_cleanup_process{nullptr};
+    std::filesystem::path adb_session_file;
+    std::filesystem::path adb_cleanup_status_file;
+    bool adb_cleanup_failed{false};
+    std::wstring session_adb_serial;
+    std::wstring session_monitor_path;
+    wireview::host::WindowsDisplaySource session_display_source;
+    wireview::host::LidDisplaySize session_lid_display_size;
+    bool adb_cleanup_notify_stop{false};
+    bool adb_cleanup_notifies_stop{false};
+    PendingSessionAction pending_session_action{PendingSessionAction::none};
+    bool pending_session_input{false};
+    bool pending_vdd_confirmation{true};
     HWND window{nullptr};
     HWND title{nullptr};
     HWND status{nullptr};
@@ -161,6 +193,7 @@ struct ControlState {
     HWND simple_extend_button{nullptr};
     HWND simple_extend_input_button{nullptr};
     HWND display_selector{nullptr};
+    HWND device_selector{nullptr};
     HWND refresh_displays_button{nullptr};
     HWND vdd_status{nullptr};
     HWND create_vdd_button{nullptr};
@@ -194,6 +227,16 @@ struct ControlState {
     std::filesystem::path vdd_status_file;
     std::filesystem::path device_model_catalog_file;
     std::filesystem::path device_model_cache_file;
+    std::filesystem::path device_list_file;
+    std::vector<wireview::host::AdbDevice> adb_devices;
+    std::wstring selected_adb_serial;
+    wireview::host::CursorSizes cursor_sizes;
+    wireview::host::DisplayPreferences display_preferences;
+    std::wstring pending_resolution_use;
+    bool direct_copy_session{false};
+    std::wstring session_copy_source;
+    std::wstring device_probe_serial;
+    std::wstring device_selector_signature;
     std::wstring last_script_status;
     std::wstring current_status;
     // 最近一次会话的 Host 原始输出不能依赖临时 status 文件：手动停止会关闭
@@ -203,6 +246,7 @@ struct ControlState {
     std::wstring owned_display_device;
     std::vector<DisplayChoice> display_choices;
     HANDLE vdd_broker_process{nullptr};
+    HANDLE vdd_mode_reservation{nullptr};
     HANDLE vdd_stop_event{nullptr};
     int owned_display_index{-1};
     bool vdd_stop_requested{false};
@@ -215,20 +259,27 @@ struct ControlState {
     std::uint16_t pending_vdd_refresh_hz{};
     bool preview_active{false};
     bool profile_probe_active{false};
+    bool session_streaming{false};
+    std::wstring session_phase;
+    PendingSessionAction foreground_resume_action{PendingSessionAction::none};
+    bool foreground_resume_input{false};
+    bool foreground_resume_waiting{false};
+    bool dashboard_scan_failed{false};
     bool auto_device_profile_completed{false};
     bool auto_device_profile_attempted{false};
     // 用户点击“刷新”时，即使同一条 USB 连接此前已经自动识别过，也重新向
     // Android 应用请求一次当前屏幕模式（分辨率、当前刷新率和最高刷新率）。
     bool device_profile_refresh_requested{false};
-    bool device_profile_requires_custom_mode{false};
+    std::optional<CustomMode> pending_device_mode;
     bool simple_mode{false};
     // WebView2 的页面选择状态。它不替代 VDD/会话后端，只用于在页面上解释
     // 当前准备启动复制还是扩展，并驱动简易模式的大卡片入口。
     bool web_extend_mode{false};
+    std::wstring operation_mode;
     bool display_config_expanded{false};
     bool diagnostics_page{false};
     bool session_input_enabled{false};
-    bool start_after_vdd_ready{false};
+    PendingSessionAction start_after_vdd_ready{PendingSessionAction::none};
     bool start_after_vdd_input{false};
     bool start_after_vdd_removal{false};
     bool start_after_vdd_removal_input{false};
@@ -252,7 +303,7 @@ struct ControlState {
     std::size_t parsec_display_count{};
     std::uint16_t detected_device_width{};
     std::uint16_t detected_device_height{};
-    std::wstring detected_device_max_refresh{L"--"};
+    std::uint16_t detected_device_max_refresh{};
     std::optional<RecoveredVddSession> recovered_vdd_session;
     std::size_t recovered_vdd_record_count{0U};
 };
@@ -267,8 +318,35 @@ bool g_popup_light_theme{false};
 
 #ifdef WIREVIEW_WEBVIEW_UI
 std::unique_ptr<wireview::host::WebViewHost> g_webview_host;
+struct DashboardDevice {
+    std::wstring serial;
+    std::wstring name;
+    HANDLE process{};
+    HWND window{};
+    std::wstring state_json;
+    bool running{};
+    bool busy{};
+    bool launch_attempted{};
+    wireview::host::DeviceCommandChannel commands;
+    std::wstring command_error;
+    std::wstring requested_copy_source;
+    std::wstring operation_mode;
+};
+constexpr UINT kRunDeviceCommand = WM_APP + 3U;
+constexpr ULONG_PTR kDeviceCommand = 0x57564401U;
+constexpr ULONG_PTR kDeviceSnapshot = 0x57564410U;
+constexpr ULONG_PTR kDeviceBusy = 1U;
+constexpr ULONG_PTR kDeviceRunning = 2U;
+constexpr DWORD kDeviceMessageLimit = wireview::host::kDeviceMessageLimit;
+std::vector<DashboardDevice> g_dashboard_devices;
+HWND g_dashboard_owner{};
+DWORD g_dashboard_owner_pid{};
+std::deque<std::wstring> g_device_commands;
+std::optional<std::size_t> g_last_dashboard_tray_count;
+bool uses_device_dashboard() { return g_device_window_serial.empty(); }
 void publish_web_state();
 void handle_web_message(std::wstring_view message);
+void handle_dashboard_scan(DWORD exit_code);
 #endif
 
 constexpr COLORREF kColorApp = RGB(7, 17, 31);
@@ -308,7 +386,7 @@ void restore_existing_control_center() {
     // been registered, so retry briefly instead of silently doing nothing.
     HWND existing{};
     for (int attempt = 0; attempt < 20 && existing == nullptr; ++attempt) {
-        existing = FindWindowW(L"WireViewControlWindow", nullptr);
+        existing = FindWindowW(g_control_window_class.c_str(), nullptr);
         if (existing == nullptr) {
             Sleep(50U);
         }
@@ -316,8 +394,15 @@ void restore_existing_control_center() {
     if (existing == nullptr) {
         return;
     }
+#ifdef WIREVIEW_WEBVIEW_UI
+    DWORD owner_pid{};
+    GetWindowThreadProcessId(existing, &owner_pid);
+    if (owner_pid != 0U) { AllowSetForegroundWindow(owner_pid); }
+    PostMessageW(existing, WM_COMMAND, kTrayRestore, 0U);
+#else
     ShowWindow(existing, IsIconic(existing) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(existing);
+#endif
 }
 
 LRESULT CALLBACK owner_draw_button_subclass(
@@ -542,7 +627,15 @@ void refresh_popup_theme(HWND window) {
 struct StreamSettings;
 std::optional<StreamSettings> selected_stream_settings();
 void stop_session();
-bool start_session(HWND window, bool enable_input, bool device_preview, bool device_profile_probe);
+void stop_wireview();
+void start_adb_cleanup();
+void resume_pending_session();
+bool queue_after_preview(PendingSessionAction action, bool enable_input);
+void update_session_action_controls();
+bool start_session(HWND window, bool enable_input, bool device_preview, bool device_profile_probe,
+    bool follow_primary = false, bool copy_settings = false);
+bool start_primary_copy(HWND window, bool enable_input);
+void start_copy_with_owned_display(HWND window, bool enable_input);
 void begin_simple_extension(bool enable_input);
 void set_status(const std::wstring& text);
 std::string wide_to_utf8(std::wstring_view value);
@@ -552,6 +645,16 @@ void update_recommendation();
 void show_custom_mode_editor(HWND owner);
 void show_diagnostics_window(HWND owner);
 void notify_android_of_vdd_created(const StreamSettings& settings);
+void refresh_device_selector();
+void poll_device_detection(HWND window);
+void start_device_detection_probe();
+
+void save_mode_preferences() {
+    if (!g_state.settings_file.empty() && !wireview::host::save_display_preferences(
+            g_state.settings_file.parent_path() / L"display-preferences.ini", g_state.display_preferences)) {
+        set_status(L"设置保存失败，请检查配置目录是否可写。");
+    }
+}
 
 struct StreamSettings {
     std::uint16_t width{};
@@ -745,6 +848,16 @@ void populate_resolution_selector(std::wstring preferred = {}) {
         return std::find(custom_resolutions.begin(), custom_resolutions.end(), resolution) !=
             custom_resolutions.end();
     };
+    if (const auto& mode = g_state.pending_device_mode) {
+        const auto resolution = std::pair{mode->width, mode->height};
+        const bool standard = std::any_of(kStandardModeGroups.begin(), kStandardModeGroups.end(),
+            [&resolution](const StandardModeGroup& group) { return parse_resolution(group.resolution) == resolution; });
+        if (!standard && !is_custom_resolution(resolution)) {
+            const auto label = std::to_wstring(mode->width) + L"x" + std::to_wstring(mode->height) +
+                L"（设备原生）";
+            SendMessageW(g_state.resolution_selector, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(label.c_str()));
+        }
+    }
     // Keep the currently selected (or persisted) standard mode immediately after
     // custom slots, then retain the familiar built-in ordering for everything else.
     if (requested_resolution && !is_custom_resolution(*requested_resolution)) {
@@ -765,6 +878,29 @@ void populate_resolution_selector(std::wstring preferred = {}) {
         }
         SendMessageW(g_state.resolution_selector, CB_ADDSTRING, 0U,
             reinterpret_cast<LPARAM>(group.resolution.data()));
+    }
+    std::vector<std::wstring> ordered;
+    const auto count = SendMessageW(g_state.resolution_selector, CB_GETCOUNT, 0U, 0);
+    const auto uses = [](const std::wstring& label) {
+        const auto size = parse_resolution(label);
+        if (!size) { return std::uint64_t{}; }
+        const auto key = std::to_wstring(size->first) + L"x" + std::to_wstring(size->second);
+        const auto found = g_state.display_preferences.resolution_uses.find(key);
+        return found == g_state.display_preferences.resolution_uses.end() ? std::uint64_t{} : found->second;
+    };
+    for (LRESULT index = 0; index < count; ++index) {
+        const auto length = SendMessageW(g_state.resolution_selector, CB_GETLBTEXTLEN, static_cast<WPARAM>(index), 0);
+        std::wstring label(static_cast<std::size_t>(length) + 1U, L'\0');
+        SendMessageW(g_state.resolution_selector, CB_GETLBTEXT, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(label.data()));
+        label.resize(static_cast<std::size_t>(length));
+        ordered.push_back(std::move(label));
+    }
+    std::stable_sort(ordered.begin(), ordered.end(), [&](const auto& left, const auto& right) { return uses(left) > uses(right); });
+    SendMessageW(g_state.resolution_selector, CB_RESETCONTENT, 0U, 0);
+    for (auto label : ordered) {
+        const auto used = uses(label);
+        if (used != 0U) { label += L"（使用 " + std::to_wstring(used) + L" 次）"; }
+        SendMessageW(g_state.resolution_selector, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(label.c_str()));
     }
     if (!requested_resolution || !select_resolution_option(
             g_state.resolution_selector, *requested_resolution)) {
@@ -797,6 +933,10 @@ void populate_vdd_mode_selector(std::wstring preferred = {}) {
             custom_mode->height == resolution->second) {
             refresh_rates.push_back(custom_mode->refresh_hz);
         }
+    }
+    if (const auto& mode = g_state.pending_device_mode;
+        mode && mode->width == resolution->first && mode->height == resolution->second) {
+        refresh_rates.push_back(mode->refresh_hz);
     }
     std::sort(refresh_rates.begin(), refresh_rates.end());
     refresh_rates.erase(std::unique(refresh_rates.begin(), refresh_rates.end()), refresh_rates.end());
@@ -863,64 +1003,47 @@ void sync_custom_modes_from_parsec_vdd() {
 void apply_detected_device_profile(
     const std::wstring& width_text,
     const std::wstring& height_text,
+    const std::wstring& active_refresh_text,
     const std::wstring& maximum_refresh_text) {
+    const auto nominal_refresh = [](const std::wstring& text) -> std::uint16_t {
+        const double hz = std::wcstod(text.c_str(), nullptr);
+        return hz >= 1.0 && hz <= 1000.0 ? static_cast<std::uint16_t>(std::lround(hz)) : 0U;
+    };
     try {
         const unsigned long width = std::stoul(width_text);
         const unsigned long height = std::stoul(height_text);
-        const double maximum_refresh = std::wcstod(maximum_refresh_text.c_str(), nullptr);
+        const auto active_refresh = nominal_refresh(active_refresh_text);
+        const auto maximum_refresh = std::max(active_refresh, nominal_refresh(maximum_refresh_text));
         if (width == 0UL || height == 0UL || width > 65535UL || height > 65535UL) {
             return;
         }
         const auto resolution = std::pair{
             static_cast<std::uint16_t>(width), static_cast<std::uint16_t>(height)};
+        g_state.device_active_refresh = active_refresh != 0U ? std::to_wstring(active_refresh) : L"--";
         if (g_state.detected_device_width == resolution.first &&
             g_state.detected_device_height == resolution.second &&
-            !g_state.device_profile_requires_custom_mode) {
+            g_state.detected_device_max_refresh == maximum_refresh) {
             return;
         }
         g_state.detected_device_width = resolution.first;
         g_state.detected_device_height = resolution.second;
-        g_state.detected_device_max_refresh = maximum_refresh_text;
-        const std::wstring profile = std::to_wstring(width) + L"×" + std::to_wstring(height) +
-            L"（最高 " + maximum_refresh_text + L" Hz）";
-        bool added_custom_mode = false;
-        if (!select_resolution_option(g_state.resolution_selector, resolution)) {
-            const auto empty_slot = std::find_if(
-                g_custom_modes.begin(), g_custom_modes.end(),
-                [](const std::optional<CustomMode>& mode) { return !mode.has_value(); });
-            if (empty_slot == g_custom_modes.end()) {
-                g_state.device_profile_requires_custom_mode = true;
-                g_state.device_profile_note = L"已识别设备：" + profile +
-                    L"。投屏分辨率列表没有对应项，且 5 个自定义模式槽均已占用；"
-                    L"请先替换或释放一个槽，才能开始 WireView。";
-                show_custom_mode_editor(g_state.window);
-                return;
-            }
-            *empty_slot = CustomMode{
-                .width = resolution.first,
-                .height = resolution.second,
-                .refresh_hz = 240U,
-            };
-            save_custom_modes();
-            populate_resolution_selector(
-                std::to_wstring(resolution.first) + L"x" + std::to_wstring(resolution.second));
-            if (!select_resolution_option(g_state.resolution_selector, resolution)) {
-                return;
-            }
-            added_custom_mode = true;
-        }
-        g_state.device_profile_requires_custom_mode = false;
-        populate_vdd_mode_selector(L"240");
-        SendMessageW(g_state.frame_rate_selector, CB_SETCURSEL,
-            maximum_refresh >= 119.0 ? 1U : 0U, 0);
-        g_state.device_profile_note = L"已识别设备：" + profile +
-            L"。已自动选择对应分辨率、副屏 240 Hz 和 " +
-            (maximum_refresh >= 119.0
-                ? L"实验性 120 FPS 主机发送目标；设备最终屏幕帧率需实测。"
-                : L"60 FPS。") +
-            (added_custom_mode
-                ? L"已自动写入一个 240 Hz 自定义模式槽；创建 WireView 副屏时会应用到 Parsec。"
-                : L"");
+        g_state.detected_device_max_refresh = maximum_refresh;
+        const bool high_refresh = maximum_refresh >= 119U;
+        const std::uint16_t vdd_refresh = maximum_refresh == 60U || maximum_refresh == 144U
+            ? maximum_refresh : 240U;
+        const bool standard = std::any_of(kStandardModeGroups.begin(), kStandardModeGroups.end(),
+            [&](const StandardModeGroup& group) {
+                return parse_resolution(group.resolution) == resolution &&
+                    std::find(group.refresh_rates.begin(), group.refresh_rates.end(), vdd_refresh) != group.refresh_rates.end();
+            });
+        g_state.pending_device_mode = standard ? std::nullopt :
+            std::optional{CustomMode{resolution.first, resolution.second, vdd_refresh}};
+        populate_resolution_selector(std::to_wstring(width) + L"x" + std::to_wstring(height));
+        populate_vdd_mode_selector(std::to_wstring(vdd_refresh));
+        SendMessageW(g_state.frame_rate_selector, CB_SETCURSEL, high_refresh ? 1U : 0U, 0);
+        g_state.device_profile_note = L"已识别设备 " + std::to_wstring(width) + L"×" +
+            std::to_wstring(height) + L"。推荐副屏档位 " + std::to_wstring(vdd_refresh) +
+            L" Hz，主机发送目标 " + (high_refresh ? L"120 FPS。" : L"60 FPS。");
         update_recommendation();
     } catch (const std::exception&) {
     }
@@ -975,6 +1098,7 @@ std::vector<DisplayChoice> enumerate_attached_displays() {
 }
 
 void update_vdd_controls() {
+    refresh_device_selector();
     const auto probe = wireview::host::probe_parsec_vdd();
     const std::size_t parsec_display_count = static_cast<std::size_t>(std::count_if(
         g_state.display_choices.begin(),
@@ -998,7 +1122,7 @@ void update_vdd_controls() {
             text += g_state.vdd_stop_requested ? L"；正在移除 WireView 副屏" :
                 L"；正在创建 WireView 副屏";
         } else if (parsec_display_count != 0U) {
-            text += L"；将直接复用已有副屏，禁止重复创建";
+            text += L"；可为本窗口的设备另建一块独立副屏";
         }
         if (g_state.recovered_vdd_record_count > 1U) {
             text += L"；检测到 " + std::to_wstring(g_state.recovered_vdd_record_count) +
@@ -1022,8 +1146,7 @@ void update_vdd_controls() {
     if (g_state.create_vdd_button != nullptr) {
         EnableWindow(
             g_state.create_vdd_button,
-            probe.available && g_state.vdd_broker_process == nullptr && session_idle &&
-                parsec_display_count == 0U);
+            probe.available && g_state.vdd_broker_process == nullptr && session_idle);
     }
     if (g_state.remove_vdd_button != nullptr) {
         EnableWindow(
@@ -1035,7 +1158,6 @@ void update_vdd_controls() {
             g_state.recovered_vdd_session &&
             !g_state.recovered_vdd_session->owner_alive &&
             !g_state.recovered_vdd_session->broker_alive &&
-            g_state.recovered_vdd_session->mapping_matches &&
             g_state.vdd_broker_process == nullptr && session_idle;
         EnableWindow(g_state.recover_vdd_button, recovery_is_safe_to_offer);
     }
@@ -1063,6 +1185,18 @@ bool select_primary_display() {
         return false;
     }
     return select_display_device(primary->device_name);
+}
+
+const DisplayChoice* selected_copy_source() {
+    const auto& choices = g_state.display_choices;
+    const auto preferred = std::find_if(choices.begin(), choices.end(), [](const DisplayChoice& choice) {
+        return choice.device_name == g_state.display_preferences.copy_source &&
+            choice.device_name != g_state.owned_display_device;
+    });
+    if (preferred != choices.end()) { return &*preferred; }
+    if (!g_state.display_preferences.copy_source.empty()) { return nullptr; }
+    const auto primary = std::find_if(choices.begin(), choices.end(), [](const DisplayChoice& choice) { return choice.primary; });
+    return primary == choices.end() ? nullptr : &*primary;
 }
 
 void refresh_display_choices(std::wstring preferred_device = {}) {
@@ -1131,16 +1265,11 @@ bool apply_selected_mode_to_parsec_vdd() {
 
     const auto first_parsec = std::find_if(
         g_state.display_choices.begin(), g_state.display_choices.end(),
-        [](const DisplayChoice& choice) { return choice.parsec_vdd && !choice.primary; });
+        [](const DisplayChoice& choice) {
+            return !choice.primary && choice.device_name == g_state.owned_display_device;
+        });
     if (first_parsec == g_state.display_choices.end()) {
-        // 尚未创建副屏时，下拉框仍只保存给下一次创建使用。
-        return false;
-    }
-    const auto another_parsec = std::find_if(
-        std::next(first_parsec), g_state.display_choices.end(),
-        [](const DisplayChoice& choice) { return choice.parsec_vdd && !choice.primary; });
-    if (another_parsec != g_state.display_choices.end()) {
-        set_status(L"检测到多个 Parsec VDD 副屏，无法判断应切换哪一个显示模式。");
+        // Before this window owns a screen, save the choice for its next ADD.
         return false;
     }
 
@@ -1389,11 +1518,13 @@ void set_status(const std::wstring& text) {
     }
     InvalidateRect(g_state.window, nullptr, FALSE);
     InvalidateRect(g_state.simple_window, nullptr, FALSE);
-    const std::size_t line_break = text.find(L'\n');
-    update_tray_tooltip(
-        L"WireView: " + text.substr(0U, line_break == std::wstring::npos
-            ? text.size()
-            : line_break));
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (!uses_device_dashboard())
+#endif
+    {
+        const std::size_t line_break = text.find(L'\n');
+        update_tray_tooltip(L"WireView: " + text.substr(0U, line_break));
+    }
     refresh_diagnostics_output();
 #ifdef WIREVIEW_WEBVIEW_UI
     publish_web_state();
@@ -1572,6 +1703,13 @@ void restore_window(HWND window) {
     SetForegroundWindow(window);
 }
 
+void hide_control_center(HWND window) {
+    ShowWindow(window, SW_HIDE);
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (g_webview_host) { g_webview_host->set_visible(false); }
+#endif
+}
+
 void begin_control_center_exit(HWND window) {
     if (g_state.exiting) {
         return;
@@ -1581,7 +1719,7 @@ void begin_control_center_exit(HWND window) {
     // The WebView controller can take time to close on some machines. Hiding
     // first prevents a blank, non-interactive top-level window from remaining
     // visible while Windows tears down Chromium or a VDD broker.
-    ShowWindow(window, SW_HIDE);
+    hide_control_center(window);
     for (HWND auxiliary : {g_state.simple_window, g_diagnostics_window, g_custom_mode_editor}) {
         if (auxiliary != nullptr && auxiliary != window && IsWindow(auxiliary) != FALSE) {
             DestroyWindow(auxiliary);
@@ -1747,9 +1885,222 @@ void reset_android_device_identity() {
     g_state.device_is_tablet = true;
     g_state.detected_device_width = 0U;
     g_state.detected_device_height = 0U;
-    g_state.detected_device_max_refresh = L"--";
-    g_state.device_profile_requires_custom_mode = false;
+    g_state.detected_device_max_refresh = 0U;
+    if (g_state.pending_device_mode) {
+        g_state.pending_device_mode.reset();
+        populate_resolution_selector();
+        populate_vdd_mode_selector();
+    }
     g_state.device_profile_note.clear();
+}
+
+bool device_selection_locked() {
+    return g_state.shell_process != nullptr || !g_state.adb_session_file.empty() ||
+        g_state.start_after_vdd_ready != PendingSessionAction::none ||
+        g_state.start_after_vdd_removal || g_state.recreate_vdd_for_simple_extension || g_state.vdd_stop_requested ||
+        (g_state.vdd_broker_process != nullptr && g_state.owned_display_device.empty());
+}
+
+std::wstring adb_device_label(const wireview::host::AdbDevice& device) {
+    std::wstring model = device.model.empty() ? L"Android" : device.model;
+    std::replace(model.begin(), model.end(), L'_', L' ');
+    const std::wstring status = device.state == L"device" ? L"已授权" :
+        device.state == L"unauthorized" ? L"未授权" : device.state == L"offline" ? L"离线" :
+        device.state == L"disconnected" ? L"未连接" : device.state;
+    return model + L" · " + device.serial + L" · " + status;
+}
+
+// The key is also safe for network ADB serials containing path punctuation.
+std::wstring device_window_key(std::wstring_view serial) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const auto c : serial) { hash = (hash ^ static_cast<unsigned>(c)) * 1099511628211ULL; }
+    return std::to_wstring(hash);
+}
+
+HANDLE launch_device_control(std::wstring_view serial, HWND owner = nullptr) {
+    std::array<wchar_t, 32'768U> executable{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (length == 0U || length >= executable.size()) { return nullptr; }
+    const std::filesystem::path path(executable.data());
+    std::wstring command = L"\"" + path.wstring() + L"\" " +
+        (owner == nullptr ? L"--device-window \"" : L"--device-worker \"") + std::wstring(serial) + L"\"";
+    if (owner != nullptr) { command += L" " + std::to_wstring(reinterpret_cast<UINT_PTR>(owner)); }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(path.c_str(), command.data(), nullptr, nullptr, FALSE, 0,
+            nullptr, path.parent_path().c_str(), &startup, &process)) { return nullptr; }
+    CloseHandle(process.hThread);
+    return process.hProcess;
+}
+
+void open_additional_device_window() {
+    // Streaming suspends the ordinary device probe; refresh on this click so
+    // plugging in a second device does not require stopping the first stream.
+    const auto list_file = g_state.runtime_log_file.parent_path() /
+        (L"adb-add-devices-" + std::to_wstring(GetTickCount64()) + L".txt");
+    std::wstring query = L"\"" + g_state.session_launcher_path.wstring() +
+        L"\" --detect-device --devices-file \"" + list_file.wstring() + L"\"";
+    STARTUPINFOW probe_startup{};
+    probe_startup.cb = sizeof(probe_startup);
+    PROCESS_INFORMATION probe{};
+    if (!CreateProcessW(g_state.session_launcher_path.c_str(), query.data(), nullptr, nullptr,
+            FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &probe_startup, &probe)) {
+        set_status(L"读取设备列表失败；系统错误 " + std::to_wstring(GetLastError()));
+        return;
+    }
+    CloseHandle(probe.hThread);
+    const bool finished = WaitForSingleObject(probe.hProcess, 5'000U) == WAIT_OBJECT_0;
+    DWORD code = STILL_ACTIVE;
+    GetExitCodeProcess(probe.hProcess, &code);
+    CloseHandle(probe.hProcess);
+    if (!finished || code == 7U || code == 9U || code > 10U) {
+        set_status(L"读取设备列表未完成；退出代码 " + std::to_wstring(code) + L"。请稍后重试。");
+        return;
+    }
+    std::ifstream device_list(list_file, std::ios::binary);
+    if (!device_list) { set_status(L"设备列表文件读取失败。"); return; }
+    const std::string bytes{std::istreambuf_iterator<char>(device_list), std::istreambuf_iterator<char>()};
+    g_state.adb_devices = wireview::host::parse_adb_devices(utf8_to_wide(bytes)).devices;
+    std::vector<const wireview::host::AdbDevice*> choices;
+    for (const auto& device : g_state.adb_devices) {
+        if (device.state == L"device" && device.serial != g_state.selected_adb_serial) {
+            choices.push_back(&device);
+        }
+    }
+    if (choices.empty()) {
+        set_status(L"请连接另一台 Android 设备并允许 USB 调试，等待设备识别后再点“添加设备”。");
+        return;
+    }
+    std::size_t selected = 0U;
+    if (choices.size() > 1U) {
+        HMENU menu = CreatePopupMenu();
+        if (menu == nullptr) { set_status(L"无法打开设备列表。"); return; }
+        for (std::size_t index = 0; index < choices.size(); ++index) {
+            const auto label = adb_device_label(*choices[index]);
+            AppendMenuW(menu, MF_STRING, index + 1U, label.c_str());
+        }
+        POINT point{};
+        GetCursorPos(&point);
+        const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+            point.x, point.y, 0, g_state.window, nullptr);
+        DestroyMenu(menu);
+        if (command == 0U || command > choices.size()) { return; }
+        selected = command - 1U;
+    }
+    const HANDLE process = launch_device_control(choices[selected]->serial);
+    if (process == nullptr) {
+        set_status(L"无法打开另一台设备的控制窗口；系统错误 " + std::to_wstring(GetLastError()));
+        return;
+    }
+    CloseHandle(process);
+    set_status(L"已打开另一台设备的控制窗口；点击该窗口的“扩展屏幕”即可独立投屏。");
+}
+
+std::filesystem::path device_selection_file() {
+    return g_state.settings_file.empty() ? std::filesystem::path{} :
+        g_state.settings_file.parent_path() / L"device-selection.txt";
+}
+
+bool save_device_selection() {
+    const auto path = device_selection_file();
+    if (path.empty()) { return false; }
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) { return false; }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << wide_to_utf8(g_state.selected_adb_serial) << '\n';
+    output.close();
+    return static_cast<bool>(output);
+}
+
+void restore_device_selection() {
+    std::ifstream input(device_selection_file(), std::ios::binary);
+    std::string line;
+    if (std::getline(input, line)) {
+        const auto serial = utf8_to_wide(line);
+        if (wireview::host::valid_adb_serial(serial)) { g_state.selected_adb_serial = serial; }
+    }
+}
+
+void refresh_device_selector() {
+    if (g_state.device_selector == nullptr) { return; }
+    EnableWindow(g_state.device_selector, !device_selection_locked() && g_device_window_serial.empty());
+    std::wstring signature = g_state.selected_adb_serial + L"\n";
+    for (const auto& device : g_state.adb_devices) { signature += adb_device_label(device) + L"\n"; }
+    if (signature == g_state.device_selector_signature) {
+        LRESULT selected{};
+        for (std::size_t index = 0; index < g_state.adb_devices.size(); ++index) {
+            if (g_state.adb_devices[index].serial == g_state.selected_adb_serial) {
+                selected = static_cast<LRESULT>(index + 1U); break;
+            }
+        }
+        SendMessageW(g_state.device_selector, CB_SETCURSEL, static_cast<WPARAM>(selected), 0);
+        return;
+    }
+    g_state.device_selector_signature = std::move(signature);
+    SendMessageW(g_state.device_selector, CB_RESETCONTENT, 0U, 0);
+    SendMessageW(g_state.device_selector, CB_ADDSTRING, 0U,
+        reinterpret_cast<LPARAM>(L"请选择投屏设备"));
+    LRESULT selected{};
+    for (std::size_t index = 0; index < g_state.adb_devices.size(); ++index) {
+        const auto& device = g_state.adb_devices[index];
+        const auto label = adb_device_label(device);
+        SendMessageW(g_state.device_selector, CB_ADDSTRING, 0U, reinterpret_cast<LPARAM>(label.c_str()));
+        if (device.serial == g_state.selected_adb_serial) { selected = static_cast<LRESULT>(index + 1U); }
+    }
+    SendMessageW(g_state.device_selector, CB_SETCURSEL, static_cast<WPARAM>(selected), 0);
+}
+
+void keep_selected_device_in_list() {
+    if (!g_state.selected_adb_serial.empty() &&
+        std::none_of(g_state.adb_devices.begin(), g_state.adb_devices.end(), [](const auto& device) {
+            return device.serial == g_state.selected_adb_serial;
+        })) {
+        g_state.adb_devices.push_back({g_state.selected_adb_serial, L"disconnected", {}});
+    }
+    refresh_device_selector();
+}
+
+bool select_adb_device(std::wstring_view serial) {
+    if (!g_device_window_serial.empty() && serial != g_device_window_serial) {
+        set_status(L"此窗口只管理当前设备；请用“添加设备”打开另一台设备。");
+        refresh_device_selector();
+        return false;
+    }
+    if (device_selection_locked()) {
+        set_status(L"请先停止当前会话或等待设备识别、副屏操作结束，再选择投屏设备。");
+        refresh_device_selector();
+        return false;
+    }
+    if (!wireview::host::valid_adb_serial(serial) ||
+        std::none_of(g_state.adb_devices.begin(), g_state.adb_devices.end(), [serial](const auto& device) {
+            return device.serial == serial;
+        })) { return false; }
+    if (g_state.selected_adb_serial == serial) { return true; }
+    g_state.selected_adb_serial = serial;
+    g_state.device_connected = false;
+    g_state.wireview_android_app_seen = false;
+    g_state.auto_device_profile_attempted = false;
+    g_state.auto_device_profile_completed = false;
+    g_state.device_profile_refresh_requested = false;
+    g_state.last_auto_device_probe_exit = MAXDWORD;
+    g_state.next_device_probe_at = 0U;
+    reset_android_device_identity();
+    refresh_device_selector();
+    const bool saved = save_device_selection();
+    set_status(L"已选择投屏设备 " + std::wstring(serial) + L"，正在检查连接。" +
+        (saved ? L"" : L"本次选择未能保存到磁盘。"));
+    return true;
+}
+
+std::wstring adb_target_argument() {
+    return g_state.selected_adb_serial.empty() ? L"" :
+        L" --serial \"" + g_state.selected_adb_serial + L"\"";
+}
+
+unsigned selected_cursor_size_percent() {
+    return wireview::host::cursor_size_for(g_state.cursor_sizes, wide_to_utf8(g_state.selected_adb_serial));
 }
 
 std::wstring friendly_android_device_name(
@@ -1769,17 +2120,22 @@ std::wstring friendly_android_device_name(
     return tablet ? L"Android 平板" : L"Android 手机";
 }
 
-std::wstring compact_refresh_rate(std::wstring text) {
-    const std::size_t decimal = text.find(L'.');
-    if (decimal != std::wstring::npos) {
-        while (!text.empty() && text.back() == L'0') {
-            text.pop_back();
+std::wstring status_value(std::wstring_view status, std::wstring_view key) {
+    while (!status.empty()) {
+        const auto end = status.find(L'\n');
+        auto line = status.substr(0U, end);
+        if (line.ends_with(L'\r')) {
+            line.remove_suffix(1U);
         }
-        if (!text.empty() && text.back() == L'.') {
-            text.pop_back();
+        if (line.starts_with(key) && line.substr(key.size()).starts_with(L'=')) {
+            return std::wstring(line.substr(key.size() + 1U));
         }
+        if (end == std::wstring_view::npos) {
+            break;
+        }
+        status.remove_prefix(end + 1U);
     }
-    return text.empty() ? L"--" : text;
+    return {};
 }
 
 std::optional<std::wstring> read_script_status() {
@@ -1830,32 +2186,19 @@ std::optional<std::wstring> read_script_status() {
     }
 
     const auto value_for = [&result](std::wstring_view key) {
-        const std::wstring prefix = std::wstring(key) + L"=";
-        std::size_t start = 0U;
-        while (start < result.size()) {
-            const std::size_t end = result.find(L'\n', start);
-            const std::size_t length =
-                (end == std::wstring::npos ? result.size() : end) - start;
-            std::wstring_view line(result.data() + start, length);
-            if (!line.empty() && line.back() == L'\r') {
-                line.remove_suffix(1U);
-            }
-            if (line.starts_with(prefix)) {
-                return std::wstring(line.substr(prefix.size()));
-            }
-            if (end == std::wstring::npos) {
-                break;
-            }
-            start = end + 1U;
-        }
-        return std::wstring{};
+        return status_value(result, key);
     };
 
     const std::wstring state = value_for(L"state");
+    g_state.session_phase = state;
     const std::wstring message = value_for(L"message");
     const std::wstring diagnostics = value_for(L"diagnostics");
     const std::wstring input_mode = value_for(L"input_mode");
-    const std::wstring display = value_for(L"display");
+    std::wstring display = value_for(L"display");
+    if (display.starts_with(LR"(\\?\)")) {
+        display = g_state.session_display_source.device_name.empty()
+            ? L"等待 Windows 副屏" : g_state.session_display_source.device_name;
+    }
     const std::wstring actual_width = value_for(L"actual_width");
     const std::wstring actual_height = value_for(L"actual_height");
     const std::wstring actual_fps = value_for(L"actual_fps");
@@ -1889,10 +2232,21 @@ std::optional<std::wstring> read_script_status() {
     const std::wstring decoder_queued_frames = value_for(L"decoder_queued_frames");
     const std::wstring decoder_dropped_frames = value_for(L"decoder_dropped_frames");
     const std::wstring decoder_errors = value_for(L"decoder_errors");
+    const bool video_failed = state == L"streaming" && decoder_health_seen == L"1" &&
+        decoder_active == L"0" && !decoder_errors.empty() && decoder_errors != L"0";
+    if (video_failed) { g_state.session_phase = L"video_error"; }
+    g_state.session_streaming = state == L"streaming" && decoder_first_frame == L"1" && !video_failed;
+    if (g_state.session_streaming && !g_state.preview_active && !g_state.profile_probe_active &&
+        !g_state.pending_resolution_use.empty()) {
+        wireview::host::record_resolution_use(g_state.display_preferences, g_state.pending_resolution_use);
+        g_state.pending_resolution_use.clear();
+        save_mode_preferences();
+        populate_resolution_selector();
+    }
     const bool android_connection_lost = state == L"waiting_device" ||
         state == L"waiting_usb" || state == L"waiting_authorization" ||
-        state == L"waiting_adb" || state == L"reconnecting" || state == L"stopped" ||
-        state == L"completed" || state == L"error";
+        state == L"waiting_adb" || state == L"reconnecting" || state == L"recovering" ||
+        state == L"stopped" || state == L"completed" || state == L"error" || state == L"app_missing";
 
     if (android_connection_lost) {
         g_state.device_connected = false;
@@ -1907,9 +2261,6 @@ std::optional<std::wstring> read_script_status() {
         g_state.device_connected = true;
         g_state.wireview_android_app_seen = true;
     }
-    if (!android_refresh_hz.empty() && std::wcstod(android_refresh_hz.c_str(), nullptr) > 0.0) {
-        g_state.device_active_refresh = compact_refresh_rate(android_refresh_hz);
-    }
 
     std::wstring state_label = message;
     if (state == L"starting") {
@@ -1921,7 +2272,8 @@ std::optional<std::wstring> read_script_status() {
     } else if (state == L"connected") {
         state_label = L"已连接，正在准备视频";
     } else if (state == L"streaming") {
-        state_label = L"正在传输";
+        state_label = video_failed ? L"手机画面解码异常" :
+            g_state.session_streaming ? L"正在传输" : L"等待手机显示首帧";
     } else if (state == L"recovering" || state == L"reconnecting") {
         state_label = L"连接中断，正在重新连接";
     } else if (state == L"waiting_device") {
@@ -1934,8 +2286,10 @@ std::optional<std::wstring> read_script_status() {
         state_label = L"会话已结束";
     } else if (state == L"identifying_device") {
         state_label = L"正在识别已连接设备";
+    } else if (state == L"app_missing") {
+        state_label = L"手机未安装 WireView";
     } else if (state == L"error") {
-        state_label = L"Windows Host 启动/运行失败";
+        state_label = L"投屏连接失败";
     }
     const std::wstring input_label = input_mode == L"enabled"
         ? L"输入已启用"
@@ -1963,7 +2317,7 @@ std::optional<std::wstring> read_script_status() {
     }
     if (!delivered_frames.empty() && delivered_frames != L"0") {
         formatted += L"\n主机发送：" + output_fps + L" FPS · " + bitrate_mbps +
-            L" Mbps · " + delivered_frames + L" 帧";
+            L" Mbps（近 1 秒）· 累计 " + delivered_frames + L" 帧";
     }
     if (!surface_samples.empty() && surface_samples != L"0") {
         formatted += L"\nSurface：" + surface_samples + L" 样本 · P50 " +
@@ -1975,7 +2329,7 @@ std::optional<std::wstring> read_script_status() {
     const bool has_device_profile = !android_width.empty() && android_width != L"0" &&
         !android_height.empty() && android_height != L"0";
     if (has_device_profile && !android_connection_lost) {
-        apply_detected_device_profile(android_width, android_height, android_max_refresh_hz);
+        apply_detected_device_profile(android_width, android_height, android_refresh_hz, android_max_refresh_hz);
     }
     if (!client.empty() && !android_connection_lost) {
         g_state.device_name = friendly_android_device_name(
@@ -2154,10 +2508,137 @@ int run_script_status_self_test() {
         high_frame_rate_environment_warning(LR"(\\.\DISPLAY6)", 240U, false) ==
             L"警告：电脑正在使用电池；120 FPS 可能降速，建议接通电源。" &&
         high_frame_rate_environment_warning(LR"(\\.\DISPLAY6)", 240U, true).empty();
+    // Exercise a real native combo: a rejected placeholder must restore the
+    // backend target even when the device-list signature has not changed.
+    g_state.device_selector = CreateWindowW(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_POPUP,
+        0, 0, 300, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    g_state.adb_devices = {{L"first", L"device", L"Tablet"}, {L"second", L"device", L"Tablet"}};
+    g_state.selected_adb_serial = L"first";
+    refresh_device_selector();
+    SendMessageW(g_state.device_selector, CB_SETCURSEL, 0U, 0);
+    refresh_device_selector();
+    const bool selection_restored = g_state.device_selector != nullptr &&
+        SendMessageW(g_state.device_selector, CB_GETCURSEL, 0U, 0) == 1;
+    g_state.vdd_stop_requested = true;
+    const bool removal_locks_selection = device_selection_locked();
+    g_state.vdd_stop_requested = false;
+    g_state.adb_session_file = L"pending-cleanup.ini";
+    const bool cleanup_locks_selection = device_selection_locked();
+    g_state.adb_session_file.clear();
+    // A real event stands in for the broker's stop event. No driver operations
+    // occur: stopping must signal only our broker, including during creation.
+    HANDLE stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_state.vdd_broker_process = stop_event;
+    g_state.vdd_stop_event = stop_event;
+    g_state.start_after_vdd_ready = PendingSessionAction::copy;
+    g_state.start_after_vdd_removal = true;
+    g_state.recreate_vdd_for_simple_extension = true;
+    stop_wireview();
+    const bool stop_removes_owned = stop_event != nullptr &&
+        WaitForSingleObject(stop_event, 0U) == WAIT_OBJECT_0 && g_state.vdd_stop_requested &&
+        g_state.start_after_vdd_ready == PendingSessionAction::none && !g_state.start_after_vdd_removal &&
+        !g_state.recreate_vdd_for_simple_extension;
+    g_state.vdd_broker_process = nullptr;
+    g_state.vdd_stop_event = nullptr;
+    g_state.vdd_stop_requested = false;
+    if (stop_event != nullptr) { CloseHandle(stop_event); }
+    // A completed probe for A must not mark newly selected B as ready. Use an
+    // actual, hidden, already-exited child process rather than a fake handle.
+    const auto saved_device_window_serial = std::exchange(g_device_window_serial, L"second");
+    g_state.selected_adb_serial = L"second";
+    g_state.device_probe_serial = L"first";
+    g_state.device_connected = false;
+    g_state.auto_device_profile_attempted = false;
+    g_state.last_auto_device_probe_exit = MAXDWORD;
+    g_state.device_list_file = status_file.wstring() + L".devices";
+    { std::ofstream list(g_state.device_list_file); list << "List of devices attached\nfirst\tdevice\nsecond\tdevice\n"; }
+    wchar_t system_directory[MAX_PATH]{};
+    const auto system_length = GetSystemDirectoryW(system_directory, MAX_PATH);
+    bool stale_probe_ignored = false;
+    bool retained_cleanup_allows_detection = false;
+    bool reconnected_cleanup_started = false;
+    if (system_length > 0U && system_length < MAX_PATH) {
+        const auto shell = std::filesystem::path(system_directory) / L"cmd.exe";
+        const auto text = L"\"" + shell.wstring() + L"\" /d /c exit 0";
+        std::vector<wchar_t> command(text.begin(), text.end()); command.push_back(L'\0');
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+        PROCESS_INFORMATION child{};
+        if (CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                nullptr, nullptr, &startup, &child)) {
+            CloseHandle(child.hThread);
+            if (WaitForSingleObject(child.hProcess, 2'000U) == WAIT_OBJECT_0) {
+                g_state.device_probe_process = child.hProcess;
+                poll_device_detection(nullptr);
+                stale_probe_ignored = g_state.device_probe_process == nullptr && !g_state.device_connected &&
+                    !g_state.auto_device_profile_attempted && g_state.last_auto_device_probe_exit == MAXDWORD;
+                if (g_state.device_probe_process != nullptr) { CloseHandle(g_state.device_probe_process); g_state.device_probe_process = nullptr; }
+            } else { TerminateProcess(child.hProcess, 1U); CloseHandle(child.hProcess); }
+        }
+        // Retaining an old mapping must not prevent read-only discovery. This
+        // noninteractive system executable rejects the probe arguments without
+        // touching ADB, USB, mappings or any real device.
+        g_state.session_launcher_path = std::filesystem::path(system_directory) / L"where.exe";
+        g_state.adb_session_file = status_file.wstring() + L".old-session";
+        g_state.adb_cleanup_failed = true;
+        g_state.next_device_probe_at = 0U;
+        start_device_detection_probe();
+        retained_cleanup_allows_detection = g_state.device_probe_process != nullptr;
+        if (g_state.device_probe_process != nullptr) {
+            WaitForSingleObject(g_state.device_probe_process, 2'000U);
+            CloseHandle(g_state.device_probe_process); g_state.device_probe_process = nullptr;
+        }
+        // Exercise the completed detection callback for a reconnected device:
+        // it must launch targeted cleanup before attempting another profile.
+        { std::ofstream list(g_state.device_list_file); list << "List of devices attached\nsecond\tdevice\n"; }
+        g_state.device_probe_serial = L"second";
+        g_state.device_connected = false;
+        g_state.last_auto_device_probe_exit = 3U;
+        g_state.auto_device_profile_attempted = true;
+        g_state.session_phase = L"error";
+        if (CreateProcessW(shell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                nullptr, nullptr, &startup, &child)) {
+            CloseHandle(child.hThread);
+            if (WaitForSingleObject(child.hProcess, 2'000U) == WAIT_OBJECT_0) {
+                g_state.device_probe_process = child.hProcess;
+                poll_device_detection(nullptr);
+                reconnected_cleanup_started = g_state.adb_cleanup_process != nullptr &&
+                    g_state.device_profile_refresh_requested && !g_state.adb_cleanup_failed;
+            } else { TerminateProcess(child.hProcess, 1U); CloseHandle(child.hProcess); }
+        }
+        if (g_state.adb_cleanup_process != nullptr) {
+            WaitForSingleObject(g_state.adb_cleanup_process, 2'000U);
+            CloseHandle(g_state.adb_cleanup_process); g_state.adb_cleanup_process = nullptr;
+        }
+        g_state.adb_session_file.clear();
+        g_state.session_launcher_path.clear();
+        g_state.adb_cleanup_failed = false;
+    }
+    std::filesystem::remove(g_state.device_list_file, error);
+    g_state.device_list_file.clear();
+    g_device_window_serial = saved_device_window_serial;
+    const auto selection_directory = temporary_directory / (L"wireview-selection-" +
+        std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+    const bool selection_directory_created = std::filesystem::create_directory(selection_directory, error);
+    bool selection_persisted = false;
+    if (selection_directory_created) {
+        g_state.settings_file = selection_directory / L"control-settings.ini";
+        const bool saved = save_device_selection();
+        g_state.selected_adb_serial.clear(); restore_device_selection();
+        selection_persisted = saved && g_state.selected_adb_serial == L"second";
+        std::filesystem::remove(device_selection_file(), error);
+        std::filesystem::remove(selection_directory, error);
+        g_state.settings_file.clear();
+    }
+    DestroyWindow(g_state.device_selector);
+    g_state.device_selector = nullptr;
+    g_state.adb_devices.clear();
+    g_state.selected_adb_serial.clear();
     std::filesystem::remove(status_file, error);
     g_state.status_file.clear();
     return structured_ok && refresh_limited_ok && legacy_ok &&
-        environment_warning_copy_ok ? 0 : 1;
+        environment_warning_copy_ok && selection_restored && removal_locks_selection &&
+        stale_probe_ignored && retained_cleanup_allows_detection && reconnected_cleanup_started &&
+        selection_persisted && cleanup_locks_selection && stop_removes_owned ? 0 : 1;
 }
 
 struct VddBrokerStatus {
@@ -2166,6 +2647,8 @@ struct VddBrokerStatus {
     std::wstring message;
     DWORD owner_process_id{};
     DWORD broker_process_id{};
+    std::uint64_t owner_created{};
+    std::uint64_t broker_created{};
     int display_index{-1};
 };
 
@@ -2213,8 +2696,14 @@ std::optional<VddBrokerStatus> read_vdd_broker_status(
                 return std::nullopt;
             }
         } else if (line.rfind("message=", 0U) == 0U) {
-            const std::string value = line.substr(8U);
-            result.message.assign(value.begin(), value.end());
+            result.message = utf8_to_wide(std::string_view(line).substr(8U));
+        } else if (line.rfind("owner_created=", 0U) == 0U || line.rfind("broker_created=", 0U) == 0U) {
+            const bool owner = line.starts_with("owner_created=");
+            const auto value = line.substr(owner ? 14U : 15U);
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos) { return std::nullopt; }
+            try {
+                (owner ? result.owner_created : result.broker_created) = std::stoull(value);
+            } catch (const std::exception&) { return std::nullopt; }
         }
     }
     return result.state.empty() ? std::nullopt : std::optional<VddBrokerStatus>(result);
@@ -2231,20 +2720,6 @@ std::wstring describe_vdd_failure(const std::wstring& detail) {
             L"。请检查设备管理器中的驱动状态，必要时重启后重装或降级到 VDD 0.41 驱动。";
     }
     return detail.empty() ? L"VDD 守护进程未返回具体错误。" : detail;
-}
-
-[[nodiscard]] bool process_is_alive(DWORD process_id) noexcept {
-    if (process_id == 0U) {
-        return false;
-    }
-    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, process_id);
-    if (process == nullptr) {
-        // Access denied is treated conservatively as an existing process.
-        return GetLastError() == ERROR_ACCESS_DENIED;
-    }
-    const bool alive = WaitForSingleObject(process, 0U) == WAIT_TIMEOUT;
-    CloseHandle(process);
-    return alive;
 }
 
 [[nodiscard]] bool recovery_display_mapping_matches(
@@ -2288,8 +2763,16 @@ void scan_vdd_recovery_records() {
             status->display_index > 15 || status->display_device.empty()) {
             continue;
         }
-        const bool owner_alive = process_is_alive(status->owner_process_id);
-        const bool broker_alive = process_is_alive(status->broker_process_id);
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        std::uint64_t written{};
+        if (GetFileAttributesExW(iterator->path().c_str(), GetFileExInfoStandard, &attributes)) {
+            written = (static_cast<std::uint64_t>(attributes.ftLastWriteTime.dwHighDateTime) << 32U) |
+                attributes.ftLastWriteTime.dwLowDateTime;
+        }
+        const bool owner_alive = wireview::host::recorded_process_is_alive(
+            status->owner_process_id, status->owner_created, written);
+        const bool broker_alive = wireview::host::recorded_process_is_alive(
+            status->broker_process_id, status->broker_created, written);
         const bool mapping_matches = recovery_display_mapping_matches(status->display_device);
         if (!owner_alive && !broker_alive && !mapping_matches) {
             // The broker already removed (or never attached) this display and
@@ -2335,6 +2818,10 @@ void scan_vdd_recovery_records() {
 }
 
 void close_vdd_broker_handles() {
+    if (g_state.vdd_mode_reservation != nullptr) {
+        CloseHandle(g_state.vdd_mode_reservation);
+        g_state.vdd_mode_reservation = nullptr;
+    }
     if (g_state.vdd_broker_process != nullptr) {
         CloseHandle(g_state.vdd_broker_process);
         g_state.vdd_broker_process = nullptr;
@@ -2350,10 +2837,11 @@ void close_vdd_broker_handles() {
     g_state.pending_vdd_width = 0U;
     g_state.pending_vdd_height = 0U;
     g_state.pending_vdd_refresh_hz = 0U;
-    g_state.start_after_vdd_ready = false;
+    g_state.start_after_vdd_ready = PendingSessionAction::none;
     g_state.start_after_vdd_input = false;
     g_state.recreate_vdd_for_simple_extension = false;
     g_state.recreate_vdd_for_simple_extension_input = false;
+    refresh_device_selector();
 }
 
 void update_vdd_configuration_controls() {
@@ -2367,19 +2855,18 @@ void update_vdd_configuration_controls() {
     }
 }
 
-bool apply_custom_modes_with_elevation(HWND window) {
+bool run_custom_modes_broker(HWND window, const std::wstring& arguments) {
     if (g_state.vdd_broker_path.empty()) {
         return false;
     }
-    std::wstring arguments = L"--apply-custom-modes";
-    for (const auto& mode : g_custom_modes) {
-        arguments += L" ";
-        if (!mode) {
-            arguments += L"-";
-        } else {
-            arguments += std::to_wstring(mode->width) + L"x" +
-                std::to_wstring(mode->height) + L"@" + std::to_wstring(mode->refresh_hz);
-        }
+    std::wstring command = arguments;
+    std::filesystem::path result_file;
+    if (arguments.starts_with(L"--ensure-custom-mode ")) {
+        result_file = g_state.runtime_log_file.parent_path() /
+            (L"vdd-mode-result-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
+        std::error_code error;
+        std::filesystem::remove(result_file, error);
+        command += L" --status-file \"" + result_file.wstring() + L"\"";
     }
     SHELLEXECUTEINFOW execute{};
     execute.cbSize = sizeof(execute);
@@ -2387,7 +2874,7 @@ bool apply_custom_modes_with_elevation(HWND window) {
     execute.hwnd = window;
     execute.lpVerb = L"runas";
     execute.lpFile = g_state.vdd_broker_path.c_str();
-    execute.lpParameters = arguments.c_str();
+    execute.lpParameters = command.c_str();
     execute.lpDirectory = g_state.vdd_broker_path.parent_path().c_str();
     execute.nShow = SW_HIDE;
     log_control_event(L"vdd-custom-modes", L"请求管理员权限写入 Parsec 自定义模式。");
@@ -2404,39 +2891,58 @@ bool apply_custom_modes_with_elevation(HWND window) {
     CloseHandle(execute.hProcess);
     log_control_event(L"vdd-custom-modes", L"自定义模式写入进程结束，退出代码 " +
         std::to_wstring(exit_code));
+    if (!result_file.empty()) {
+        std::ifstream result(result_file, std::ios::binary);
+        const std::string details{std::istreambuf_iterator<char>(result), std::istreambuf_iterator<char>()};
+        log_control_event(L"vdd-custom-modes-result", utf8_to_wide(details));
+    }
     return waited == WAIT_OBJECT_0 && exit_code == 0U;
 }
 
-bool custom_modes_match_parsec_vdd() {
-    const auto applied = wireview::host::read_parsec_vdd_custom_modes();
-    if (!applied.has_value()) {
+std::wstring custom_mode_argument(const CustomMode& mode) {
+    return std::to_wstring(mode.width) + L"x" + std::to_wstring(mode.height) + L"@" +
+        std::to_wstring(mode.refresh_hz);
+}
+
+bool apply_custom_modes_with_elevation(HWND window) {
+    std::wstring arguments = L"--apply-custom-modes";
+    for (const auto& mode : g_custom_modes) {
+        arguments += L" " + (mode ? custom_mode_argument(*mode) : L"-");
+    }
+    return run_custom_modes_broker(window, arguments);
+}
+
+bool ensure_device_custom_mode(HWND window, const CustomMode& mode) {
+    if (const auto installed = wireview::host::read_parsec_vdd_custom_modes()) {
+        const wireview::host::ParsecVddCustomMode required{mode.width, mode.height, mode.refresh_hz};
+        if (std::find(installed->begin(), installed->end(), required) != installed->end()) {
+            return true;
+        }
+    }
+    if (!run_custom_modes_broker(window, L"--ensure-custom-mode " + custom_mode_argument(mode))) {
+        set_status(L"未能为当前设备准备显示档位。请检查管理员授权；正在使用的档位会保留。详情见日志。");
         return false;
     }
-    for (std::size_t index = 0U; index < g_custom_modes.size(); ++index) {
-        const auto& requested = g_custom_modes[index];
-        const auto& current = (*applied)[index];
-        if (requested.has_value() != current.has_value()) {
-            return false;
-        }
-        if (requested && (requested->width != current->width ||
-            requested->height != current->height || requested->refresh_hz != current->refresh_hz)) {
-            return false;
-        }
-    }
+    sync_custom_modes_from_parsec_vdd();
     return true;
 }
 
 bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
-    log_control_event(L"vdd-create", L"收到创建副屏请求；当前显示器：" +
-        describe_display_choices_for_log());
-    if (g_state.device_profile_requires_custom_mode) {
-        set_status(L"请先在“编辑自定义分辨率”中替换或释放一个自定义槽，再创建副屏。");
-        show_custom_mode_editor(window);
+    if (queue_after_preview(PendingSessionAction::create_vdd, false)) {
+        g_state.pending_vdd_confirmation = confirm_custom_modes;
+        return true;
+    }
+    if (!g_state.adb_session_file.empty() || g_state.vdd_stop_requested) {
+        set_status(L"上次连接仍在清理；清理失败时请检查设备连接，再点“停止 WireView”重试。");
         return false;
     }
+    log_control_event(L"vdd-create", L"收到创建副屏请求；当前显示器：" +
+        describe_display_choices_for_log());
     if (g_state.shell_process != nullptr) {
         if (g_state.preview_active) {
             stop_session();
+            set_status(L"正在关闭设备预览，请清理完成后再创建副屏。");
+            return false;
         } else {
             set_status(L"先停止当前 WireView 视频会话");
             return false;
@@ -2446,18 +2952,10 @@ bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
         set_status(L"WireView 已经持有或正在创建一块副屏。");
         return false;
     }
+    refresh_display_choices();
+    scan_vdd_recovery_records();
     if (g_state.recovered_vdd_record_count != 0U) {
         set_status(L"检测到未处理的 WireView VDD 残留记录，已拒绝创建新副屏。");
-        return false;
-    }
-    const auto current_displays = enumerate_attached_displays();
-    if (std::any_of(
-            current_displays.begin(),
-            current_displays.end(),
-            [](const DisplayChoice& choice) { return choice.parsec_vdd; })) {
-        g_state.display_choices = current_displays;
-        update_vdd_controls();
-        set_status(L"已存在 Parsec 副屏，请直接选择复用；已拒绝重复创建。");
         return false;
     }
     if (g_state.vdd_broker_path.empty()) {
@@ -2479,21 +2977,26 @@ bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
     g_state.pending_vdd_width = requested_stream->width;
     g_state.pending_vdd_height = requested_stream->height;
     g_state.pending_vdd_refresh_hz = requested_stream->vdd_refresh_hz;
-    const bool has_custom_mode = std::any_of(
-        g_custom_modes.begin(), g_custom_modes.end(),
-        [](const std::optional<CustomMode>& mode) { return mode.has_value(); });
-    // 自定义模式是用户已在控制中心保存的配置。创建副屏时直接按“继续”执行，
-    // 避免简易、完整和自动配置入口反复弹出相同的系统确认框。
     (void)confirm_custom_modes;
-    if (has_custom_mode && !custom_modes_match_parsec_vdd() &&
-        !apply_custom_modes_with_elevation(window)) {
-        set_status(L"未获得管理员授权或 Parsec VDD 自定义模式写入失败；没有创建副屏。 ");
-        return false;
-    }
-    if (has_custom_mode) {
-        log_control_event(L"vdd-custom-modes", custom_modes_match_parsec_vdd()
-            ? L"自定义模式已同步，跳过管理员写入。"
-            : L"自定义模式已在本次创建前写入。 ");
+    const bool creating_copy = g_state.start_after_vdd_ready == PendingSessionAction::copy;
+    const CustomMode requested_mode{requested_stream->vdd_width, requested_stream->vdd_height,
+        requested_stream->vdd_refresh_hz};
+    const auto release_handle = [](void* handle) { if (handle != nullptr) { CloseHandle(handle); } };
+    std::unique_ptr<void, decltype(release_handle)> mode_reservation(nullptr, release_handle);
+    if (requested_mode.width != 0U && requested_mode.height != 0U) {
+        const wireview::host::ParsecVddCustomMode reservation_mode{
+            requested_mode.width, requested_mode.height, requested_mode.refresh_hz};
+        mode_reservation.reset(CreateEventW(nullptr, TRUE, FALSE,
+            wireview::host::parsec_vdd_mode_reservation_name(reservation_mode).c_str()));
+        if (!mode_reservation) { set_status(L"无法保留当前设备的显示档位。"); return false; }
+        const auto resolution = std::pair{requested_mode.width, requested_mode.height};
+        const bool standard = std::any_of(kStandardModeGroups.begin(), kStandardModeGroups.end(),
+            [&](const StandardModeGroup& group) {
+                return parse_resolution(group.resolution) == resolution &&
+                    std::find(group.refresh_rates.begin(), group.refresh_rates.end(),
+                        requested_mode.refresh_hz) != group.refresh_rates.end();
+            });
+        if (!creating_copy && !standard && !ensure_device_custom_mode(window, requested_mode)) { return false; }
     }
 
     const std::wstring unique_suffix = std::to_wstring(GetCurrentProcessId()) + L"-" +
@@ -2529,6 +3032,8 @@ bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
         L"\" --owner-pid " + std::to_wstring(GetCurrentProcessId()) +
         L" --stop-event \"" + g_state.vdd_stop_event_name +
         L"\" --status-file \"" + g_state.vdd_status_file.wstring() + L"\"";
+    argument += L" --allow-additional";
+    if (creating_copy) { argument += L" --lid-copy"; }
     if (requested_stream->vdd_width != 0U) {
         argument += L" --mode " + std::to_wstring(requested_stream->vdd_width) + L"x" +
             std::to_wstring(requested_stream->vdd_height) + L"@" +
@@ -2567,6 +3072,7 @@ bool start_vdd_broker(HWND window, bool confirm_custom_modes = true) {
     }
     CloseHandle(process.hThread);
     g_state.vdd_broker_process = process.hProcess;
+    g_state.vdd_mode_reservation = mode_reservation.release();
     log_control_event(L"vdd-broker", L"已启动，PID=" + std::to_wstring(process.dwProcessId) +
         L"，请求模式=" + std::to_wstring(requested_stream->vdd_width) + L"x" +
         std::to_wstring(requested_stream->vdd_height) + L"@" +
@@ -2608,52 +3114,38 @@ void recover_stale_vdd_session(HWND window) {
         return;
     }
     const RecoveredVddSession recovered = *g_state.recovered_vdd_session;
-    if (recovered.owner_alive || recovered.broker_alive || !recovered.mapping_matches) {
-        set_status(L"残留会话仍有进程存活或显示器映射无法确认，已拒绝清理。");
+    if (recovered.owner_alive || recovered.broker_alive) {
+        set_status(L"记录对应的进程仍存活，已拒绝遗忘该记录。");
         return;
     }
     const std::wstring confirmation =
-        L"将按 WireView 残留候选记录移除以下 Parsec VDD：\n\n" +
+        L"将仅遗忘以下历史会话记录，不移除任何显示器：\n\n" +
         recovered.display_device + L"\ndriver index " +
         std::to_wstring(recovered.display_index) +
-        L"\n\nParsec 驱动会复用 index，WireView 无法自动证明它仍属于原会话。"
-        L"只有你确认该 index 没有被 Parsec/Sunshine 等其他程序重新使用时才继续。"
-        L"此操作不会按名称批量删除其他 Parsec 显示器。";
+        L"\n\nDISPLAY 名称和 driver index 都可能被 Windows/Parsec 复用，不能证明归属。"
+        L"仍存在的副屏请直接选择复用，或在创建它的 Parsec/Sunshine 中管理。";
     if (MessageBoxW(
             window,
             confirmation.c_str(),
-            L"确认清理 WireView 残留副屏",
+            L"确认遗忘 WireView 旧记录（不删屏）",
             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
         set_status(L"已取消清理残留副屏。");
         return;
     }
     try {
-        wireview::host::remove_parsec_vdd_display(recovered.display_index);
         std::error_code error;
         std::filesystem::remove(recovered.status_file, error);
+        if (error) { throw std::filesystem::filesystem_error("forget VDD record", recovered.status_file, error); }
         g_state.recovered_vdd_session.reset();
         g_state.recovered_vdd_record_count = 0U;
-        for (int attempt = 0; attempt < 30; ++attempt) {
-            const auto displays = enumerate_attached_displays();
-            const bool still_attached = std::any_of(
-                displays.begin(),
-                displays.end(),
-                [&recovered](const DisplayChoice& choice) {
-                    return choice.parsec_vdd &&
-                        choice.device_name == recovered.display_device;
-                });
-            if (!still_attached) {
-                break;
-            }
-            Sleep(100U);
-        }
         refresh_display_choices();
         scan_vdd_recovery_records();
-        set_status(L"已按精确 driver index 清理 WireView 残留副屏。");
+        log_control_event(L"vdd-recovery", L"已遗忘旧记录，未操作任何 VDD：" + recovered.status_file.wstring());
+        set_status(L"已遗忘旧记录，未删除任何副屏；现有 Parsec/Sunshine 显示器仍可复用。");
     } catch (const std::exception& error) {
         const std::string message(error.what());
         const std::wstring wide_message(message.begin(), message.end());
-        set_status(L"清理 WireView 残留副屏失败：" + wide_message);
+        set_status(L"遗忘 WireView 旧记录失败：" + wide_message);
     }
 }
 
@@ -2673,6 +3165,7 @@ void poll_vdd_broker(HWND window) {
         }
     }
     if (broker_status && broker_status->state == "ready" &&
+        !g_state.vdd_stop_requested &&
         g_state.owned_display_device.empty() && !broker_status->display_device.empty() &&
         broker_status->display_index >= 0) {
         g_state.owned_display_device = broker_status->display_device;
@@ -2697,11 +3190,16 @@ void poll_vdd_broker(HWND window) {
                 ? L"已检测到副屏被 Windows 设为复制，已自动切换为扩展；WireView 副屏已创建并选中："
                 : L"WireView 副屏已创建并选中：") +
             g_state.owned_display_device + L"。");
-        if (g_state.start_after_vdd_ready) {
+        const auto start_action = g_state.start_after_vdd_ready;
+        if (start_action != PendingSessionAction::none) {
             const bool enable_input = g_state.start_after_vdd_input;
-            g_state.start_after_vdd_ready = false;
+            g_state.start_after_vdd_ready = PendingSessionAction::none;
             g_state.start_after_vdd_input = false;
-            (void)start_session(window, enable_input, false, false);
+            if (start_action == PendingSessionAction::copy) {
+                start_copy_with_owned_display(window, enable_input);
+            } else {
+                (void)start_session(window, enable_input, false, false);
+            }
         }
     }
     if (broker_status && broker_status->state == "retrying") {
@@ -2717,6 +3215,8 @@ void poll_vdd_broker(HWND window) {
         L"；最后状态=" + g_state.last_vdd_broker_log_state);
 
     const bool removal_requested = g_state.vdd_stop_requested;
+    const bool copy_waiting = g_state.start_after_vdd_ready == PendingSessionAction::copy;
+    const bool copy_waiting_input = g_state.start_after_vdd_input;
     const bool start_after_removal = g_state.start_after_vdd_removal;
     const bool start_after_removal_input = g_state.start_after_vdd_removal_input;
     const bool recreate_for_simple_extension = g_state.recreate_vdd_for_simple_extension;
@@ -2736,23 +3236,25 @@ void poll_vdd_broker(HWND window) {
     g_state.vdd_status_file.clear();
     refresh_display_choices();
     scan_vdd_recovery_records();
-    if (!failure_message.empty()) {
+    if (copy_waiting && !removal_requested) {
+        log_control_event(L"lid-copy-fallback", L"副屏未就绪，使用普通复制。" + failure_message);
+        (void)start_primary_copy(window, copy_waiting_input);
+    } else if (!failure_message.empty()) {
         set_status(L"WireView 副屏操作失败：" + failure_message);
     } else if (removal_requested) {
-        set_status(L"WireView 创建的副屏已安全移除。");
+        set_status(g_state.adb_cleanup_failed
+            ? L"自建副屏已移除；ADB 连接清理失败，请检查原设备连接后点“停止 WireView”重试。"
+            : L"WireView 创建的副屏已安全移除。");
         if (recreate_for_simple_extension) {
             set_status(L"原 WireView 副屏已不再附加到 Windows，正在重新创建扩展屏幕……");
             begin_simple_extension(recreate_for_simple_extension_input);
         } else if (start_after_removal) {
-            if (!select_primary_display()) {
-                set_status(L"副屏已移除，但未找到电脑主显示器。请在完整模式中刷新显示器。 ");
-            } else {
-                (void)start_session(window, start_after_removal_input, false, false);
-            }
+            (void)start_primary_copy(window, start_after_removal_input);
         }
     } else {
         set_status(L"WireView VDD 守护进程已结束，未保留其副屏。");
     }
+    update_session_action_controls();
 }
 
 void shutdown_vdd_broker_on_exit() {
@@ -2773,30 +3275,35 @@ void shutdown_vdd_broker_on_exit() {
 }
 
 void update_session_action_controls() {
+    refresh_device_selector();
     const bool mirroring = g_state.shell_process != nullptr &&
         !g_state.preview_active && !g_state.profile_probe_active;
+    const bool cleaning = (!g_state.adb_session_file.empty() && !g_state.preview_active) || g_state.vdd_stop_requested;
+    const bool can_stop = g_state.shell_process != nullptr || g_state.vdd_broker_process != nullptr ||
+        (!g_state.adb_session_file.empty() && g_state.adb_cleanup_process == nullptr) ||
+        g_state.pending_session_action != PendingSessionAction::none;
     const HMODULE user32 = GetModuleHandleW(L"user32.dll");
     const bool input_supported = user32 != nullptr &&
         GetProcAddress(user32, "CreateSyntheticPointerDevice") != nullptr &&
         GetProcAddress(user32, "InjectSyntheticPointerInput") != nullptr &&
         GetProcAddress(user32, "DestroySyntheticPointerDevice") != nullptr;
     if (g_state.start_mirror_button != nullptr) {
-        EnableWindow(g_state.start_mirror_button, !mirroring);
+        EnableWindow(g_state.start_mirror_button, !mirroring && !cleaning);
     }
     if (g_state.start_input_button != nullptr) {
-        EnableWindow(g_state.start_input_button, !mirroring && input_supported);
+        EnableWindow(g_state.start_input_button, !mirroring && !cleaning && input_supported);
     }
     if (g_state.full_display_only_button != nullptr) {
         EnableWindow(g_state.full_display_only_button, !mirroring);
     }
     if (g_state.stop_button != nullptr) {
-        EnableWindow(g_state.stop_button, g_state.shell_process != nullptr);
+        EnableWindow(g_state.stop_button, can_stop);
     }
     if (g_state.simple_stop_button != nullptr) {
-        EnableWindow(g_state.simple_stop_button, g_state.shell_process != nullptr);
+        EnableWindow(g_state.simple_stop_button, can_stop);
     }
     if (g_state.simple_mirror_button != nullptr) {
-        EnableWindow(g_state.simple_mirror_button, !mirroring);
+        EnableWindow(g_state.simple_mirror_button, !mirroring && !cleaning);
     }
     if (g_state.simple_input_button != nullptr) {
         EnableWindow(g_state.simple_input_button, !mirroring && input_supported);
@@ -2804,7 +3311,7 @@ void update_session_action_controls() {
     if (g_state.simple_display_only_button != nullptr) {
         EnableWindow(g_state.simple_display_only_button, !mirroring);
     }
-    const bool can_begin_extension = !mirroring &&
+    const bool can_begin_extension = !mirroring && !cleaning &&
         (g_state.vdd_broker_process == nullptr || !g_state.owned_display_device.empty());
     if (g_state.simple_extend_button != nullptr) {
         EnableWindow(g_state.simple_extend_button, can_begin_extension);
@@ -2812,6 +3319,66 @@ void update_session_action_controls() {
     if (g_state.simple_extend_input_button != nullptr) {
         EnableWindow(g_state.simple_extend_input_button, can_begin_extension && input_supported);
     }
+}
+
+void start_adb_cleanup() {
+    if (g_state.adb_session_file.empty() || g_state.adb_cleanup_process != nullptr) { return; }
+    std::wstring command = L"\"" + g_state.session_launcher_path.wstring() +
+        L"\" --cleanup-adb-session \"" + g_state.adb_session_file.wstring() +
+        L"\" --status-file \"" + g_state.adb_cleanup_status_file.wstring() + L"\"";
+    if (g_state.adb_cleanup_notify_stop) {
+        command += L" --notify-stop \"" + g_state.session_adb_serial + L"\"";
+    }
+    std::vector<wchar_t> buffer(command.begin(), command.end());
+    buffer.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(g_state.session_launcher_path.c_str(), buffer.data(), nullptr, nullptr,
+        FALSE, CREATE_NO_WINDOW, nullptr, g_state.session_launcher_path.parent_path().c_str(), &startup, &process)) {
+        g_state.adb_cleanup_failed = true;
+        set_status(L"无法启动连接清理；请点“停止 WireView”重试。系统错误 " + std::to_wstring(GetLastError()));
+        return;
+    }
+    CloseHandle(process.hThread);
+    g_state.adb_cleanup_process = process.hProcess;
+    g_state.adb_cleanup_notifies_stop = g_state.adb_cleanup_notify_stop;
+    g_state.adb_cleanup_failed = false;
+    SetTimer(g_state.window, kAdbCleanupTimer, 100U, nullptr);
+}
+
+void poll_adb_cleanup() {
+    if (g_state.adb_cleanup_process == nullptr) { return; }
+    DWORD code = STILL_ACTIVE;
+    if (!GetExitCodeProcess(g_state.adb_cleanup_process, &code) || code == STILL_ACTIVE) { return; }
+    CloseHandle(g_state.adb_cleanup_process);
+    g_state.adb_cleanup_process = nullptr;
+    KillTimer(g_state.window, kAdbCleanupTimer);
+    g_state.adb_cleanup_failed = code != 0U;
+    log_control_event(L"adb-cleanup", L"清理退出代码 " + std::to_wstring(code) + L"；记录=" + g_state.adb_session_file.wstring());
+    if (code == 0U) {
+        if (g_state.adb_cleanup_notify_stop && !g_state.adb_cleanup_notifies_stop) {
+            // Stop may have been clicked while normal profile cleanup ran.
+            // Keep starts locked until the targeted notification also finishes.
+            start_adb_cleanup();
+            return;
+        }
+        g_state.adb_session_file.clear();
+        g_state.adb_cleanup_notify_stop = false;
+        std::error_code error;
+        std::filesystem::remove(g_state.adb_cleanup_status_file, error);
+        if (!g_state.vdd_stop_requested && g_state.current_status.find(L"正在清理连接") != std::wstring::npos) {
+            set_status(L"WireView 已停止，连接已清理。");
+        }
+    } else {
+        g_state.pending_session_action = PendingSessionAction::none;
+        std::ifstream input(g_state.adb_cleanup_status_file, std::ios::binary);
+        const std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        log_control_event(L"adb-cleanup-failed", utf8_to_wide(bytes));
+        set_status(L"上次 ADB 连接未清理完成；请检查原设备仍已连接并授权，再点“停止 WireView”重试。详情见日志。");
+    }
+    update_session_action_controls();
+    if (code == 0U && !g_state.exiting) { resume_pending_session(); }
 }
 
 void stop_session() {
@@ -2838,11 +3405,21 @@ void stop_session() {
         g_state.session_job = nullptr;
     }
     if (g_state.shell_process != nullptr) {
+        // Job termination is asynchronous. Wait only for our launcher before
+        // starting a cleanup helper outside the killed Job.
+        WaitForSingleObject(g_state.shell_process, 3'000U);
         CloseHandle(g_state.shell_process);
         g_state.shell_process = nullptr;
     }
     g_state.preview_active = false;
     g_state.profile_probe_active = false;
+    g_state.session_streaming = false;
+    if (g_state.session_phase != L"app_missing" && g_state.session_phase != L"error") {
+        g_state.session_phase.clear();
+    }
+    g_state.session_monitor_path.clear();
+    g_state.session_display_source = {};
+    g_state.session_lid_display_size = {};
     if (!g_state.status_file.empty()) {
         std::error_code error;
         std::filesystem::remove(g_state.status_file, error);
@@ -2850,6 +3427,7 @@ void stop_session() {
         g_state.last_script_status.clear();
     }
     g_state.host_diagnostics_file.clear();
+    start_adb_cleanup();
     if (g_state.frame_rate_selector != nullptr) {
         EnableWindow(g_state.frame_rate_selector, TRUE);
     }
@@ -2905,16 +3483,33 @@ std::optional<StreamSettings> selected_stream_settings() {
     return settings;
 }
 
+bool queue_after_preview(PendingSessionAction action, bool enable_input) {
+    if (!g_state.preview_active || g_state.shell_process == nullptr) { return false; }
+    g_state.pending_session_action = action;
+    g_state.pending_session_input = enable_input;
+    stop_session();
+    set_status(L"正在关闭设备预览并清理连接，完成后继续启动。");
+    return true;
+}
+
 bool start_session(
-    HWND window, bool enable_input, bool device_preview = false, bool device_profile_probe = false) {
-    if (!device_profile_probe && g_state.device_profile_requires_custom_mode) {
-        set_status(L"请先在“编辑自定义分辨率”中替换或释放一个自定义槽，再开始 WireView。");
-        show_custom_mode_editor(window);
+    HWND window, bool enable_input, bool device_preview = false, bool device_profile_probe = false,
+    bool follow_primary, bool copy_settings) {
+    if (!device_preview && queue_after_preview(device_profile_probe
+        ? PendingSessionAction::profile : PendingSessionAction::stream, enable_input)) { return true; }
+    if (!g_state.adb_session_file.empty() || g_state.vdd_stop_requested) {
+        set_status(L"上次连接仍在清理；清理失败时请检查设备连接，再点“停止 WireView”重试。");
+        return false;
+    }
+    if (g_state.selected_adb_serial.empty()) {
+        set_status(L"请先在“投屏设备”中选择一台 Android 设备。");
         return false;
     }
     if (g_state.shell_process != nullptr) {
         if (g_state.preview_active && !device_preview) {
             stop_session();
+            set_status(L"正在关闭设备预览，请清理完成后再开始。");
+            return false;
         } else {
             set_status(L"先停止当前 WireView 视频会话");
             return false;
@@ -2931,9 +3526,32 @@ bool start_session(
     if (device_profile_probe) {
         g_state.device_profile_note.clear();
     }
-    const auto settings = selected_stream_settings();
+    auto settings = selected_stream_settings();
     if (!settings) {
         return false;
+    }
+    const auto saved_settings = *settings;
+    if (copy_settings) {
+        const auto size = wireview::host::preference_resolution(g_state.display_preferences.copy_resolution);
+        settings->width = size ? size->first : 0U;
+        settings->height = size ? size->second : 0U;
+        settings->frame_rate = g_state.display_preferences.copy_frame_rate;
+        if (device_preview) {
+            DEVMODEW mode{}; mode.dmSize = sizeof(mode);
+            if (EnumDisplaySettingsW(settings->display_device.c_str(), ENUM_CURRENT_SETTINGS, &mode)) {
+                if (!size) {
+                    settings->width = static_cast<std::uint16_t>(mode.dmPelsWidth & ~1U);
+                    settings->height = static_cast<std::uint16_t>(mode.dmPelsHeight & ~1U);
+                }
+                const auto scaled_width = static_cast<std::uint64_t>(mode.dmPelsWidth) * settings->height;
+                const auto scaled_height = static_cast<std::uint64_t>(mode.dmPelsHeight) * settings->width;
+                if (scaled_width > scaled_height && mode.dmPelsWidth != 0U) {
+                    settings->height = static_cast<std::uint16_t>((scaled_height / mode.dmPelsWidth) & ~1ULL);
+                } else if (mode.dmPelsHeight != 0U) {
+                    settings->width = static_cast<std::uint16_t>((scaled_width / mode.dmPelsHeight) & ~1ULL);
+                }
+            }
+        }
     }
     if (!device_preview && !device_profile_probe) {
         const auto current_displays = enumerate_attached_displays();
@@ -2953,7 +3571,7 @@ bool start_session(
             return false;
         }
     }
-    save_stream_settings(*settings);
+    save_stream_settings(saved_settings);
 
     std::error_code error;
     const auto temporary_directory = std::filesystem::temp_directory_path(error);
@@ -2969,6 +3587,8 @@ bool start_session(
     g_state.host_diagnostics_file = host_diagnostics_directory /
         (L"host-" + std::to_wstring(GetCurrentProcessId()) + L".log");
     g_state.last_host_diagnostics_file = g_state.host_diagnostics_file;
+    const auto adb_session_file = temporary_directory / (L"wireview-adb-session-" +
+        std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".ini");
     std::filesystem::remove(g_state.status_file, error);
     std::filesystem::remove(g_state.host_diagnostics_file, error);
     std::wstring argument = L"\"" + g_state.session_launcher_path.wstring() +
@@ -2977,6 +3597,9 @@ bool start_session(
         // The preview deliberately remains bounded; normal mirroring has no
         // practical wall-clock limit and ends only when the user stops it.
         L"\" --duration-seconds " + (device_preview ? L"300" : L"2147483647");
+    argument += L" --adb-session-file \"" + adb_session_file.wstring() + L"\"";
+    argument += adb_target_argument();
+    argument += L" --cursor-size-percent " + std::to_wstring(selected_cursor_size_percent());
     if (enable_input && !device_preview) {
         argument += L" --enable-input";
     }
@@ -2992,8 +3615,19 @@ bool start_session(
     if (!device_profile_probe) {
         argument += L" --frame-rate " + std::to_wstring(settings->frame_rate);
     }
+    std::wstring monitor_path;
     if (!device_preview && !device_profile_probe) {
-        argument += L" --display \"" + settings->display_device + L"\"";
+        if (!g_state.owned_display_device.empty() &&
+            (follow_primary || settings->display_device == g_state.owned_display_device)) {
+            monitor_path = wireview::host::monitor_path_for_display(g_state.owned_display_device);
+        } else if (copy_settings) {
+            monitor_path = wireview::host::monitor_path_for_display(settings->display_device);
+        }
+        if (!monitor_path.empty()) {
+            argument += L" --display \"" + monitor_path + L"\"";
+        } else {
+            argument += follow_primary ? L" --follow-primary" : L" --display \"" + settings->display_device + L"\"";
+        }
     }
     std::vector<wchar_t> command(argument.begin(), argument.end());
     command.push_back(L'\0');
@@ -3027,7 +3661,7 @@ bool start_session(
             nullptr,
             nullptr,
             FALSE,
-            CREATE_NO_WINDOW,
+            CREATE_NO_WINDOW | CREATE_SUSPENDED,
             nullptr,
             working_directory.c_str(),
             &startup,
@@ -3038,9 +3672,9 @@ bool start_session(
             std::to_wstring(launch_error) + L"）。");
         return false;
     }
-    CloseHandle(process.hThread);
     if (!AssignProcessToJobObject(job, process.hProcess)) {
         TerminateProcess(process.hProcess, 1U);
+        CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         CloseHandle(job);
         std::filesystem::remove(g_state.status_file, error);
@@ -3048,9 +3682,36 @@ bool start_session(
         set_status(L"无法托管 WireView 会话进程。");
         return false;
     }
+    if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+        TerminateJobObject(job, 1U);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        CloseHandle(job);
+        set_status(L"无法运行已托管的 WireView 会话。");
+        return false;
+    }
+    CloseHandle(process.hThread);
 
     g_state.session_job = job;
+    g_state.session_adb_serial = g_state.selected_adb_serial;
+    g_state.session_monitor_path = std::move(monitor_path);
+    g_state.direct_copy_session = copy_settings && g_state.owned_display_device.empty();
+    if (!g_state.session_monitor_path.empty() && !g_state.direct_copy_session) {
+        (void)wireview::host::restore_lid_display_size(
+            g_state.session_monitor_path, g_state.session_lid_display_size);
+    }
+    if (!g_state.session_monitor_path.empty()) {
+        g_state.session_display_source = wireview::host::desktop_source_for_monitor(g_state.session_monitor_path);
+    }
+    g_state.adb_session_file = adb_session_file;
+    g_state.adb_cleanup_status_file = std::filesystem::path(adb_session_file.wstring() + L".cleanup");
     g_state.shell_process = process.hProcess;
+    g_state.session_copy_source = copy_settings ? settings->display_device : L"";
+    if (!device_profile_probe && !device_preview) {
+        g_state.foreground_resume_action = PendingSessionAction::none;
+        g_state.foreground_resume_waiting = false;
+    }
+    g_state.session_phase = L"starting";
     g_state.preview_active = device_preview;
     g_state.profile_probe_active = device_profile_probe;
     EnableWindow(g_state.display_selector, FALSE);
@@ -3083,13 +3744,38 @@ bool start_session(
     return true;
 }
 
+std::filesystem::path device_probe_status_file() {
+    return g_state.runtime_log_file.empty() ? std::filesystem::path{} :
+        g_state.runtime_log_file.parent_path() / (L"adb-probe-" + std::to_wstring(GetCurrentProcessId()) + L".ini");
+}
+
 void start_device_detection_probe() {
     if (g_state.device_probe_process != nullptr || g_state.shell_process != nullptr ||
-        g_state.session_launcher_path.empty()) {
+        g_state.adb_cleanup_process != nullptr || g_state.vdd_stop_requested ||
+        g_state.session_launcher_path.empty() || GetTickCount64() < g_state.next_device_probe_at) {
         return;
     }
     std::wstring command = L"\"" + g_state.session_launcher_path.wstring() +
         L"\" --detect-device";
+    if (g_state.device_list_file.empty()) {
+        std::error_code error;
+        const auto directory = g_state.runtime_log_file.empty()
+            ? std::filesystem::temp_directory_path(error) : g_state.runtime_log_file.parent_path();
+        if (error) { set_status(L"无法创建 ADB 设备列表文件。"); return; }
+        g_state.device_list_file = directory /
+            (L"adb-devices-" + std::to_wstring(GetCurrentProcessId()) + L".txt");
+    }
+    std::error_code list_error;
+    std::filesystem::remove(g_state.device_list_file, list_error);
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (!uses_device_dashboard())
+#endif
+    { command += adb_target_argument(); }
+    command += L" --devices-file \"" + g_state.device_list_file.wstring() + L"\"";
+    if (const auto status_file = device_probe_status_file(); !status_file.empty()) {
+        std::filesystem::remove(status_file, list_error);
+        command += L" --diagnostics-file \"" + status_file.wstring() + L"\"";
+    }
     if (g_state.wireview_android_app_seen) {
         command += L" --require-wireview-app";
     }
@@ -3103,6 +3789,7 @@ void start_device_detection_probe() {
             &startup, &process)) {
         CloseHandle(process.hThread);
         g_state.device_probe_process = process.hProcess;
+        g_state.device_probe_serial = g_state.selected_adb_serial;
     }
 }
 
@@ -3117,6 +3804,37 @@ void poll_device_detection(HWND window) {
     }
     CloseHandle(g_state.device_probe_process);
     g_state.device_probe_process = nullptr;
+    std::ifstream device_list(g_state.device_list_file, std::ios::binary);
+    const std::string device_bytes{std::istreambuf_iterator<char>(device_list), std::istreambuf_iterator<char>()};
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (uses_device_dashboard()) {
+        if (!device_bytes.empty()) {
+            g_state.adb_devices = wireview::host::parse_adb_devices(utf8_to_wide(device_bytes)).devices;
+        }
+        handle_dashboard_scan(exit_code);
+        return;
+    }
+#endif
+    g_state.adb_devices = wireview::host::parse_adb_devices(utf8_to_wide(device_bytes)).devices;
+    keep_selected_device_in_list();
+    // A user may select another target while this asynchronous probe runs.
+    // Its list is useful, but its ready/app status belongs to the old target.
+    if (g_state.device_probe_serial != g_state.selected_adb_serial) {
+        g_state.next_device_probe_at = 0U;
+        return;
+    }
+    if (g_state.selected_adb_serial.empty() && g_state.adb_devices.size() == 1U) {
+        g_state.selected_adb_serial = g_state.adb_devices.front().serial;
+        if (!save_device_selection()) {
+            log_control_event(L"device-selection", L"自动选择的设备序列号未能保存到磁盘。");
+        }
+        refresh_device_selector();
+    }
+    // Loader/daemon errors are not USB unplug events. Back off rather than
+    // spawning a failing executable every timer tick; explicit Start still
+    // performs a fresh check immediately after the user repairs dependencies.
+    g_state.next_device_probe_at = GetTickCount64() +
+        ((exit_code == 7U || exit_code == 9U || exit_code > static_cast<DWORD>(wireview::host::AdbStatus::app_missing)) ? 30'000U : 1'000U);
     if (exit_code != 0U) {
         const bool was_connected = g_state.device_connected;
         g_state.device_connected = false;
@@ -3126,20 +3844,26 @@ void poll_device_detection(HWND window) {
             InvalidateRect(g_state.simple_window, nullptr, FALSE);
         }
         if (exit_code != g_state.last_auto_device_probe_exit && g_state.shell_process == nullptr) {
-            const std::wstring reason = exit_code == 2U
-                ? L"未找到 adb.exe。请安装 Android Platform Tools。"
-                : exit_code == 4U
-                    ? L"Android 设备未授权 USB 调试；请在设备上允许此电脑。"
-                    : exit_code == 5U
-                        ? L"检测到多台 Android 设备；请仅保留一台设备连接。"
-                        : exit_code == 6U
-                            ? L"WireView Android 应用未运行。请在设备上重新打开 WireView。"
-                            : L"未检测到已授权的 Android 设备。请检查 USB 数据线、端口和 USB 调试授权。";
-            set_status((g_state.auto_device_profile_completed || exit_code == 6U)
-                ? L"连接已断开：" + reason + L"\n上次识别结果已失效。"
-                : reason);
+            const std::wstring reason = wireview::host::adb_status_message(
+                exit_code > static_cast<DWORD>(wireview::host::AdbStatus::app_missing) ? wireview::host::AdbStatus::command_failed
+                    : static_cast<wireview::host::AdbStatus>(exit_code));
+            log_control_event(L"adb-probe", L"exit=" + std::to_wstring(exit_code) + L"; " + reason);
+            if (const auto status_file = device_probe_status_file(); !status_file.empty()) {
+                log_control_event(L"adb-probe-diagnostics", status_file.wstring());
+            }
+            set_status(reason);
         }
         g_state.last_auto_device_probe_exit = exit_code;
+        if (exit_code == static_cast<DWORD>(wireview::host::AdbStatus::app_not_running) &&
+            g_state.foreground_resume_action != PendingSessionAction::none) {
+            g_state.foreground_resume_waiting = true;
+            g_state.session_phase = L"paused";
+            set_status(L"投屏已暂停，回到设备上的 WireView 后将自动恢复；也可点击停止投屏取消。");
+        } else if (exit_code == static_cast<DWORD>(wireview::host::AdbStatus::app_missing)) {
+            g_state.foreground_resume_action = PendingSessionAction::none;
+            g_state.foreground_resume_waiting = false;
+            g_state.session_phase = L"app_missing";
+        }
         g_state.auto_device_profile_completed = false;
         // 这次识别对应的物理 USB 连接已经失效。重新插线并重新授权后，
         // 下一次成功探测必须再次自动执行“识别已连接设备”。
@@ -3149,15 +3873,53 @@ void poll_device_detection(HWND window) {
         }
         return;
     }
+    const bool probe_recovered = g_state.last_auto_device_probe_exit != 0U;
     g_state.last_auto_device_probe_exit = 0U;
     const bool was_connected = g_state.device_connected;
+    const bool retry_old_cleanup = g_state.adb_cleanup_failed && !g_state.adb_session_file.empty() &&
+        (probe_recovered || !was_connected || g_state.session_phase == L"error");
+    if (g_state.session_phase == L"app_missing" ||
+        (probe_recovered && g_state.session_phase == L"error")) {
+        g_state.session_phase.clear();
+        set_status(L"已检测到手机上的 WireView，等待投屏。");
+    }
     g_state.device_connected = true;
+    if (retry_old_cleanup) {
+        // Discovery is read-only, so an old mapping must not block noticing
+        // that its device returned. Retry our existing targeted cleanup once
+        // on recovery; further failures remain available for manual repair.
+        g_state.session_phase.clear();
+        g_state.device_profile_refresh_requested = true;
+        start_adb_cleanup();
+        set_status(L"设备已重新接入，正在清理上次连接并重新识别……");
+        return;
+    }
+    if (g_state.shell_process == nullptr) {
+        std::ifstream input(device_probe_status_file(), std::ios::binary);
+        const std::string bytes{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        const auto status = utf8_to_wide(bytes);
+        const auto width = status_value(status, L"android_width");
+        if (!width.empty()) {
+            apply_detected_device_profile(width, status_value(status, L"android_height"),
+                status_value(status, L"android_refresh_hz"), status_value(status, L"android_max_refresh_hz"));
+        }
+    }
     if (!was_connected) {
         InvalidateRect(g_state.window, nullptr, FALSE);
         InvalidateRect(g_state.simple_window, nullptr, FALSE);
     }
+    if (g_state.foreground_resume_waiting && !device_selection_locked()) {
+        g_state.pending_session_action = g_state.foreground_resume_action;
+        g_state.pending_session_input = g_state.foreground_resume_input;
+        g_state.foreground_resume_action = PendingSessionAction::none;
+        g_state.foreground_resume_waiting = false;
+        g_state.auto_device_profile_attempted = true;
+        g_state.session_phase.clear();
+        resume_pending_session();
+        return;
+    }
     if ((!g_state.auto_device_profile_attempted || g_state.device_profile_refresh_requested) &&
-        g_state.shell_process == nullptr) {
+        !device_selection_locked()) {
         // A profile server closes immediately after it reports the device mode.
         // Mark this physical USB connection before launching it, otherwise the
         // close/retry loop makes Android alternate between two UI states.
@@ -3168,12 +3930,13 @@ void poll_device_detection(HWND window) {
     }
 }
 
-void notify_android_of_user_stop() {
+void notify_android_of_host_exit() {
     if (g_state.session_launcher_path.empty()) {
         return;
     }
     std::wstring command = L"\"" + g_state.session_launcher_path.wstring() +
-        L"\" --notify-stop";
+        L"\" --notify-host-exited";
+    command += adb_target_argument();
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -3187,23 +3950,29 @@ void notify_android_of_user_stop() {
     }
 }
 
-void notify_android_of_host_exit() {
-    if (g_state.session_launcher_path.empty()) {
-        return;
-    }
-    std::wstring command = L"\"" + g_state.session_launcher_path.wstring() +
-        L"\" --notify-host-exited";
-    std::vector<wchar_t> buffer(command.begin(), command.end());
-    buffer.push_back(L'\0');
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    if (CreateProcessW(g_state.session_launcher_path.c_str(), buffer.data(), nullptr, nullptr,
-            FALSE, CREATE_NO_WINDOW, nullptr, g_state.session_launcher_path.parent_path().c_str(),
-            &startup, &process)) {
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-    }
+void stop_wireview() {
+    g_state.operation_mode.clear();
+    g_state.pending_resolution_use.clear();
+    g_state.foreground_resume_action = PendingSessionAction::none;
+    g_state.foreground_resume_waiting = false;
+    // Stop is also Cancel while the broker is still creating the display.
+    g_state.start_after_vdd_ready = PendingSessionAction::none;
+    g_state.start_after_vdd_input = false;
+    g_state.start_after_vdd_removal = false;
+    g_state.start_after_vdd_removal_input = false;
+    g_state.recreate_vdd_for_simple_extension = false;
+    g_state.recreate_vdd_for_simple_extension_input = false;
+    g_state.pending_session_action = PendingSessionAction::none;
+    if (!g_state.adb_session_file.empty()) { g_state.adb_cleanup_notify_stop = true; }
+    stop_session();
+    g_state.session_phase.clear();
+    if (g_state.vdd_broker_process != nullptr && !g_state.vdd_stop_requested) { request_vdd_removal(); }
+    if (g_state.adb_cleanup_failed) {
+        set_status(L"连接清理失败；请检查设备连接，再点“停止 WireView”重试。详情见日志。");
+    } else if (g_state.vdd_stop_requested || !g_state.adb_session_file.empty()) {
+        set_status(L"正在清理连接并移除 WireView 自建副屏，请稍候……");
+    } else { set_status(L"WireView 已停止。"); }
+    update_session_action_controls();
 }
 
 void notify_android_of_device_identified() {
@@ -3212,6 +3981,7 @@ void notify_android_of_device_identified() {
     }
     std::wstring command = L"\"" + g_state.session_launcher_path.wstring() +
         L"\" --notify-device-identified";
+    command += adb_target_argument();
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -3232,6 +4002,7 @@ void notify_android_of_vdd_created(const StreamSettings& settings) {
     std::wstring command = L"\"" + g_state.session_launcher_path.wstring() +
         L"\" --notify-vdd-created " + std::to_wstring(settings.width) + L" " +
         std::to_wstring(settings.height) + L" " + std::to_wstring(settings.vdd_refresh_hz);
+    command += adb_target_argument();
     std::vector<wchar_t> buffer(command.begin(), command.end());
     buffer.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -3464,7 +4235,7 @@ void paint_simple_window(HWND window, HDC dc) {
                         std::to_wstring(g_state.detected_device_height)) +
               L" · " + g_state.device_active_refresh + L" Hz"
         : L"请连接 USB 数据线并允许 USB 调试";
-    paint_text(dc, detail, RECT{380, 210, 920, 240}, g_font_body, kColorTextSecondary);
+    paint_text(dc, detail, RECT{380, 207, 920, 232}, g_font_body, kColorTextSecondary);
 
     const RECT display_card{24, 282, client.right - 24, client.bottom - 172};
     fill_rounded_rect(dc, display_card, kColorPanel, kColorBorder, 14);
@@ -4059,6 +4830,8 @@ void paint_window_buffered(HWND window, HDC target, void (*painter)(HWND, HDC)) 
 
 void layout_simple_controls(HWND window) {
     const SimpleLayout layout = simple_layout(window);
+    move_control(g_state.device_selector, RECT{380, 234,
+        layout.device_card.right - 28, 260});
     move_control(g_state.simple_mirror_button, layout.mirror);
     move_control(g_state.simple_extend_button, layout.extend);
     move_control(g_state.simple_display_only_button, layout.display_only);
@@ -4071,6 +4844,8 @@ void layout_simple_controls(HWND window) {
 
 void layout_full_controls(HWND window) {
     const FullLayout layout = full_layout(window);
+    move_control(g_state.device_selector, RECT{layout.device_card.left + 188, 242,
+        layout.device_card.right - 20, 274});
     const int config_left = 748;
     const int config_column = 157;
     move_control(g_state.display_config_toggle, RECT{layout.config_card.right - 72, 156,
@@ -4129,6 +4904,7 @@ void apply_control_center_view(HWND window) {
         show_control(control, simple);
     }
     show_control(g_state.simple_status, false);
+    show_control(g_state.device_selector, !diagnostics);
     for (HWND control : {g_state.display_config_toggle, g_state.create_vdd_button,
              g_state.remove_vdd_button, g_state.recover_vdd_button, g_state.start_mirror_button,
              g_state.start_input_button, g_state.full_display_only_button, g_state.stop_button,
@@ -4158,6 +4934,13 @@ void apply_control_center_view(HWND window) {
 }
 
 void begin_simple_extension(bool enable_input) {
+    g_state.operation_mode = L"extend";
+    g_state.web_extend_mode = true;
+    if (queue_after_preview(PendingSessionAction::extend, enable_input)) { return; }
+    if (!g_state.adb_session_file.empty() || g_state.vdd_stop_requested) {
+        set_status(L"正在清理上次连接，请稍候；清理失败时可点“停止 WireView”重试。");
+        return;
+    }
     if (!g_state.owned_display_device.empty()) {
         // The simple "扩展屏幕" card must never inherit the target selected
         // in full mode: it always streams the VDD owned by this control
@@ -4190,16 +4973,31 @@ void begin_simple_extension(bool enable_input) {
         }
         return;
     }
-    g_state.start_after_vdd_ready = true;
+    g_state.start_after_vdd_ready = PendingSessionAction::extend;
     g_state.start_after_vdd_input = enable_input;
     if (!start_vdd_broker(g_state.window, false)) {
-        g_state.start_after_vdd_ready = false;
+        g_state.start_after_vdd_ready = PendingSessionAction::none;
         g_state.start_after_vdd_input = false;
     }
 }
 
-void begin_simple_copy(bool enable_input) {
-    if (!g_state.owned_display_device.empty()) {
+bool start_primary_copy(HWND window, bool enable_input) {
+    refresh_display_choices();
+    const auto* source = selected_copy_source();
+    if (source == nullptr || !select_display_device(source->device_name)) {
+        set_status(L"未找到复制来源，请重新选择显示器。 ");
+        return false;
+    }
+    const bool primary = source->primary;
+    return start_session(window, enable_input, false, false, primary, true);
+}
+
+void start_copy_with_owned_display(HWND window, bool enable_input) {
+    if (wireview::host::clone_internal_display_to_owned_vdd(g_state.owned_display_device)) {
+        log_control_event(L"lid-copy", L"内屏与自建副屏已复制，跟随 Windows 为自建屏分配的桌面。 ");
+        if (!start_primary_copy(window, enable_input)) { request_vdd_removal(); }
+    } else {
+        log_control_event(L"lid-copy-fallback", L"当前显示布局或副屏模式不支持合盖复制，使用普通复制。 ");
         g_state.start_after_vdd_removal = true;
         g_state.start_after_vdd_removal_input = enable_input;
         request_vdd_removal();
@@ -4207,14 +5005,46 @@ void begin_simple_copy(bool enable_input) {
             g_state.start_after_vdd_removal = false;
             g_state.start_after_vdd_removal_input = false;
         }
+    }
+}
+
+void begin_simple_copy(bool enable_input) {
+    g_state.operation_mode = L"copy";
+    g_state.web_extend_mode = false;
+    if (queue_after_preview(PendingSessionAction::copy, enable_input)) { return; }
+    if (device_selection_locked()) {
+        set_status(L"请等待当前操作完成，或先停止当前 WireView 会话。 ");
+        return;
+    }
+    if (!g_state.owned_display_device.empty()) {
+        start_copy_with_owned_display(g_state.window, enable_input);
         return;
     }
     refresh_display_choices();
-    if (!select_primary_display()) {
-        set_status(L"未找到电脑主显示器，无法开始复制。 ");
-        return;
+    if (g_state.parsec_vdd_available && !g_state.selected_adb_serial.empty() &&
+        wireview::host::has_single_internal_display() &&
+        select_primary_display()) {
+        g_state.start_after_vdd_ready = PendingSessionAction::copy;
+        g_state.start_after_vdd_input = enable_input;
+        if (start_vdd_broker(g_state.window, false)) { return; }
+        g_state.start_after_vdd_ready = PendingSessionAction::none;
+        g_state.start_after_vdd_input = false;
     }
-    (void)start_session(g_state.window, enable_input, false, false);
+    (void)start_primary_copy(g_state.window, enable_input);
+}
+
+void resume_pending_session() {
+    const auto action = g_state.pending_session_action;
+    const bool input = g_state.pending_session_input;
+    g_state.pending_session_action = PendingSessionAction::none;
+    switch (action) {
+        case PendingSessionAction::stream: (void)start_session(g_state.window, input, false, false); break;
+        case PendingSessionAction::profile: (void)start_session(g_state.window, false, false, true); break;
+        case PendingSessionAction::extend: begin_simple_extension(input); break;
+        case PendingSessionAction::copy: begin_simple_copy(input); break;
+        case PendingSessionAction::create_vdd: (void)start_vdd_broker(g_state.window, g_state.pending_vdd_confirmation); break;
+        case PendingSessionAction::none: break;
+    }
 }
 
 void return_to_full_mode() {
@@ -4311,16 +5141,422 @@ std::wstring web_diagnostics_text() {
             : g_state.last_host_diagnostics_file.wstring());
 }
 
+DashboardDevice* dashboard_device(std::wstring_view serial) {
+    const auto found = std::find_if(g_dashboard_devices.begin(), g_dashboard_devices.end(), [serial](const auto& device) {
+        return device.serial == serial;
+    });
+    return found == g_dashboard_devices.end() ? nullptr : &*found;
+}
+
+std::wstring_view dashboard_availability(std::wstring_view serial) {
+    if (g_state.dashboard_scan_failed) { return L"unknown"; }
+    const auto found = std::find_if(g_state.adb_devices.begin(), g_state.adb_devices.end(), [serial](const auto& device) {
+        return device.serial == serial;
+    });
+    return found == g_state.adb_devices.end() ? std::wstring_view{L"offline"} : std::wstring_view{found->state};
+}
+
+std::filesystem::path dashboard_devices_file() {
+    return g_state.settings_file.empty() ? std::filesystem::path{} :
+        g_state.settings_file.parent_path() / L"dashboard-devices.txt";
+}
+
+bool save_dashboard_devices() {
+    const auto file = dashboard_devices_file();
+    if (file.empty()) { return false; }
+    auto temporary = file;
+    temporary += L".tmp";
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    for (const auto& device : g_dashboard_devices) {
+        auto name = device.name;
+        for (auto& ch : name) { if (ch == L'\r' || ch == L'\n' || ch == L'\t') { ch = L' '; } }
+        output << wide_to_utf8(device.serial) << '\t' << wide_to_utf8(name) << '\n';
+    }
+    output.close();
+    return output.good() && MoveFileExW(temporary.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+
+void restore_dashboard_devices() {
+    std::ifstream input(dashboard_devices_file(), std::ios::binary);
+    for (std::string line; std::getline(input, line);) {
+        const auto separator = line.find('\t');
+        if (separator == std::string::npos) { continue; }
+        auto serial = utf8_to_wide(std::string_view(line).substr(0U, separator));
+        auto name = utf8_to_wide(std::string_view(line).substr(separator + 1U));
+        if (wireview::host::valid_adb_serial(serial) && dashboard_device(serial) == nullptr) {
+            g_dashboard_devices.push_back(DashboardDevice{.serial = serial, .name = name.empty() ? serial : name});
+        }
+    }
+    if (dashboard_device(g_state.selected_adb_serial) == nullptr) {
+        g_state.selected_adb_serial = g_dashboard_devices.empty() ? L"" : g_dashboard_devices.front().serial;
+    }
+}
+
+void start_dashboard_worker(DashboardDevice& device) {
+    if (device.process != nullptr || device.launch_attempted || dashboard_availability(device.serial) != L"device") { return; }
+    device.launch_attempted = true;
+    device.command_error.clear();
+    device.process = launch_device_control(device.serial, g_state.window);
+    if (device.process == nullptr) { set_status(L"无法打开设备控制，请刷新后重试。"); }
+}
+
+void select_dashboard_device(DashboardDevice& device, bool retry = false) {
+    if (g_state.selected_adb_serial != device.serial) {
+        g_state.selected_adb_serial = device.serial;
+        if (!save_device_selection()) { log_control_event(L"device-selection", L"当前设备选择未能保存。"); }
+    }
+    if (retry) { device.launch_attempted = false; }
+    start_dashboard_worker(device);
+}
+
+void add_dashboard_device(std::wstring_view serial) {
+    if (auto* device = dashboard_device(serial)) { select_dashboard_device(*device, true); return; }
+    const auto found = std::find_if(g_state.adb_devices.begin(), g_state.adb_devices.end(), [serial](const auto& device) {
+        return device.serial == serial && device.state == L"device";
+    });
+    if (found == g_state.adb_devices.end()) { return; }
+    g_dashboard_devices.push_back(DashboardDevice{.serial = found->serial,
+        .name = found->model.empty() ? found->serial : found->model});
+    select_dashboard_device(g_dashboard_devices.back());
+    if (!save_dashboard_devices()) { set_status(L"已添加设备，本次设备列表未能保存。"); }
+}
+
+HWND dashboard_worker_window(const DashboardDevice& device) {
+    if (device.process == nullptr || device.window == nullptr ||
+        WaitForSingleObject(device.process, 0U) != WAIT_TIMEOUT) { return nullptr; }
+    DWORD pid{};
+    GetWindowThreadProcessId(device.window, &pid);
+    return pid == GetProcessId(device.process) ? device.window : nullptr;
+}
+
+void close_dashboard_worker(DashboardDevice& device) {
+    if (const HWND window = dashboard_worker_window(device)) { PostMessageW(window, WM_COMMAND, kTrayExit, 0U); }
+    device.commands = wireview::host::DeviceCommandChannel{};
+    if (device.process != nullptr) { CloseHandle(device.process); }
+    device.process = nullptr;
+    device.window = nullptr;
+}
+
+void shutdown_dashboard_workers() {
+    for (const auto& device : g_dashboard_devices) {
+        if (const HWND window = dashboard_worker_window(device)) { PostMessageW(window, WM_COMMAND, kTrayExit, 0U); }
+    }
+    const auto deadline = GetTickCount64() + 5'000U;
+    for (const auto& device : g_dashboard_devices) {
+        if (device.process == nullptr) { continue; }
+        const auto now = GetTickCount64();
+        if (device.window != nullptr && now < deadline) {
+            WaitForSingleObject(device.process, static_cast<DWORD>(deadline - now));
+        }
+        CloseHandle(device.process);
+    }
+    g_dashboard_devices.clear();
+}
+
+void handle_dashboard_scan(DWORD exit_code) {
+    const bool scan_failed = exit_code == 2U || exit_code == 7U || exit_code == 9U || exit_code > static_cast<DWORD>(wireview::host::AdbStatus::app_missing);
+    g_state.next_device_probe_at = GetTickCount64() + (scan_failed ? 15'000U : 1'000U);
+    g_state.dashboard_scan_failed = scan_failed;
+    if (scan_failed) {
+        set_status(wireview::host::adb_status_message(exit_code > static_cast<DWORD>(wireview::host::AdbStatus::app_missing)
+            ? wireview::host::AdbStatus::command_failed : static_cast<wireview::host::AdbStatus>(exit_code)));
+        return;
+    }
+    for (auto& device : g_dashboard_devices) {
+        if (device.process != nullptr && WaitForSingleObject(device.process, 0U) == WAIT_OBJECT_0) {
+            close_dashboard_worker(device);
+            device.state_json.clear();
+            device.running = false;
+            device.busy = false;
+        }
+        if (dashboard_availability(device.serial) != L"device") { device.launch_attempted = false; }
+    }
+    if (g_dashboard_devices.empty() && std::count_if(g_state.adb_devices.begin(), g_state.adb_devices.end(),
+            [](const auto& device) { return device.state == L"device"; }) == 1) {
+        const auto ready = std::find_if(g_state.adb_devices.begin(), g_state.adb_devices.end(),
+            [](const auto& device) { return device.state == L"device"; });
+        add_dashboard_device(ready->serial);
+    }
+    if (auto* device = dashboard_device(g_state.selected_adb_serial)) { start_dashboard_worker(*device); }
+}
+
+bool send_device_message(HWND receiver, ULONG_PTR kind, std::wstring_view payload) {
+    return wireview::host::send_device_message(receiver, g_state.window, kind, payload);
+}
+
+void poll_dashboard_commands() {
+    bool pending = false;
+    for (auto& device : g_dashboard_devices) {
+        if (const auto result = device.commands.poll(); result && !*result) {
+            device.command_error = L"操作未能确认，请刷新后重试。";
+            set_status(device.name + L"的" + device.command_error);
+        }
+        pending = pending || device.commands.pending();
+    }
+    if (!pending) { KillTimer(g_state.window, kDeviceCommandTimer); }
+}
+
+void publish_dashboard_state() {
+    const auto running = static_cast<std::size_t>(std::count_if(g_dashboard_devices.begin(), g_dashboard_devices.end(),
+        [](const auto& device) { return device.running; }));
+    if (g_last_dashboard_tray_count != running) {
+        g_last_dashboard_tray_count = running;
+        update_tray_tooltip(running == 0U ? L"WireView · 暂无投屏" : L"WireView · " + std::to_wstring(running) + L" 台设备正在投屏");
+    }
+    if (!g_webview_host || !g_webview_host->accepts_state()) { return; }
+    unsigned extensions = 0U;
+    for (const auto* name : wireview::host::kExtensionSlotNames) {
+        if (const HANDLE slot = OpenEventW(SYNCHRONIZE, FALSE, name)) { ++extensions; CloseHandle(slot); }
+    }
+    const auto row = [](std::wstring_view serial, std::wstring_view name, std::wstring_view availability) {
+        return L"{\"serial\":\"" + json_escape(serial) + L"\",\"name\":\"" + json_escape(name) +
+            L"\",\"availability\":\"" + json_escape(availability) + L"\"";
+    };
+    std::wstring devices;
+    for (const auto& device : g_dashboard_devices) {
+        if (!devices.empty()) { devices += L','; }
+        devices += row(device.serial, device.name, dashboard_availability(device.serial)) +
+            L",\"operationMode\":\"" + json_escape(device.operation_mode) + L"\"" +
+            L",\"commandPending\":" + (device.commands.pending() ? L"true" : L"false") +
+            L",\"commandError\":\"" + json_escape(device.command_error) + L"\",\"state\":" +
+            (device.state_json.empty() ? L"null" : device.state_json) + L"}";
+    }
+    std::wstring available;
+    for (const auto& device : g_state.adb_devices) {
+        if (dashboard_device(device.serial) != nullptr) { continue; }
+        if (!available.empty()) { available += L','; }
+        available += row(device.serial, device.model.empty() ? device.serial : device.model,
+            dashboard_availability(device.serial)) + L"}";
+    }
+    g_webview_host->post_json(L"{\"dashboard\":true,\"selectedDevice\":\"" + json_escape(g_state.selected_adb_serial) +
+        L"\",\"status\":\"" + json_escape(g_state.current_status) + L"\",\"extensionCount\":" + std::to_wstring(extensions) +
+        L",\"displayLayout\":" + wireview::host::screen_layout::json(json_escape) +
+        L",\"devices\":[" + devices + L"],\"availableDevices\":[" + available + L"]}");
+}
+
+LRESULT receive_device_message(HWND sender, const COPYDATASTRUCT* data) {
+    if (g_state.exiting || data == nullptr || data->lpData == nullptr || data->cbData == 0U ||
+        data->cbData > kDeviceMessageLimit || data->cbData % sizeof(wchar_t) != 0U) { return FALSE; }
+    DWORD pid{};
+    GetWindowThreadProcessId(sender, &pid);
+    if (pid == 0U) { return FALSE; }
+    const std::wstring_view payload(static_cast<const wchar_t*>(data->lpData), data->cbData / sizeof(wchar_t));
+    if (g_dashboard_owner == sender && pid == g_dashboard_owner_pid && data->dwData == kDeviceCommand) {
+        // Return to the dashboard before executing a command that may publish a new snapshot.
+        g_device_commands.emplace_back(payload);
+        if (!PostMessageW(g_state.window, kRunDeviceCommand, 0U, 0U)) { g_device_commands.pop_back(); return FALSE; }
+        return TRUE;
+    }
+    constexpr ULONG_PTR flags = kDeviceBusy | kDeviceRunning;
+    if (!uses_device_dashboard() || (data->dwData & ~flags) != kDeviceSnapshot) { return FALSE; }
+    const auto device = std::find_if(g_dashboard_devices.begin(), g_dashboard_devices.end(), [pid](const auto& entry) {
+        return entry.process != nullptr && GetProcessId(entry.process) == pid;
+    });
+    const auto split = payload.find(L'\n');
+    if (device == g_dashboard_devices.end() || split == std::wstring_view::npos) { return FALSE; }
+    const auto snapshot = payload.substr(split + 1U);
+    if (!snapshot.starts_with(L'{') || !snapshot.ends_with(L'}')) { return FALSE; }
+    const auto name = payload.substr(0U, split);
+    if (!name.empty() && name != device->name) {
+        device->name = name;
+        if (!save_dashboard_devices()) { log_control_event(L"device-selection", L"设备名称未能保存。"); }
+    }
+    device->window = sender;
+    device->state_json = snapshot;
+    device->busy = (data->dwData & kDeviceBusy) != 0U;
+    device->running = (data->dwData & kDeviceRunning) != 0U;
+    publish_dashboard_state();
+    return TRUE;
+}
+
+void send_dashboard_command(std::wstring_view serial, std::wstring_view command) {
+    auto* device = dashboard_device(serial);
+    const HWND window = device == nullptr ? nullptr : dashboard_worker_window(*device);
+    if (device == nullptr) { return; }
+    if (command == L"mode-copy") { device->operation_mode = L"copy"; }
+    else if (command == L"mode-extend") { device->operation_mode = L"extend"; }
+    else if (command == L"stop") { device->operation_mode.clear(); }
+    device->command_error.clear();
+    if (window == nullptr) {
+        device->command_error = L"设备控制尚未就绪，请刷新后重试。";
+        return;
+    }
+    if (command == L"mode-copy") {
+        const auto start = device->state_json.find(L"\"copySource\":\"");
+        const auto end = start == std::wstring::npos ? start : device->state_json.find(L"\",", start);
+        const auto source = end == std::wstring::npos ? L"" : device->state_json.substr(start, end - start + 1U);
+        for (const auto& other : g_dashboard_devices) {
+            const bool copying = other.running && other.state_json.find(L"\"mode\":\"copy\"") != std::wstring::npos &&
+                other.state_json.find(source) != std::wstring::npos;
+            const bool starting = (other.busy || other.commands.pending()) && other.requested_copy_source == source;
+            if (!source.empty() && other.serial != serial && (copying || starting)) {
+                device->command_error = L"这个来源正在被另一台设备复制，请换一个来源。";
+                return;
+            }
+        }
+        device->requested_copy_source = source;
+    } else if (command == L"mode-extend" || command == L"stop") { device->requested_copy_source.clear(); }
+    if (SetTimer(g_state.window, kDeviceCommandTimer, 50U, nullptr) == 0U) {
+        device->command_error = L"无法发送设备操作，请重试。";
+        set_status(device->command_error);
+        return;
+    }
+    if (command == L"diagnostics" || command == L"custom-modes") {
+        device->commands.enqueue(window, GetProcessId(device->process), g_state.window,
+            kDeviceCommand, g_popup_light_theme ? L"theme-light" : L"theme-dark");
+    }
+    device->commands.enqueue(window, GetProcessId(device->process), g_state.window,
+        kDeviceCommand, std::wstring(command));
+    poll_dashboard_commands();
+}
+
+void handle_dashboard_message(std::wstring_view message) {
+    if (message == L"refresh-devices") {
+        g_state.next_device_probe_at = 0U;
+        if (auto* device = dashboard_device(g_state.selected_adb_serial)) {
+            if (device->process == nullptr) { device->launch_attempted = false; }
+            send_dashboard_command(device->serial, L"refresh-displays");
+        }
+        start_device_detection_probe();
+    } else if (message.starts_with(L"select-device|")) {
+        if (auto* device = dashboard_device(message.substr(14U))) { select_dashboard_device(*device, true); }
+    } else if (message.starts_with(L"add-device|")) {
+        add_dashboard_device(message.substr(11U));
+    } else if (message.starts_with(L"forget-device|")) {
+        const auto serial = message.substr(14U);
+        if (auto* device = dashboard_device(serial); device && !device->busy && !device->commands.pending() &&
+            dashboard_availability(serial) == L"offline") {
+            close_dashboard_worker(*device);
+            std::erase_if(g_dashboard_devices, [serial](const auto& entry) { return entry.serial == serial; });
+            if (g_state.selected_adb_serial == serial) {
+                g_state.selected_adb_serial.clear();
+                if (!g_dashboard_devices.empty()) { select_dashboard_device(g_dashboard_devices.front()); }
+                else { (void)save_device_selection(); }
+            }
+            if (!save_dashboard_devices()) { set_status(L"已移除设备，本次设备列表未能保存。"); }
+        }
+    } else if (message.starts_with(L"device|")) {
+        const auto split = message.find(L'|', 7U);
+        if (split != std::wstring_view::npos) { send_dashboard_command(message.substr(7U, split - 7U), message.substr(split + 1U)); }
+    }
+    publish_dashboard_state();
+}
+
+constexpr UINT kTrayDeviceBase = 3000U;
+struct TrayDeviceMenu {
+    HMENU menu{};
+    UINT first_command{};
+    std::wstring serial;
+};
+
+void update_dashboard_tray_menu(HMENU menu) {
+    MENUINFO info{sizeof(info)};
+    info.fMask = MIM_MENUDATA;
+    if (!GetMenuInfo(menu, &info) || info.dwMenuData == 0U) { return; }
+    const auto& item = *reinterpret_cast<const TrayDeviceMenu*>(info.dwMenuData);
+    const auto* device = dashboard_device(item.serial);
+    const bool ready = device != nullptr && dashboard_availability(item.serial) == L"device" &&
+        dashboard_worker_window(*device) != nullptr &&
+        device->state_json.find(L"\"connected\":true") != std::wstring::npos;
+    const bool running = device != nullptr && device->running;
+    const bool busy = device != nullptr && (device->busy || device->commands.pending());
+    const bool can_start = ready && !running && !busy &&
+        device->state_json.find(L"\"canStartSession\":true") != std::wstring::npos;
+    const bool can_stop = device != nullptr && (running || busy || !device->operation_mode.empty());
+    const bool copying = running && device->state_json.find(L"\"mode\":\"copy\"") != std::wstring::npos;
+    const std::array<const wchar_t*, 3U> labels{ready ? L"复制屏幕" : L"复制屏幕（正在识别）",
+        ready ? L"扩展屏幕" : L"扩展屏幕（正在识别）", L"停止此设备"};
+    for (UINT action = 0U; action < labels.size(); ++action) {
+        const bool checked = running && (action == 0U ? copying : action == 1U && !copying);
+        ModifyMenuW(menu, item.first_command + action, MF_BYCOMMAND | MF_STRING |
+            ((action == 2U ? can_stop : can_start) ? MF_ENABLED : MF_GRAYED) |
+            (checked ? MF_CHECKED : MF_UNCHECKED), item.first_command + action, labels[action]);
+    }
+}
+
+void show_dashboard_tray_menu(HWND window) {
+    const HMENU menu = CreatePopupMenu();
+    if (menu == nullptr) { return; }
+    AppendMenuW(menu, MF_STRING, kTrayRestore, L"显示 WireView");
+    AppendMenuW(menu, MF_STRING, kAddDeviceWindow, L"刷新设备");
+    AppendMenuW(menu, MF_SEPARATOR, 0U, nullptr);
+    bool added = false;
+    for (const auto& device : g_state.adb_devices) {
+        if (device.state == L"device" && dashboard_device(device.serial) == nullptr) {
+            g_dashboard_devices.push_back(DashboardDevice{.serial = device.serial,
+                .name = device.model.empty() ? device.serial : device.model});
+            added = true;
+        }
+    }
+    if (added && !save_dashboard_devices()) { set_status(L"本次设备列表未能保存。"); }
+    std::vector<TrayDeviceMenu> devices;
+    devices.reserve(g_dashboard_devices.size());
+    for (auto& device : g_dashboard_devices) {
+        if (dashboard_availability(device.serial) != L"device") { continue; }
+        start_dashboard_worker(device);
+        const HMENU child = CreatePopupMenu();
+        if (child == nullptr) { continue; }
+        const UINT first = kTrayDeviceBase + static_cast<UINT>(devices.size()) * 3U;
+        devices.push_back(TrayDeviceMenu{child, first, device.serial});
+        MENUINFO info{sizeof(info)};
+        info.fMask = MIM_MENUDATA;
+        info.dwMenuData = reinterpret_cast<ULONG_PTR>(&devices.back());
+        SetMenuInfo(child, &info);
+        for (UINT action = 0U; action < 3U; ++action) {
+            AppendMenuW(child, MF_STRING, first + action, L"");
+        }
+        update_dashboard_tray_menu(child);
+        const auto status = device.running
+            ? (device.state_json.find(L"\"mode\":\"copy\"") != std::wstring::npos ? L"正在复制" : L"正在扩展")
+            : (device.busy || device.state_json.empty() ? L"正在识别" : L"待投屏");
+        const auto label = device.name + L" · " + status;
+        AppendMenuW(menu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(child), label.c_str());
+    }
+    if (devices.empty()) { AppendMenuW(menu, MF_STRING | MF_GRAYED, 0U, L"暂无已连接设备"); }
+    AppendMenuW(menu, MF_SEPARATOR, 0U, nullptr);
+    AppendMenuW(menu, MF_STRING, kTrayExit, L"退出 WireView");
+    POINT point{};
+    GetCursorPos(&point);
+    SetForegroundWindow(window);
+    const UINT chosen = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+        point.x, point.y, 0, window, nullptr);
+    DestroyMenu(menu);
+    PostMessageW(window, WM_NULL, 0U, 0);
+    if (chosen >= kTrayDeviceBase && chosen - kTrayDeviceBase < devices.size() * 3U) {
+        const auto index = chosen - kTrayDeviceBase;
+        const auto& serial = devices[index / 3U].serial;
+        const std::array<std::wstring_view, 3U> commands{L"mode-copy", L"mode-extend", L"stop"};
+        send_dashboard_command(serial, commands[index % 3U]);
+        if (auto* device = dashboard_device(serial); device != nullptr && !device->command_error.empty()) {
+            select_dashboard_device(*device);
+            restore_window(window);
+        }
+        publish_dashboard_state();
+    } else if (chosen == kAddDeviceWindow) {
+        handle_dashboard_message(L"refresh-devices");
+    } else if (chosen != 0U) {
+        PostMessageW(window, WM_COMMAND, chosen, 0);
+    }
+}
+
 void publish_web_state() {
-    if (!g_webview_host || !g_webview_host->ready()) {
+    if (g_state.exiting) { return; }
+    if (uses_device_dashboard()) {
+        publish_dashboard_state();
+        return;
+    }
+    if (g_dashboard_owner == nullptr && (!g_webview_host || !g_webview_host->accepts_state())) {
         return;
     }
     const DisplayChoice* selected_display = selected_display_choice();
     const std::wstring frame_rate = combo_selected_index(g_state.frame_rate_selector) == 1
         ? L"120 FPS（实验）"
         : L"60 FPS";
-    const bool running = g_state.shell_process != nullptr && !g_state.preview_active &&
-        !g_state.profile_probe_active;
+    const bool running = (g_state.shell_process != nullptr && !g_state.preview_active &&
+        !g_state.profile_probe_active) || g_state.foreground_resume_waiting;
+    const bool selection_locked = device_selection_locked() || g_state.foreground_resume_waiting;
+    const auto& live_source = g_state.session_display_source;
+    const bool has_windows_target = running && !g_state.direct_copy_session && !g_state.session_monitor_path.empty();
     std::wstring json = L"{";
     const auto add_string = [&json](std::wstring_view key, std::wstring_view value) {
         if (json.size() > 1U) {
@@ -4348,29 +5584,98 @@ void publish_web_state() {
     };
     add_bool(L"connected", g_state.device_connected);
     add_bool(L"running", running);
-    add_bool(L"canStartSession", !g_state.device_profile_requires_custom_mode);
+    add_bool(L"streaming", running && g_state.session_streaming);
+    add_bool(L"canStartSession", !selection_locked || g_state.preview_active);
+    add_bool(L"hasWindowsTarget", has_windows_target);
+    add_bool(L"canSwitchInWindows", has_windows_target && !live_source.device_name.empty() && !live_source.only_active);
+    add_bool(L"previewing", g_state.preview_active);
+    add_bool(L"identifying", g_state.profile_probe_active);
+    add_string(L"sessionPhase", g_state.adb_cleanup_failed ? L"error" : g_state.session_phase);
+    const auto adb_status = static_cast<wireview::host::AdbStatus>(g_state.last_auto_device_probe_exit);
+    const auto adb_problem = adb_status == wireview::host::AdbStatus::app_missing ? L"app_missing" :
+        adb_status == wireview::host::AdbStatus::app_not_running ? L"app_not_running" :
+        adb_status == wireview::host::AdbStatus::command_failed ? L"probe_error" : L"";
+    add_string(L"adbProblem", adb_problem);
+    add_bool(L"canPreview", g_state.preview_active || (g_state.device_connected && !selection_locked));
+    add_bool(L"hasOwnedVdd", !g_state.owned_display_device.empty());
+    add_bool(L"canCreateVdd", !selection_locked && IsWindowEnabled(g_state.create_vdd_button));
+    add_bool(L"canRemoveVdd", !selection_locked && IsWindowEnabled(g_state.remove_vdd_button));
+    add_bool(L"canRecoverVdd", !selection_locked && IsWindowEnabled(g_state.recover_vdd_button));
+    const bool can_stop = g_state.shell_process != nullptr ||
+        (g_state.vdd_broker_process != nullptr && !g_state.vdd_stop_requested) ||
+        (!g_state.adb_session_file.empty() && g_state.adb_cleanup_process == nullptr) ||
+        g_state.pending_session_action != PendingSessionAction::none || g_state.foreground_resume_waiting;
+    add_bool(L"canStopSession", can_stop);
     add_bool(L"inputEnabled", g_state.session_input_enabled);
-    add_string(L"mode", g_state.web_extend_mode ? L"extend" : L"copy");
+    const bool extended = g_state.direct_copy_session ? false : live_source.device_name.empty() || live_source.only_active
+        ? g_state.web_extend_mode : !live_source.shared;
+    add_string(L"mode", extended ? L"extend" : L"copy");
+    add_string(L"operationMode", g_state.operation_mode);
     add_string(L"deviceName", g_state.device_name);
+    add_string(L"selectedDevice", g_state.selected_adb_serial);
+    add_bool(L"deviceSelectionLocked", selection_locked);
+    add_bool(L"deviceWindow", !g_device_window_serial.empty());
+    add_number(L"cursorSizePercent", selected_cursor_size_percent());
+    std::wstring devices_json = L"[";
+    for (const auto& device : g_state.adb_devices) {
+        if (devices_json.size() > 1U) { devices_json += L','; }
+        devices_json += L"{\"serial\":\"" + json_escape(device.serial) + L"\",\"label\":\"" +
+            json_escape(adb_device_label(device)) + L"\"}";
+    }
+    devices_json += L"]";
+    add_array(L"devices", devices_json);
     add_string(L"deviceCategory", g_state.device_is_tablet ? L"tablet" : L"phone");
+    add_string(L"deviceResolution", g_state.detected_device_width == 0U ? L"" :
+        std::to_wstring(g_state.detected_device_width) + L"×" + std::to_wstring(g_state.detected_device_height));
     add_string(L"deviceRefresh", g_state.device_active_refresh);
     add_string(L"status", g_state.current_status.empty() ? L"准备就绪。" : g_state.current_status);
     add_string(L"resolution", selector_text(g_state.resolution_selector));
     add_string(L"vddMode", selector_text(g_state.vdd_mode_selector));
+    const auto owned_vdd = std::find_if(g_state.display_choices.begin(), g_state.display_choices.end(),
+        [](const DisplayChoice& choice) {
+            return choice.parsec_vdd && choice.device_name == g_state.owned_display_device;
+        });
+    if (owned_vdd != g_state.display_choices.end() && owned_vdd->refresh_hz != 0U) {
+        add_string(L"activeVddMode", std::to_wstring(owned_vdd->refresh_hz) + L" Hz");
+    }
     add_string(L"frameRate", frame_rate);
-    add_string(L"displayName", selected_display == nullptr ? L"--" : selected_display->device_name);
+    add_string(L"displayName", !live_source.device_name.empty() ? live_source.device_name
+        : (selected_display == nullptr ? L"--" : selected_display->device_name));
+    add_string(L"layoutTarget", !live_source.device_name.empty() ? live_source.device_name : g_state.owned_display_device);
+    add_string(L"layoutMonitor", g_state.session_monitor_path);
+    if (g_dashboard_owner == nullptr) { add_array(L"displayLayout", wireview::host::screen_layout::json(json_escape)); }
     add_bool(L"parsecAvailable", g_state.parsec_vdd_available);
     add_number(L"parsecVersion", g_state.parsec_vdd_version);
     add_number(L"parsecDisplayCount", g_state.parsec_display_count);
     add_array(L"displays", combo_options_as_json(g_state.display_selector));
     add_array(L"resolutions", combo_options_as_json(g_state.resolution_selector));
     add_array(L"vddModes", combo_options_as_json(g_state.vdd_mode_selector));
+    const auto* copy_source = selected_copy_source();
+    add_string(L"copySource", running && !g_state.session_copy_source.empty() ? g_state.session_copy_source :
+        copy_source == nullptr ? L"" : copy_source->device_name);
+    add_string(L"copyResolution", g_state.display_preferences.copy_resolution);
+    add_number(L"copyFrameRate", g_state.display_preferences.copy_frame_rate);
+    std::wstring copy_sources = L"[";
+    for (const auto& choice : g_state.display_choices) {
+        if (choice.device_name == g_state.owned_display_device) { continue; }
+        if (copy_sources.size() > 1U) { copy_sources += L','; }
+        copy_sources += L"{\"id\":\"" + json_escape(choice.device_name) + L"\",\"label\":\"" + json_escape(choice.label) + L"\"}";
+    }
+    add_array(L"copySources", copy_sources + L"]");
     add_number(L"selectedDisplay", static_cast<std::size_t>(combo_selected_index(g_state.display_selector)));
     add_number(L"selectedResolution", static_cast<std::size_t>(combo_selected_index(g_state.resolution_selector)));
     add_number(L"selectedVddMode", static_cast<std::size_t>(combo_selected_index(g_state.vdd_mode_selector)));
     add_string(L"diagnostics", web_diagnostics_text());
     json += L"}";
-    g_webview_host->post_json(json);
+    if (g_dashboard_owner != nullptr) {
+        std::wstring name = g_state.device_connected && g_state.device_name != L"Android 设备" ? g_state.device_name : L"";
+        if (const auto end = name.find_first_of(L"\r\n"); end != std::wstring::npos) { name.resize(end); }
+        const ULONG_PTR kind = kDeviceSnapshot | (can_stop || g_state.adb_cleanup_process != nullptr ||
+            g_state.vdd_stop_requested ? kDeviceBusy : 0U) | (running && g_state.session_streaming ? kDeviceRunning : 0U);
+        (void)send_device_message(g_dashboard_owner, kind, name + L"\n" + json);
+    } else {
+        g_webview_host->post_json(json);
+    }
 }
 
 bool parse_web_selector_index(std::wstring_view message, std::wstring_view prefix,
@@ -4403,10 +5708,41 @@ void handle_web_message(std::wstring_view message) {
         refresh_popup_theme(g_diagnostics_window);
         return;
     }
-    if (message == L"mode-copy") {
+    if (message == L"identify-screens") { wireview::host::screen_layout::identify(); publish_web_state(); return; }
+    if (uses_device_dashboard()) {
+        if (message == L"display-settings") { open_windows_display_settings(); }
+        else { handle_dashboard_message(message); }
+        return;
+    }
+    if (message.starts_with(L"select-cursor|")) {
+        if (device_selection_locked() || g_state.selected_adb_serial.empty()) {
+            set_status(L"请停止 WireView，并等待设备识别完成后调整指针大小。");
+        } else {
+            const auto choice = wireview::host::parse_cursor_size(message.substr(14U));
+            if (choice.has_value()) {
+                auto sizes = g_state.cursor_sizes;
+                sizes[wide_to_utf8(g_state.selected_adb_serial)] = *choice;
+                if (wireview::host::save_cursor_sizes(g_state.settings_file.parent_path() / L"cursor-sizes.txt", sizes)) {
+                    g_state.cursor_sizes = std::move(sizes);
+                    set_status(L"当前设备的鼠标指针大小已设为 " + std::to_wstring(*choice) + L"%，下次启动生效。");
+                } else { set_status(L"指针大小保存失败，请检查配置目录是否可写。"); }
+            } else { set_status(L"请输入 50%～300% 之间的整数指针大小。"); }
+        }
+        publish_web_state();
+        return;
+    }
+    if (message.starts_with(L"select-device|")) {
+        (void)select_adb_device(message.substr(14U));
+    } else if (message == L"add-device") {
+        open_additional_device_window();
+    } else if (message == L"mode-copy") {
+        g_state.pending_resolution_use.clear();
         g_state.web_extend_mode = false;
         begin_simple_copy(g_state.session_input_enabled);
     } else if (message == L"mode-extend") {
+        if (const auto size = parse_resolution(selector_text(g_state.resolution_selector))) {
+            g_state.pending_resolution_use = std::to_wstring(size->first) + L"x" + std::to_wstring(size->second);
+        }
         g_state.web_extend_mode = true;
         begin_simple_extension(g_state.session_input_enabled);
     } else if (message == L"input-off") {
@@ -4416,17 +5752,20 @@ void handle_web_message(std::wstring_view message) {
     } else if (message == L"start") {
         (void)start_session(g_state.window, g_state.session_input_enabled, false, false);
     } else if (message == L"stop") {
-        notify_android_of_user_stop();
-        stop_session();
-        set_status(L"WireView 已停止。");
+        stop_wireview();
     } else if (message == L"display-settings") {
         open_windows_display_settings();
     } else if (message == L"refresh-displays") {
         refresh_display_choices();
         scan_vdd_recovery_records();
         if (g_state.shell_process == nullptr) {
-            set_status(L"正在刷新显示器、Parsec VDD，并重新读取 Android 设备信息…");
+            const bool needs_cleanup = !g_state.adb_session_file.empty();
+            set_status(needs_cleanup
+                ? L"正在清理上次连接，并重新读取 Android 设备信息…"
+                : L"正在刷新显示器、Parsec VDD，并重新读取 Android 设备信息…");
             g_state.device_profile_refresh_requested = true;
+            if (needs_cleanup) { start_adb_cleanup(); }
+            g_state.next_device_probe_at = 0U;
             // 先确认 ADB 连接；确认后会启动一次不显示画面、不创建副屏的
             // 设备信息探测，由 Android 应用重新上报当前分辨率与刷新率。
             poll_device_detection(g_state.window);
@@ -4436,8 +5775,34 @@ void handle_web_message(std::wstring_view message) {
                 : L"显示器与 Parsec VDD 副屏状态已刷新；WireView 运行中，设备连接状态会持续监测。"
             );
         }
-    } else if (message == L"preview") {
-        (void)start_session(g_state.window, false, true, false);
+    } else if (message == L"preview" || message == L"preview-copy" || message == L"preview-extend") {
+        if (g_state.preview_active) {
+            g_state.adb_cleanup_notify_stop = true;
+            stop_session();
+            set_status(L"画面预览已结束。");
+        } else {
+            const bool copy = message == L"preview-copy";
+            if (copy) {
+                refresh_display_choices();
+                const auto* source = selected_copy_source();
+                if (source == nullptr) {
+                    set_status(L"复制来源已不可用，请重新选择显示器。");
+                    publish_web_state();
+                    return;
+                }
+                (void)select_display_device(source->device_name);
+            }
+            (void)start_session(g_state.window, false, true, false, false, copy);
+        }
+    } else if (message.starts_with(L"custom-resolution|") && !device_selection_locked()) {
+        const auto mode = parse_custom_mode(message.substr(18U));
+        if (!mode) { set_status(L"请输入有效的宽度、高度和刷新率，宽高需为正偶数。"); }
+        else if (ensure_device_custom_mode(g_state.window, *mode)) {
+            populate_resolution_selector(std::to_wstring(mode->width) + L"x" + std::to_wstring(mode->height));
+            populate_vdd_mode_selector(std::to_wstring(mode->refresh_hz) + L" Hz");
+            if (const auto settings = selected_stream_settings()) { save_stream_settings(*settings); }
+            set_status(L"自定义分辨率已选用，点击上方“扩展屏幕”开始。");
+        }
     } else if (message == L"custom-modes") {
         sync_custom_modes_from_parsec_vdd();
         show_custom_mode_editor(g_state.window);
@@ -4451,7 +5816,20 @@ void handle_web_message(std::wstring_view message) {
         recover_stale_vdd_session(g_state.window);
     } else {
         int index{};
-        if (parse_web_selector_index(message, L"select-display|", g_state.display_selector, index)) {
+        if (message.starts_with(L"select-copy-source|") && !device_selection_locked()) {
+            const auto source = message.substr(19U);
+            if (std::any_of(g_state.display_choices.begin(), g_state.display_choices.end(), [&](const DisplayChoice& choice) {
+                    return choice.device_name == source && choice.device_name != g_state.owned_display_device;
+                })) { g_state.display_preferences.copy_source = source; save_mode_preferences(); }
+        } else if (message.starts_with(L"select-copy-resolution|") && !device_selection_locked()) {
+            const auto size = message.substr(23U);
+            if (size == L"auto" || wireview::host::preference_resolution(size)) {
+                g_state.display_preferences.copy_resolution = size; save_mode_preferences();
+            }
+        } else if ((message == L"select-copy-fps|60" || message == L"select-copy-fps|120") && !device_selection_locked()) {
+            g_state.display_preferences.copy_frame_rate = message.ends_with(L"120") ? 120U : 60U;
+            save_mode_preferences();
+        } else if (parse_web_selector_index(message, L"select-display|", g_state.display_selector, index)) {
             SendMessageW(g_state.display_selector, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
             update_vdd_controls();
             update_recommendation();
@@ -4483,6 +5861,7 @@ void hide_native_controls_for_web() {
              g_state.simple_display_only_button, g_state.simple_input_button,
              g_state.simple_stop_button, g_state.simple_display_settings_button,
              g_state.display_selector, g_state.refresh_displays_button,
+             g_state.device_selector,
              g_state.resolution_selector, g_state.vdd_mode_selector,
              g_state.frame_rate_selector, g_state.start_mirror_button,
              g_state.start_input_button, g_state.full_display_only_button,
@@ -4609,9 +5988,7 @@ LRESULT CALLBACK simple_window_procedure(HWND window, UINT message, WPARAM wpara
                     InvalidateRect(g_state.window, nullptr, FALSE);
                     return 0;
                 case kStopButton:
-                    notify_android_of_user_stop();
-                    stop_session();
-                    set_status(L"WireView 已停止。");
+                    stop_wireview();
                     return 0;
                 case kDisplaySettingsButton:
                     open_windows_display_settings();
@@ -4796,18 +6173,9 @@ LRESULT CALLBACK custom_mode_editor_procedure(HWND window, UINT message, WPARAM 
                 const bool applied_to_parsec = apply_custom_modes_with_elevation(window);
                 populate_resolution_selector();
                 populate_vdd_mode_selector();
-                if (g_state.device_profile_requires_custom_mode &&
-                    g_state.detected_device_width != 0U && g_state.detected_device_height != 0U) {
-                    apply_detected_device_profile(
-                        std::to_wstring(g_state.detected_device_width),
-                        std::to_wstring(g_state.detected_device_height),
-                        g_state.detected_device_max_refresh);
-                }
                 update_recommendation();
                 if (!applied_to_parsec) {
                     set_status(L"自定义槽已保存到控制中心，但未能写入 Parsec VDD；请允许管理员授权后重试。");
-                } else if (g_state.device_profile_requires_custom_mode) {
-                    set_status(L"当前设备分辨率仍无可用自定义槽，请替换或释放一个槽后再保存。");
                 } else if (!g_state.device_profile_note.empty()) {
                     set_status(g_state.device_profile_note + L" 已同步到 Parsec VDD。 ");
                 } else {
@@ -5009,6 +6377,13 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             g_state.simple_status = CreateWindowW(
                 L"STATIC", L"准备就绪。", WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
                 62, 984, 1320, 34, window, nullptr, nullptr, nullptr);
+            g_state.device_selector = CreateWindowW(L"COMBOBOX", L"",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                320, 252, 620, 200, window,
+                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kDeviceSelector)), nullptr, nullptr);
+            apply_control_theme(g_state.device_selector, g_font_small);
+            SendMessageW(g_state.device_selector, CB_SETMINVISIBLE, 6U, 0);
+            refresh_device_selector();
             g_state.display_selector = CreateWindowW(
                 L"COMBOBOX", L"",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST |
@@ -5161,7 +6536,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 nullptr,
                 nullptr);
             g_state.recover_vdd_button = CreateWindowW(
-                L"BUTTON", L"清理残留副屏",
+                L"BUTTON", L"遗忘旧记录（不删屏）",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                 406, 430, 192, 42,
                 window,
@@ -5226,11 +6601,21 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             scan_vdd_recovery_records();
             update_session_action_controls();
             g_state.window = window;
-            add_tray_icon(window);
+#ifdef WIREVIEW_WEBVIEW_UI
+            if (g_dashboard_owner == nullptr)
+#endif
+            { add_tray_icon(window); }
             g_state.simple_mode = true;
             EnableWindow(g_state.check_update_button, FALSE);
             apply_control_center_view(window);
 #ifdef WIREVIEW_WEBVIEW_UI
+            if (g_dashboard_owner != nullptr) {
+                hide_native_controls_for_web();
+                SetTimer(window, kDeviceDetectTimer, 2'000U, nullptr);
+                start_device_detection_probe();
+                publish_web_state();
+                return 0;
+            }
             std::wstring executable_path(32'768U, L'\0');
             const DWORD executable_length = GetModuleFileNameW(
                 nullptr, executable_path.data(), static_cast<DWORD>(executable_path.size()));
@@ -5250,7 +6635,10 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             (void)g_webview_host->initialize(
                 window, web_assets,
                 [](std::wstring_view command) { handle_web_message(command); },
-                []() { publish_web_state(); },
+                []() {
+                    log_control_event(L"web-ready", L"控制中心页面加载完成。");
+                    publish_web_state();
+                },
                 [window](HRESULT error) {
                     const std::wstring text =
                         L"无法初始化 Microsoft Edge WebView2 Evergreen Runtime（错误 " +
@@ -5263,6 +6651,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 });
 #endif
             SetTimer(window, kDeviceDetectTimer, 2'000U, nullptr);
+            start_device_detection_probe();
             return 0;
         }
         case WM_ERASEBKGND:
@@ -5273,7 +6662,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
 #ifdef WIREVIEW_WEBVIEW_UI
             // WebView2 是此目标中唯一的可见内容；不再让父窗口绘制旧 GDI 页面，
             // 避免页面导航或重组时露出 legacy 布局。
-            (void)dc;
+            FillRect(dc, &paint.rcPaint, g_background_brush);
 #else
             if (g_state.diagnostics_page) {
                 paint_window_buffered(window, dc, paint_diagnostics_page);
@@ -5305,9 +6694,27 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             SetTextColor(dc, kColorText);
             return reinterpret_cast<LRESULT>(g_control_brush);
         }
+#ifdef WIREVIEW_WEBVIEW_UI
+        case WM_COPYDATA:
+            return receive_device_message(reinterpret_cast<HWND>(wparam), reinterpret_cast<const COPYDATASTRUCT*>(lparam));
+        case kRunDeviceCommand:
+            if (!g_device_commands.empty() && !g_state.exiting) {
+                auto command = std::move(g_device_commands.front());
+                g_device_commands.pop_front();
+                handle_web_message(command);
+            }
+            return 0;
+#endif
         case WM_COMMAND:
             log_control_event(L"native-command", L"id=" +
                 std::to_wstring(LOWORD(wparam)) + L" notify=" + std::to_wstring(HIWORD(wparam)));
+            if (LOWORD(wparam) == kDeviceSelector && HIWORD(wparam) == CBN_SELCHANGE) {
+                const auto index = SendMessageW(g_state.device_selector, CB_GETCURSEL, 0U, 0);
+                if (index > 0 && static_cast<std::size_t>(index) <= g_state.adb_devices.size()) {
+                    (void)select_adb_device(g_state.adb_devices[static_cast<std::size_t>(index - 1)].serial);
+                } else { refresh_device_selector(); }
+                return 0;
+            }
             if (LOWORD(wparam) == kRefreshDisplaysButton) {
                 refresh_display_choices();
                 scan_vdd_recovery_records();
@@ -5397,9 +6804,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     return 0;
                 case kStopButton:
                 case kSimpleStopButton:
-                    notify_android_of_user_stop();
-                    stop_session();
-                    set_status(L"WireView 已停止。");
+                    stop_wireview();
                     return 0;
                 case kDisplaySettingsButton:
                 case kSimpleDisplaySettingsButton:
@@ -5418,15 +6823,36 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     restore_window(window);
                     return 0;
                 case kTrayStartMirror:
+#ifdef WIREVIEW_WEBVIEW_UI
+                    if (uses_device_dashboard()) {
+                        send_dashboard_command(g_state.selected_adb_serial, L"input-off");
+                        send_dashboard_command(g_state.selected_adb_serial, L"start");
+                        return 0;
+                    }
+#endif
                     start_session(window, false);
                     return 0;
                 case kTrayStartInput:
+#ifdef WIREVIEW_WEBVIEW_UI
+                    if (uses_device_dashboard()) {
+                        send_dashboard_command(g_state.selected_adb_serial, L"input-on");
+                        send_dashboard_command(g_state.selected_adb_serial, L"start");
+                        return 0;
+                    }
+#endif
                     start_session(window, true);
                     return 0;
                 case kTrayStop:
-                    notify_android_of_user_stop();
-                    stop_session();
-                    set_status(L"WireView 已停止。");
+#ifdef WIREVIEW_WEBVIEW_UI
+                    if (uses_device_dashboard()) { send_dashboard_command(g_state.selected_adb_serial, L"stop"); return 0; }
+#endif
+                    stop_wireview();
+                    return 0;
+                case kAddDeviceWindow:
+#ifdef WIREVIEW_WEBVIEW_UI
+                    if (uses_device_dashboard()) { restore_window(window); handle_dashboard_message(L"refresh-devices"); return 0; }
+#endif
+                    open_additional_device_window();
                     return 0;
                 case kTrayExit:
                     begin_control_center_exit(window);
@@ -5444,6 +6870,20 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             update_recommendation();
             return TRUE;
         case WM_TIMER:
+#ifdef WIREVIEW_WEBVIEW_UI
+            if (wparam == kDeviceCommandTimer) {
+                poll_dashboard_commands();
+                publish_web_state();
+                return 0;
+            }
+#endif
+            if (wparam == kAdbCleanupTimer) {
+                poll_adb_cleanup();
+#ifdef WIREVIEW_WEBVIEW_UI
+                publish_web_state();
+#endif
+                return 0;
+            }
             if (wparam == kVddTimer) {
                 poll_vdd_broker(window);
 #ifdef WIREVIEW_WEBVIEW_UI
@@ -5452,6 +6892,21 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 return 0;
             }
             if (wparam == kDeviceDetectTimer) {
+#ifdef WIREVIEW_WEBVIEW_UI
+                if (g_dashboard_owner != nullptr) {
+                    DWORD owner_pid{};
+                    GetWindowThreadProcessId(g_dashboard_owner, &owner_pid);
+                    if (owner_pid != g_dashboard_owner_pid) { begin_control_center_exit(window); return 0; }
+                }
+                if (uses_device_dashboard()) {
+                    poll_device_detection(window);
+                    publish_web_state();
+                    return 0;
+                }
+#endif
+                if (!g_state.session_monitor_path.empty()) {
+                    g_state.session_display_source = wireview::host::desktop_source_for_monitor(g_state.session_monitor_path);
+                }
                 poll_device_detection(window);
                 sync_custom_modes_from_parsec_vdd();
 #ifdef WIREVIEW_WEBVIEW_UI
@@ -5471,22 +6926,53 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                     const bool completed_profile_probe = g_state.profile_probe_active;
                     const std::wstring final_status = read_script_status().value_or(
                         g_state.last_script_status);
-                    if (completed_profile_probe && !g_state.device_profile_note.empty()) {
+                    if (completed_profile_probe && exit_code == 0U) {
                         notify_android_of_device_identified();
                     }
                     KillTimer(window, kProcessTimer);
+                    const bool completed_video = !g_state.profile_probe_active && !g_state.preview_active;
+                    if (completed_video) {
+                        const auto& source = g_state.session_display_source;
+                        const bool extended = g_state.direct_copy_session ? false : source.device_name.empty() || source.only_active
+                            ? g_state.web_extend_mode : !source.shared;
+                        g_state.foreground_resume_action = extended ? PendingSessionAction::extend : PendingSessionAction::copy;
+                        g_state.foreground_resume_input = g_state.session_input_enabled;
+                        g_state.foreground_resume_waiting = false;
+                    }
                     stop_session();
-                    set_status(completed_profile_probe && !g_state.device_profile_note.empty()
+                    if (completed_video && g_state.vdd_broker_process != nullptr && !g_state.vdd_stop_requested) {
+                        request_vdd_removal();
+                    }
+                    set_status(completed_profile_probe && exit_code == 0U && !g_state.device_profile_note.empty()
                         ? g_state.device_profile_note
                         : (!final_status.empty()
                             ? final_status
                             : L"WireView 会话已结束。"));
+                } else if (!g_state.session_monitor_path.empty() && !g_state.direct_copy_session) {
+                    const auto size = g_state.session_lid_display_size;
+                    if (const auto result = wireview::host::restore_lid_display_size(
+                            g_state.session_monitor_path, g_state.session_lid_display_size)) {
+                        log_control_event(L"display-topology-size", L"恢复副屏桌面 " +
+                            std::to_wstring(size.width) + L"×" + std::to_wstring(size.height) +
+                            L"，结果=" + std::to_wstring(*result));
+                    }
                 }
             }
             return 0;
+#ifdef WIREVIEW_WEBVIEW_UI
+        case WM_WINDOWPOSCHANGED:
+            if (g_webview_host && !g_state.exiting) {
+                const bool was_visible = g_webview_host->is_visible();
+                const bool visible = IsWindowVisible(window) != FALSE && IsIconic(window) == FALSE;
+                g_webview_host->set_visible(visible);
+                if (visible && !was_visible) { publish_web_state(); }
+            }
+            // DefWindowProc must still deliver WM_SIZE and WM_MOVE.
+            break;
+#endif
         case WM_SIZE:
             if (wparam == SIZE_MINIMIZED) {
-                ShowWindow(window, SW_HIDE);
+                hide_control_center(window);
             }
 #ifndef WIREVIEW_WEBVIEW_UI
             else {
@@ -5513,7 +6999,12 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
             return 0;
         }
         case WM_CLOSE:
-            ShowWindow(window, SW_HIDE);
+            hide_control_center(window);
+            return 0;
+        case WM_INITMENUPOPUP:
+#ifdef WIREVIEW_WEBVIEW_UI
+            if (uses_device_dashboard()) { update_dashboard_tray_menu(reinterpret_cast<HMENU>(wparam)); }
+#endif
             return 0;
         case kTrayMessage:
             if (lparam == WM_LBUTTONDBLCLK) {
@@ -5521,15 +7012,26 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 restore_window(window);
             } else if (lparam == WM_RBUTTONUP) {
                 log_control_event(L"tray", L"打开托盘菜单。 ");
+#ifdef WIREVIEW_WEBVIEW_UI
+                if (uses_device_dashboard()) { show_dashboard_tray_menu(window); return 0; }
+#endif
                 HMENU menu = CreatePopupMenu();
                 if (menu != nullptr) {
                     AppendMenuW(menu, MF_STRING, kTrayRestore, L"显示 WireView");
+#ifdef WIREVIEW_WEBVIEW_UI
+                    if (uses_device_dashboard()) {
+                        AppendMenuW(menu, MF_STRING, kAddDeviceWindow, L"刷新设备");
+                    } else
+#endif
+                    {
+                    AppendMenuW(menu, MF_STRING, kAddDeviceWindow, L"添加设备窗口");
+                    }
                     AppendMenuW(menu, MF_SEPARATOR, 0U, nullptr);
                     AppendMenuW(menu, MF_STRING, kTrayStartMirror, L"开始安全镜像");
                     AppendMenuW(menu, MF_STRING, kTrayStartInput, L"开始并启用输入");
-                    AppendMenuW(menu, MF_STRING, kTrayStop, L"停止 WireView");
+                    AppendMenuW(menu, MF_STRING, kTrayStop, L"停止当前设备");
                     AppendMenuW(menu, MF_SEPARATOR, 0U, nullptr);
-                    AppendMenuW(menu, MF_STRING, kTrayExit, L"退出控制中心");
+                    AppendMenuW(menu, MF_STRING, kTrayExit, L"退出 WireView");
                     POINT point{};
                     GetCursorPos(&point);
                     SetForegroundWindow(window);
@@ -5551,13 +7053,20 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
                 g_webview_host.reset();
                 log_control_event(L"destroy", L"WebView2 控制器已关闭。 ");
             }
+            if (uses_device_dashboard()) { shutdown_dashboard_workers(); }
 #endif
             // 退出控制中心代表电脑端离线，不等同于用户在控制中心内主动停止会话。
             // 设备端据此提示等待电脑端，而不会错误显示“WireView 已停止”。
-            notify_android_of_host_exit();
+#ifdef WIREVIEW_WEBVIEW_UI
+            if (!uses_device_dashboard())
+#endif
+            { notify_android_of_host_exit(); }
             KillTimer(window, kProcessTimer);
             KillTimer(window, kVddTimer);
             KillTimer(window, kDeviceDetectTimer);
+#ifdef WIREVIEW_WEBVIEW_UI
+            KillTimer(window, kDeviceCommandTimer);
+#endif
             if (g_state.device_probe_process != nullptr) {
                 TerminateProcess(g_state.device_probe_process, 0U);
                 CloseHandle(g_state.device_probe_process);
@@ -5583,15 +7092,47 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         LocalFree(arguments);
         return run_script_status_self_test();
     }
-    if (arguments != nullptr) {
-        LocalFree(arguments);
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (arguments != nullptr && argument_count == 4 &&
+        std::wstring_view(arguments[1]) == L"--device-worker" && wireview::host::valid_adb_serial(arguments[2])) {
+        wchar_t* end{};
+        const auto owner = _wcstoui64(arguments[3], &end, 10);
+        if (owner == 0U || *end != L'\0') { LocalFree(arguments); return 1; }
+        g_dashboard_owner = reinterpret_cast<HWND>(static_cast<UINT_PTR>(owner));
+        GetWindowThreadProcessId(g_dashboard_owner, &g_dashboard_owner_pid);
+        if (g_dashboard_owner_pid == 0U) { LocalFree(arguments); return 1; }
+        g_device_window_serial = arguments[2];
+    } else
+#endif
+    if (arguments != nullptr && argument_count == 3 &&
+        std::wstring_view(arguments[1]) == L"--device-window" &&
+        wireview::host::valid_adb_serial(arguments[2])) {
+        g_device_window_serial = arguments[2];
+    } else if (argument_count > 1) {
+        if (arguments != nullptr) { LocalFree(arguments); }
+        return 1;
     }
-    HANDLE instance_mutex = CreateMutexW(nullptr, TRUE, kControlCenterInstanceMutex);
+    if (arguments != nullptr) { LocalFree(arguments); }
+    std::wstring instance_name = kControlCenterInstanceMutex;
+    if (!g_device_window_serial.empty()) {
+        const auto key = device_window_key(g_device_window_serial);
+        instance_name += L".Device." + key;
+        g_control_window_class += L".Device." + key;
+#ifdef WIREVIEW_WEBVIEW_UI
+        if (g_dashboard_owner != nullptr) { g_control_window_class += L".Worker"; }
+#endif
+    }
+    HANDLE instance_mutex = CreateMutexW(nullptr, TRUE, instance_name.c_str());
     if (instance_mutex == nullptr) {
         return 1;
     }
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
+#ifdef WIREVIEW_WEBVIEW_UI
+        if (g_dashboard_owner == nullptr)
+#endif
+        {
         restore_existing_control_center();
+        }
         CloseHandle(instance_mutex);
         return 0;
     }
@@ -5603,6 +7144,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     g_state.session_launcher_path = find_session_launcher().value_or(std::filesystem::path{});
     g_state.vdd_broker_path = find_vdd_broker();
     g_state.settings_file = find_settings_file();
+    if (!g_device_window_serial.empty() && !g_state.settings_file.empty()) {
+        const auto original = g_state.settings_file.parent_path();
+        const auto directory = original / L"devices" / device_window_key(g_device_window_serial);
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error) { CloseHandle(instance_mutex); return 1; }
+        for (const auto* name : {L"control-settings.ini", L"cursor-sizes.txt"}) {
+            std::filesystem::copy_file(original / name, directory / name,
+                std::filesystem::copy_options::skip_existing, error);
+            error.clear();
+        }
+        g_state.settings_file = directory / L"control-settings.ini";
+    }
+    g_state.cursor_sizes = wireview::host::load_cursor_sizes(g_state.settings_file.parent_path() / L"cursor-sizes.txt");
+    g_state.display_preferences = wireview::host::load_display_preferences(g_state.settings_file.parent_path() / L"display-preferences.ini");
+    restore_device_selection();
+    if (!g_device_window_serial.empty()) { g_state.selected_adb_serial = g_device_window_serial; }
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (uses_device_dashboard()) { restore_dashboard_devices(); } else
+#endif
+    { keep_selected_device_in_list(); }
     if (!g_state.settings_file.empty()) {
         SYSTEMTIME time{};
         GetLocalTime(&time);
@@ -5629,7 +7191,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
             L"WireView/device-model-cache.tsv";
     }
     if (!g_state.settings_file.empty()) {
-        g_state.custom_modes_file = g_state.settings_file.parent_path() / L"custom-modes.ini";
+        // Custom mode slots belong to the shared driver, not one device window.
+        g_state.custom_modes_file = find_settings_file().parent_path() / L"custom-modes.ini";
     }
     load_custom_modes();
     initialize_ui_theme();
@@ -5640,7 +7203,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
         .hInstance = instance,
         .hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)),
         .hbrBackground = g_background_brush,
-        .lpszClassName = L"WireViewControlWindow",
+        .lpszClassName = g_control_window_class.c_str(),
     };
     if (RegisterClassW(&window_class) == 0U) {
         return 1;
@@ -5721,9 +7284,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
     if (window == nullptr) {
         return 1;
     }
+    if (!g_device_window_serial.empty()) {
+        const auto title = L"WireView — " + g_device_window_serial;
+        SetWindowTextW(window, title.c_str());
+    }
     const int initial_show_command = show_command == SW_HIDE ? SW_SHOWNORMAL : show_command;
-    ShowWindow(window, initial_show_command);
-    UpdateWindow(window);
+#ifdef WIREVIEW_WEBVIEW_UI
+    if (g_dashboard_owner == nullptr)
+#endif
+    {
+        ShowWindow(window, initial_show_command);
+        UpdateWindow(window);
+    }
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0U, 0U) > 0) {

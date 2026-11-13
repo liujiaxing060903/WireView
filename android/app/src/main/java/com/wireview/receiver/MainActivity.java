@@ -6,29 +6,38 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Point;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.display.DisplayManager;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbManager;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.Display;
+import android.view.DisplayCutout;
 import android.view.Gravity;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.FrameLayout;
+import android.widget.PopupWindow;
 import android.widget.TextView;
+import android.widget.ProgressBar;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -36,8 +45,14 @@ import java.nio.charset.StandardCharsets;
 
 public final class MainActivity extends Activity implements ConnectionClient.Listener, VideoDecoder.Listener {
     private static final String TAG = "WireViewUsb";
-    private static final String DISPLAY_VERSION = "1.1.20";
-    private static final long PEN_MOVE_INTERVAL_MILLIS = 33L;
+    private static final String DISPLAY_VERSION = BuildConfig.VERSION_NAME;
+    private static final String ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE";
+    private static final int[] ROTATION_ORDER = {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+            ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT,
+            ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE,
+    };
     private static final String ACTION_USB_PERMISSION =
             "com.wireview.receiver.action.USB_PERMISSION";
     private static final String ACTION_WIREVIEW_STOPPED =
@@ -50,12 +65,20 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             "com.wireview.receiver.action.DEVICE_IDENTIFIED";
 
     private TextView statusView;
+    private ProgressBar connectionProgress;
+    private boolean usbCableConnected = true;
+    private ConnectionStatus connectionStatus = new ConnectionStatus();
     private TextView deviceInfoView;
     private TextView versionView;
     private LinearLayout connectionPanel;
     private FrameLayout videoContainer;
     private SurfaceView displaySurface;
     private AspectPreviewView previewView;
+    private PopupWindow rotationControl;
+    private boolean streamingPresentation;
+    private int rotationControlStartRotation;
+    private int rotationControlMargin;
+    private int rotationStep = -1;
     private ConnectionClient connection;
     private boolean activityStarted;
     private boolean usbPermissionRequested;
@@ -79,6 +102,22 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            if (ACTION_USB_STATE.equals(intent.getAction())) {
+                readUsbState(intent);
+                if (!usbCableConnected) {
+                    hasConfiguredStream = false;
+                    awaitingHostReconnect = false;
+                    idleNoticeActive = false;
+                    explicitStopNoticeActive = false;
+                    inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
+                    videoDecoder.stopStream();
+                    setStreamingPresentation(false);
+                    showWaitingForPc();
+                } else if (!hasConfiguredStream && !idleNoticeActive) {
+                    showWaitingForPc();
+                }
+                return;
+            }
             if (ACTION_WIREVIEW_STOPPED.equals(intent.getAction())) {
                 PersistentDiagnosticLog.record("MainActivity", "received WireView stopped notice");
                 runOnUiThread(MainActivity.this::showExplicitStopNotice);
@@ -104,19 +143,22 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             }
             if (UsbManager.ACTION_USB_ACCESSORY_DETACHED.equals(intent.getAction())) {
                 UsbAccessory accessory = accessoryExtra(intent);
+                if (!isWireViewAccessory(accessory)) {
+                    return;
+                }
                 Log.i(TAG, "Android USB accessory detached: " + accessory);
                 PersistentDiagnosticLog.record(
                         "MainActivity",
                         "USB accessory detached: " + accessory);
                 usbPermissionRequested = false;
                 activeAccessory = null;
-                hasSeenHostConnection = false;
+                hasConfiguredStream = false;
                 awaitingHostReconnect = false;
                 explicitStopNoticeActive = false;
                 idleNoticeActive = false;
                 inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
                 setStreamingPresentation(false);
-                statusView.setText("等待电脑端\n请检查 USB 线或确认电脑端 WireView 正在运行。");
+                setConnectionStatus("USB 已断开\n请重新连接电脑。");
                 ignoreEnumeratedAccessoryUntilAttach = true;
                 ignoredDetachedAccessoryLogged = false;
                 setIntent(new Intent(MainActivity.this, MainActivity.class));
@@ -130,8 +172,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             if (!ACTION_USB_PERMISSION.equals(intent.getAction())) {
                 return;
             }
-            usbPermissionRequested = false;
             UsbAccessory accessory = accessoryExtra(intent);
+            if (accessory != null && !isWireViewAccessory(accessory)) {
+                return;
+            }
+            usbPermissionRequested = false;
             boolean granted = intent.getBooleanExtra(
                     UsbManager.EXTRA_PERMISSION_GRANTED,
                     false);
@@ -158,18 +203,51 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     private int requestedStreamFrameRate = 60;
     // Once the app has reached the host, keep the user-facing state stable while
     // the connection loop transparently recovers a short ADB/Host interruption.
-    private boolean hasSeenHostConnection;
+    private boolean hasConfiguredStream;
     private boolean awaitingHostReconnect;
     private boolean explicitStopNoticeActive;
     // An explicit idle notice comes from a deliberate controller action. Heartbeat
     // updates must not replace it with the less useful generic "connected" label.
     private boolean idleNoticeActive;
+    // Data only: the old Activity and its views must not survive rotation.
+    private static final class RotationState {
+        final ConnectionStatus connectionStatus;
+        final String idleNotice;
+        final boolean explicitStop;
+        final int rotationStep;
+
+        RotationState(ConnectionStatus connectionStatus, String idleNotice,
+                boolean explicitStop, int rotationStep) {
+            this.connectionStatus = connectionStatus;
+            this.idleNotice = idleNotice;
+            this.explicitStop = explicitStop;
+            this.rotationStep = rotationStep;
+        }
+    }
     private String lastLoggedConnectionStatus;
     // Keep the configured video geometry so a later immersive-mode/inset layout
     // change can resize the video viewport again instead of leaving stale black bars.
     private int configuredVideoWidth;
     private int configuredVideoHeight;
     private final Handler inputHandler = new Handler(Looper.getMainLooper());
+    private boolean displayReportPending;
+    private final Runnable showFirstFrameTimeout = () ->
+            setConnectionStatus("已连接电脑，但画面尚未显示\n请在电脑端检查投屏状态。");
+    private final Runnable reportDisplayChange = () -> {
+        displayReportPending = false;
+        positionRotationControl();
+        refreshDeviceInfo();
+        sendDeviceCapabilities();
+    };
+    private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
+        @Override public void onDisplayAdded(int displayId) {}
+        @Override public void onDisplayRemoved(int displayId) {}
+        @Override public void onDisplayChanged(int displayId) {
+            if (displayId == getWindowManager().getDefaultDisplay().getDisplayId()) {
+                scheduleDisplayReport();
+            }
+        }
+    };
     private final Runnable showWaitingAfterReconnectGrace = () -> {
         if (!awaitingHostReconnect) {
             return;
@@ -180,43 +258,45 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         PersistentDiagnosticLog.record(
                 "Status",
                 "reconnect grace expired; showing disconnected computer status");
-        hasSeenHostConnection = false;
+        hasConfiguredStream = false;
+        awaitingHostReconnect = false;
         setStreamingPresentation(false);
-        statusView.setText("等待电脑端\n请检查 USB 线或确认电脑端 WireView 正在运行。");
+        setConnectionStatus("与电脑的连接已断开\n请检查 USB 线或电脑上的 WireView。");
     };
 
     private void showExplicitStopNotice() {
         videoDecoder.stopStream();
         setStreamingPresentation(false);
+        hasConfiguredStream = false;
         awaitingHostReconnect = false;
         explicitStopNoticeActive = true;
         idleNoticeActive = true;
         inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
-        statusView.setText("WireView 已停止；设备仍连接，可再次开始镜像。");
+        setConnectionStatus("投屏已停止\n可在电脑端重新开始投屏。");
         refreshDeviceInfo();
     }
 
     private void showHostExitedNotice() {
         videoDecoder.stopStream();
         setStreamingPresentation(false);
-        hasSeenHostConnection = false;
+        hasConfiguredStream = false;
         awaitingHostReconnect = false;
         explicitStopNoticeActive = false;
-        // 控制中心退出后，保持“等待电脑端”而不是让下一次连接心跳把它覆盖为“已连接”。
         idleNoticeActive = true;
         inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
-        statusView.setText("等待电脑端\n请检查 USB 线或确认电脑端 WireView 正在运行。");
+        setConnectionStatus("电脑控制中心已退出\n请重新打开 WireView 控制中心。");
         refreshDeviceInfo();
     }
 
     private void showDeviceIdentifiedNotice() {
+        connectionStatus.hostContacted();
         awaitingHostReconnect = false;
         explicitStopNoticeActive = false;
-        idleNoticeActive = false;
-        hasSeenHostConnection = true;
+        idleNoticeActive = true;
+        hasConfiguredStream = false;
         inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
         setStreamingPresentation(false);
-        statusView.setText("已连接");
+        setConnectionStatus("电脑已识别这台设备\n请在电脑端选择复制或扩展。");
         refreshDeviceInfo();
     }
 
@@ -228,27 +308,23 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
         String resolution = width > 0 && height > 0 ? width + " × " + height : "原生自动";
         String refreshText = refresh > 0 ? refresh + " Hz" : "未设置";
-        statusView.setText("已创建副屏\n投屏分辨率：" + resolution + "\n副屏刷新率：" + refreshText);
+        setConnectionStatus("已创建副屏\n投屏分辨率：" + resolution + "\n副屏刷新率：" + refreshText);
         refreshDeviceInfo();
     }
-    private byte[] pendingPenMove;
-    private boolean penMoveDispatchScheduled;
-    private long lastPenMoveSentAtMillis;
-    private final Runnable dispatchPendingPenMove = () -> {
-        penMoveDispatchScheduled = false;
-        if (pendingPenMove == null || connection == null) {
-            return;
-        }
-        byte[] input = pendingPenMove;
-        pendingPenMove = null;
-        connection.sendInputBatch(input);
-        lastPenMoveSentAtMillis = SystemClock.uptimeMillis();
-    };
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Object retained = getLastNonConfigurationInstance();
+        RotationState rotationState = retained instanceof RotationState
+                ? (RotationState) retained : null;
+        if (rotationState != null) {
+            connectionStatus = rotationState.connectionStatus;
+            rotationStep = rotationState.rotationStep;
+            idleNoticeActive = rotationState.idleNotice != null;
+            explicitStopNoticeActive = idleNoticeActive && rotationState.explicitStop;
+        }
         PersistentDiagnosticLog.initialize(getFilesDir());
+        PacketReadTrace.directory = getFilesDir();
         PersistentDiagnosticLog.record(
                 "MainActivity",
                 "onCreate action=" + getIntent().getAction()
@@ -292,12 +368,25 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         statusView.setTextColor(Color.WHITE);
         statusView.setTextSize(26.0f);
         statusView.setGravity(Gravity.CENTER);
-        statusView.setText("等待电脑端\n请连接 USB 并在电脑打开 WireView 控制中心。");
+        if (idleNoticeActive) {
+            setConnectionStatus(rotationState.idleNotice);
+            PersistentDiagnosticLog.record("MainActivity", "restored idle notice after rotation");
+        } else {
+            showWaitingForPc();
+        }
         connectionPanel.addView(
                 statusView,
                 new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        connectionProgress = new ProgressBar(this);
+        connectionProgress.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(101, 162, 255)));
+        connectionProgress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressLayout = new LinearLayout.LayoutParams(dp(28), dp(28));
+        progressLayout.gravity = Gravity.CENTER_HORIZONTAL;
+        progressLayout.topMargin = dp(12);
+        connectionPanel.addView(connectionProgress, progressLayout);
 
         deviceInfoView = new TextView(this);
         deviceInfoView.setTextColor(Color.rgb(190, 196, 205));
@@ -357,7 +446,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         boolean forceLowLatency = getIntent().getBooleanExtra("force_low_latency", false);
         selectedDecoder = CodecProbe.findBestAvcDecoder(decoderOverride);
         refreshDeviceInfo();
-        videoDecoder = new VideoDecoder(selectedDecoder, forceLowLatency, this);
+        videoDecoder = new VideoDecoder(selectedDecoder, forceLowLatency, this, getFilesDir(),
+                getIntent().getLongExtra("demo_grid_ns", 0L),
+                getIntent().getLongExtra("demo_period_ns", 0L),
+                getIntent().getLongExtra("demo_lead_ns", 2_500_000L),
+                getIntent().getIntExtra("demo_warmup_frames", 0));
         displaySurface.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
@@ -381,6 +474,9 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         super.onStart();
         PersistentDiagnosticLog.record("MainActivity", "onStart");
         activityStarted = true;
+        getSystemService(DisplayManager.class).registerDisplayListener(displayListener, inputHandler);
+        getWindow().getDecorView().post(this::showRotationControl);
+        refreshDeviceInfo();
         connection.start();
         inputHandler.removeCallbacks(pollUsbAccessory);
         inputHandler.post(pollUsbAccessory);
@@ -390,10 +486,34 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
     protected void onStop() {
         PersistentDiagnosticLog.record("MainActivity", "onStop");
         activityStarted = false;
+        getSystemService(DisplayManager.class).unregisterDisplayListener(displayListener);
+        inputHandler.removeCallbacks(reportDisplayChange);
+        displayReportPending = false;
+        inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
+        if (rotationControl != null) {
+            rotationControl.dismiss();
+            rotationControl = null;
+        }
         inputHandler.removeCallbacks(pollUsbAccessory);
-        discardPendingPenMove();
         connection.close();
+        videoDecoder.stopStream();
+        hasConfiguredStream = false;
+        awaitingHostReconnect = false;
+        if (!isChangingConfigurations()) {
+            idleNoticeActive = false;
+        }
+        setStreamingPresentation(false);
+        if (!idleNoticeActive) {
+            showWaitingForPc();
+        }
         super.onStop();
+    }
+
+    @Override
+    public Object onRetainNonConfigurationInstance() {
+        return new RotationState(connectionStatus,
+                idleNoticeActive ? statusView.getText().toString() : null,
+                explicitStopNoticeActive, rotationStep);
     }
 
     @Override
@@ -420,6 +540,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
 
     private void registerUsbPermissionReceiver() {
         IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+        filter.addAction(ACTION_USB_STATE);
         filter.addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED);
         filter.addAction(ACTION_WIREVIEW_STOPPED);
         filter.addAction(ACTION_HOST_EXITED);
@@ -432,6 +553,17 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             registerReceiver(usbPermissionReceiver, filter);
         }
         usbReceiverRegistered = true;
+        Intent usbState = registerReceiver(null, new IntentFilter(ACTION_USB_STATE));
+        if (usbState != null) {
+            readUsbState(usbState);
+            if (!usbCableConnected) {
+                idleNoticeActive = false;
+                explicitStopNoticeActive = false;
+            }
+            if (!idleNoticeActive) {
+                showWaitingForPc();
+            }
+        }
         PersistentDiagnosticLog.record("MainActivity", "USB permission receiver registered");
     }
 
@@ -453,7 +585,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                         "MainActivity",
                         "accessory enumeration count=" + accessoryCount);
             }
-            if (accessories != null && accessories.length == 1) {
+            if (accessories != null && accessories.length == 1 && isWireViewAccessory(accessories[0])) {
                 accessory = accessories[0];
             }
         }
@@ -515,7 +647,6 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 "switching ConnectionClient to USB accessory transport: " + accessory
                         + " activityStarted=" + activityStarted);
         activeAccessory = accessory;
-        discardPendingPenMove();
         connection.close();
         connection = new ConnectionClient(
                 this,
@@ -530,7 +661,15 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
                 || !UsbManager.ACTION_USB_ACCESSORY_ATTACHED.equals(intent.getAction())) {
             return null;
         }
-        return accessoryExtra(intent);
+        UsbAccessory accessory = accessoryExtra(intent);
+        return isWireViewAccessory(accessory) ? accessory : null;
+    }
+
+    private static boolean isWireViewAccessory(UsbAccessory accessory) {
+        // Match the Windows AOA identity and the manifest's accessory_filter.xml.
+        return accessory != null
+                && "WireView".equals(accessory.getManufacturer())
+                && "WireView Receiver".equals(accessory.getModel());
     }
 
     private static UsbAccessory accessoryExtra(Intent intent) {
@@ -549,29 +688,26 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             PersistentDiagnosticLog.record("Status", status);
         }
         runOnUiThread(() -> {
-            if (status.startsWith("已连接") || status.startsWith("握手成功")) {
-                awaitingHostReconnect = false;
-                inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
-                hasSeenHostConnection = true;
-                if (idleNoticeActive) {
+            if (!activityStarted) { return; }
+            if (status.startsWith("等待电脑端")) {
+                if (idleNoticeActive || usbPermissionRequested) {
                     return;
                 }
-            } else if (status.startsWith("等待电脑端") && hasSeenHostConnection) {
-                if (idleNoticeActive) {
-                    return;
+                if (hasConfiguredStream) {
+                    videoDecoder.stopStream();
+                    setStreamingPresentation(false);
+                    awaitingHostReconnect = true;
+                    inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
+                    inputHandler.postDelayed(showWaitingAfterReconnectGrace, 3_000L);
+                    setConnectionStatus("连接中断\n正在重新连接电脑…");
+                } else {
+                    showWaitingForPc();
                 }
-                videoDecoder.stopStream();
-                setStreamingPresentation(false);
-                awaitingHostReconnect = true;
-                inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
-                inputHandler.postDelayed(showWaitingAfterReconnectGrace, 3_000L);
-                statusView.setText("已连接");
-                refreshDeviceInfo();
-                return;
+            } else if (!status.startsWith("正在连接电脑")
+                    || (!idleNoticeActive && !awaitingHostReconnect)) {
+                setConnectionStatus(status.startsWith("正在连接电脑")
+                        ? "正在与电脑通信\n正在确认连接状态，请稍候。" : status);
             }
-            statusView.setText(hasSeenHostConnection
-                    ? "已连接"
-                    : "等待电脑端\n请连接 USB 并在电脑打开 WireView 控制中心。");
             refreshDeviceInfo();
         });
     }
@@ -582,10 +718,13 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             runOnUiThread(() -> setStreamingPresentation(false));
             return;
         }
-        if (status.startsWith("解码失败")) {
+        if (status.startsWith("解码失败") || status.startsWith("解码器启动失败")
+                || status.startsWith("视频配置无效")) {
             runOnUiThread(() -> setStreamingPresentation(false));
         }
-        onStatusChanged(status);
+        if (!status.startsWith("解码器已启动")) {
+            onStatusChanged(status);
+        }
     }
 
     @Override
@@ -594,6 +733,10 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             // A real stream start is the only normal event that replaces an idle notice.
             idleNoticeActive = false;
             explicitStopNoticeActive = false;
+            hasConfiguredStream = true;
+            setConnectionStatus("已连接电脑\n正在等待首帧…");
+            inputHandler.removeCallbacks(showFirstFrameTimeout);
+            inputHandler.postDelayed(showFirstFrameTimeout, 8_000L);
             requestedStreamFrameRate = frameRate;
             applyPreferredDisplayRefreshRate();
             refreshDeviceInfo();
@@ -619,6 +762,11 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         telemetry.putLong(presentationTimeUs);
         telemetry.putInt((int) Math.max(0L, Math.min(startupMillis, 0xffffffffL)));
         connection.sendTelemetry(telemetry.array());
+    }
+
+    @Override
+    public void onFrameSurfaceTarget(long presentationTimeUs, long wantedNanos) {
+        connection.sendTelemetry(SurfaceFrameMarker.encode(presentationTimeUs, wantedNanos));
     }
 
     @Override
@@ -700,7 +848,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         telemetry.put((byte) 0);
         telemetry.putShort(clampUnsignedShort(displayWidth));
         telemetry.putShort(clampUnsignedShort(displayHeight));
-        telemetry.putShort(clampUnsignedShort(Math.round(activeMode.getRefreshRate() * 100.0f)));
+        telemetry.putShort(clampUnsignedShort(Math.round(display.getRefreshRate() * 100.0f)));
         telemetry.putShort(clampUnsignedShort(Math.round(maximumRefreshRate * 100.0f)));
         telemetry.putShort(clampUnsignedShort(decoderName.length));
         telemetry.putShort((short) 0);
@@ -718,13 +866,97 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         }
     }
 
+    private void showRotationControl() {
+        if (!activityStarted || streamingPresentation || rotationControl != null) {
+            return;
+        }
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(R.drawable.ic_rotate);
+        button.setImageTintList(ColorStateList.valueOf(Color.WHITE));
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setPadding(0, 0, 0, 0);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            button.setForceDarkAllowed(false);
+        }
+        button.setContentDescription("旋转屏幕");
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xCC242832);
+        background.setShape(GradientDrawable.OVAL);
+        button.setBackground(background);
+        button.setOnClickListener(view -> rotateDisplay());
+        // This small window stays above the hardware video SurfaceView.
+        rotationControl = new PopupWindow(button, dp(48), dp(48), false);
+        rotationControl.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
+        rotationControl.setAttachedInDecor(false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            rotationControl.setIsLaidOutInScreen(true);
+        }
+        rotationControlStartRotation = getWindowManager().getDefaultDisplay().getRotation();
+        rotationControlMargin = dp(12) + rotationControlSafeInset();
+        positionRotationControl();
+    }
+
+    private int rotationControlSafeInset() {
+        WindowInsets insets = videoContainer.getRootWindowInsets();
+        if (insets == null) {
+            return 0;
+        }
+        int safeInset = Math.max(Math.max(insets.getStableInsetLeft(), insets.getStableInsetRight()),
+                Math.max(insets.getStableInsetTop(), insets.getStableInsetBottom()));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            DisplayCutout cutout = insets.getDisplayCutout();
+            if (cutout != null) {
+                safeInset = Math.max(safeInset, Math.max(
+                        Math.max(cutout.getSafeInsetLeft(), cutout.getSafeInsetRight()),
+                        Math.max(cutout.getSafeInsetTop(), cutout.getSafeInsetBottom())));
+            }
+        }
+        return safeInset;
+    }
+
+    private void positionRotationControl() {
+        if (rotationControl == null) {
+            return;
+        }
+        Display display = getWindowManager().getDefaultDisplay();
+        Point size = new Point();
+        display.getRealSize(size);
+        int turns = (display.getRotation() - rotationControlStartRotation + 4) % 4;
+        int margin = rotationControlMargin;
+        // Keep the same physical corner while Android rotates its screen coordinates.
+        int x = turns == 0 || turns == 3 ? size.x - margin - rotationControl.getWidth() : margin;
+        int y = turns >= 2 ? size.y - margin - rotationControl.getHeight() : margin;
+        rotationControl.getContentView().setRotation(-90f * turns);
+        if (rotationControl.isShowing()) {
+            rotationControl.update(x, y, -1, -1);
+        } else {
+            rotationControl.showAtLocation(videoContainer, Gravity.TOP | Gravity.LEFT, x, y);
+        }
+    }
+
+    private void rotateDisplay() {
+        if (rotationStep < 0) {
+            int rotation = getWindowManager().getDefaultDisplay().getRotation();
+            boolean landscape = getResources().getConfiguration().orientation
+                    == Configuration.ORIENTATION_LANDSCAPE;
+            boolean naturalLandscape = landscape == (rotation % 2 == 0);
+            rotationStep = rotation + (naturalLandscape ? 1 : 0);
+        }
+        rotationStep = (rotationStep + 1) % ROTATION_ORDER.length;
+        setRequestedOrientation(ROTATION_ORDER[rotationStep]);
+    }
+
+    private void scheduleDisplayReport() {
+        if (activityStarted && !displayReportPending) {
+            displayReportPending = inputHandler.postDelayed(reportDisplayChange, 100L);
+        }
+    }
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        // This Activity handles orientation itself, so Android does not recreate it.
-        // Refresh once now and once after the display mode/rotation settles.
-        refreshDeviceInfo();
-        inputHandler.postDelayed(this::refreshDeviceInfo, 200L);
+        positionRotationControl();
+        scheduleDisplayReport();
     }
 
     private String deviceDisplayLabel() {
@@ -738,7 +970,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
             width = height;
             height = unrotatedWidth;
         }
-        return width + " × " + height + " · " + Math.round(activeMode.getRefreshRate()) + " Hz";
+        return width + " × " + height + " · " + Math.round(display.getRefreshRate()) + " Hz";
     }
 
     @Override
@@ -772,7 +1004,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         payload.put((byte) (isTablet ? 1 : 0));
         payload.putShort(clampUnsignedShort(displayWidth));
         payload.putShort(clampUnsignedShort(displayHeight));
-        payload.putShort(clampUnsignedShort(Math.round(activeMode.getRefreshRate() * 100.0f)));
+        payload.putShort(clampUnsignedShort(Math.round(display.getRefreshRate() * 100.0f)));
         payload.putShort(clampUnsignedShort(Math.round(maximumRefreshRate * 100.0f)));
         payload.putShort(clampUnsignedShort(modelName.length));
         payload.putShort(clampUnsignedShort(manufacturerName.length));
@@ -826,9 +1058,7 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         int height = Short.toUnsignedInt(input.getShort());
         int frameRate = Short.toUnsignedInt(input.getShort());
         runOnUiThread(() -> {
-            statusView.setVisibility(View.GONE);
-            deviceInfoView.setVisibility(View.GONE);
-            versionView.setVisibility(View.GONE);
+            connectionPanel.setVisibility(View.GONE);
             resetVideoViewport();
             previewView.showLayout(width, height, frameRate);
             getWindow().getDecorView().setSystemUiVisibility(
@@ -845,10 +1075,40 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         return (short) Math.max(0, Math.min(value, 0xffff));
     }
 
+    private void showWaitingForPc() {
+        setConnectionStatus(connectionStatus.waitingText());
+    }
+
+    private void readUsbState(Intent intent) {
+        usbCableConnected = intent.getBooleanExtra("connected", false);
+        boolean dataAvailable = intent.getBooleanExtra("adb", false)
+                || intent.getBooleanExtra("mtp", false) || intent.getBooleanExtra("ptp", false)
+                || intent.getBooleanExtra("accessory", false);
+        connectionStatus.updateUsb(usbCableConnected, intent.hasExtra("configured"),
+                intent.getBooleanExtra("configured", false), dataAvailable);
+    }
+
+    private void setConnectionStatus(String text) {
+        statusView.setText(text);
+        if (connectionProgress != null) {
+            boolean connecting = text.contains("正在连接") || text.contains("正在重新连接")
+                    || text.contains("正在等待首帧") || text.contains("等待画面恢复")
+                    || text.contains("正在识别") || text.contains("正在准备")
+                    || text.contains("正在与电脑通信");
+            connectionProgress.setVisibility(connecting ? View.VISIBLE : View.GONE);
+        }
+    }
+
     private void setStreamingPresentation(boolean streaming) {
-        statusView.setVisibility(streaming ? View.GONE : View.VISIBLE);
-        deviceInfoView.setVisibility(streaming ? View.GONE : View.VISIBLE);
-        versionView.setVisibility(streaming ? View.GONE : View.VISIBLE);
+        streamingPresentation = streaming;
+        if (streaming && rotationControl != null) {
+            rotationControl.dismiss();
+            rotationControl = null;
+        } else if (!streaming) {
+            showRotationControl();
+        }
+        inputHandler.removeCallbacks(showFirstFrameTimeout);
+        connectionPanel.setVisibility(streaming ? View.GONE : View.VISIBLE);
         getWindow().getDecorView().setSystemUiVisibility(streaming
                 ? View.SYSTEM_UI_FLAG_FULLSCREEN
                         | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -884,10 +1144,14 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         Display display = getWindowManager().getDefaultDisplay();
         int preferredModeId = 0;
         if (requestedStreamFrameRate >= 120) {
+            Display.Mode active = display.getMode();
+            float bestRefresh = 0.0f;
             for (Display.Mode mode : display.getSupportedModes()) {
-                if (mode.getRefreshRate() >= 119.0f) {
+                if (mode.getPhysicalWidth() == active.getPhysicalWidth()
+                        && mode.getPhysicalHeight() == active.getPhysicalHeight()
+                        && mode.getRefreshRate() >= 119.0f && mode.getRefreshRate() > bestRefresh) {
+                    bestRefresh = mode.getRefreshRate();
                     preferredModeId = mode.getModeId();
-                    break;
                 }
             }
         }
@@ -920,64 +1184,25 @@ public final class MainActivity extends Activity implements ConnectionClient.Lis
         if (input == null) {
             return false;
         }
-        if (isCoalesciblePenMove(event)) {
-            enqueuePenMove(input);
-        } else {
-            flushPendingPenMove();
-            connection.sendInputBatch(input);
-        }
-        return true;
-    }
-
-    private static boolean isCoalesciblePenMove(MotionEvent event) {
-        if (event.getActionMasked() != MotionEvent.ACTION_MOVE) {
-            return false;
-        }
-        for (int index = 0; index < event.getPointerCount(); ++index) {
-            int tool = event.getToolType(index);
-            if (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void enqueuePenMove(byte[] input) {
-        pendingPenMove = input;
-        if (penMoveDispatchScheduled) {
-            return;
-        }
-        long now = SystemClock.uptimeMillis();
-        long dueAt = lastPenMoveSentAtMillis == 0L
-                ? now
-                : Math.max(now, lastPenMoveSentAtMillis + PEN_MOVE_INTERVAL_MILLIS);
-        penMoveDispatchScheduled = true;
-        inputHandler.postAtTime(dispatchPendingPenMove, dueAt);
-    }
-
-    private void flushPendingPenMove() {
-        inputHandler.removeCallbacks(dispatchPendingPenMove);
-        penMoveDispatchScheduled = false;
-        if (pendingPenMove == null) {
-            return;
-        }
-        byte[] input = pendingPenMove;
-        pendingPenMove = null;
         connection.sendInputBatch(input);
-        lastPenMoveSentAtMillis = SystemClock.uptimeMillis();
-    }
-
-    private void discardPendingPenMove() {
-        inputHandler.removeCallbacks(dispatchPendingPenMove);
-        pendingPenMove = null;
-        penMoveDispatchScheduled = false;
+        return true;
     }
 
     @Override
     public void onPacket(Protocol.Packet packet) {
         if (packet.header.type == Protocol.TYPE_HELLO) {
             String hostName = new String(packet.payload, StandardCharsets.UTF_8);
-            onStatusChanged("收到 Windows 握手：" + hostName);
+            PersistentDiagnosticLog.record("Status", "收到 Windows 握手：" + hostName);
+            runOnUiThread(() -> {
+                connectionStatus.hostContacted();
+                boolean recovering = hasConfiguredStream || awaitingHostReconnect;
+                // A real HELLO replaces an old idle notice; opening a socket alone does not.
+                idleNoticeActive = false;
+                explicitStopNoticeActive = false;
+                awaitingHostReconnect = false;
+                inputHandler.removeCallbacks(showWaitingAfterReconnectGrace);
+                setConnectionStatus(ConnectionStatus.helloText(hostName, recovering));
+            });
         } else if (packet.header.type == Protocol.TYPE_PING) {
             connection.sendPong(packet.header, System.nanoTime() / 1_000L);
         } else if (packet.header.type == Protocol.TYPE_START_STREAM) {

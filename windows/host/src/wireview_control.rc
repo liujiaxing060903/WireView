@@ -1,4 +1,31 @@
+#include <winver.h>
+
 #define IDI_WIREVIEW_APP 200
 
 // 由 tools/generate_app_icons.ps1 从当前 WireView 品牌原图生成。
 IDI_WIREVIEW_APP ICON "../assets/ui/wireview-app-icon.ico"
+
+1 VERSIONINFO
+ FILEVERSION 2,0,0,0
+ PRODUCTVERSION 2,0,0,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "WireView Control Center\0"
+            VALUE "FileVersion", "2.0.0\0"
+            VALUE "ProductName", "WireView\0"
+            VALUE "ProductVersion", "2.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

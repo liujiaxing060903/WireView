@@ -51,8 +51,13 @@ bool WebViewHost::initialize(HWND parent, const std::filesystem::path& assets_di
                                 controller2->put_DefaultBackgroundColor(
                                     COREWEBVIEW2_COLOR{255U, 7U, 17U, 31U});
                             }
-                            if (FAILED(controller_->get_CoreWebView2(&webview_))) {
+                            Microsoft::WRL::ComPtr<ICoreWebView2> webview;
+                            if (FAILED(controller_->get_CoreWebView2(&webview))) {
                                 error_handler_(E_FAIL);
+                                return S_OK;
+                            }
+                            if (FAILED(webview.As(&webview_))) {
+                                error_handler_(E_NOINTERFACE);
                                 return S_OK;
                             }
                             Microsoft::WRL::ComPtr<ICoreWebView2Settings> settings;
@@ -62,13 +67,8 @@ bool WebViewHost::initialize(HWND parent, const std::filesystem::path& assets_di
                                 settings->put_IsStatusBarEnabled(FALSE);
                                 settings->put_IsZoomControlEnabled(FALSE);
                             }
-                            Microsoft::WRL::ComPtr<ICoreWebView2_3> webview3;
-                            if (FAILED(webview_.As(&webview3))) {
-                                error_handler_(E_NOINTERFACE);
-                                return S_OK;
-                            }
-                            webview3->SetVirtualHostNameToFolderMapping(
-                                L"wireview.local", assets_directory_.c_str(),
+                            webview_->SetVirtualHostNameToFolderMapping(
+                                L"wireview.example", assets_directory_.c_str(),
                                 COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
                             webview_->add_WebMessageReceived(
                                 Microsoft::WRL::Callback<
@@ -91,11 +91,14 @@ bool WebViewHost::initialize(HWND parent, const std::filesystem::path& assets_di
                                     [this](ICoreWebView2*,
                                         ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
                                         resize();
+                                        visible_ = IsWindowVisible(parent_) != FALSE;
+                                        page_loaded_ = true;
+                                        apply_visibility();
                                         ready_handler_();
                                         return S_OK;
                                     }).Get(), nullptr);
                             resize();
-                            webview_->Navigate(L"https://wireview.local/index.html");
+                            webview_->Navigate(L"https://wireview.example/index.html");
                             return S_OK;
                         }).Get());
             }).Get());
@@ -113,6 +116,21 @@ void WebViewHost::resize() {
     RECT bounds{};
     GetClientRect(parent_, &bounds);
     controller_->put_Bounds(bounds);
+    controller_->NotifyParentWindowPositionChanged();
+}
+
+void WebViewHost::set_visible(bool visible) {
+    visible_ = visible;
+    if (page_loaded_) {
+        apply_visibility();
+    }
+}
+
+void WebViewHost::apply_visibility() {
+    // Keep the page warm while hidden. Visibility still suppresses state posts,
+    // and a restore must explicitly reattach the controller to its real window.
+    controller_->put_IsVisible(visible_ ? TRUE : FALSE);
+    if (visible_) { resize(); }
 }
 
 void WebViewHost::post_json(const std::wstring& json) const {
@@ -128,6 +146,7 @@ void WebViewHost::shutdown() {
         // than leaving the parent window visibly blank while teardown runs.
         controller_->Close();
     }
+    page_loaded_ = false;
     webview_.Reset();
     controller_.Reset();
     environment_.Reset();

@@ -3,6 +3,7 @@ package com.wireview.receiver;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
+import android.os.Build;
 import android.util.Log;
 
 final class CodecProbe {
@@ -18,8 +19,12 @@ final class CodecProbe {
     static Result findBestAvcDecoder(String preferredName) {
         Result best = null;
         Result preferred = null;
-        for (MediaCodecInfo codec : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos()) {
-            if (codec.isEncoder() || codec.isAlias() || !supportsAvc(codec)) {
+        int listKind = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                ? MediaCodecList.ALL_CODECS : MediaCodecList.REGULAR_CODECS;
+        for (MediaCodecInfo codec : new MediaCodecList(listKind).getCodecInfos()) {
+            if (codec.isEncoder()
+                    || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codec.isAlias())
+                    || !supportsAvc(codec)) {
                 continue;
             }
 
@@ -29,19 +34,24 @@ final class CodecProbe {
                 MediaCodecInfo.VideoCapabilities video = capabilities.getVideoCapabilities();
                 boolean supports1080p60 = video != null
                         && video.areSizeAndRateSupported(1920, 1080, 60.0);
+                String name = codec.getName();
+                boolean softwareOnly = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? codec.isSoftwareOnly()
+                        : name.startsWith("OMX.google.") || name.startsWith("c2.android.");
                 Result candidate = new Result(
-                        codec.getName(),
-                        codec.isHardwareAccelerated(),
-                        codec.isSoftwareOnly(),
-                        capabilities.isFeatureSupported(
-                                MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency),
+                        name,
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codec.isHardwareAccelerated(),
+                        softwareOnly,
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                                && capabilities.isFeatureSupported(
+                                        MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency),
                         supports1080p60);
                 Log.i(TAG, "AVC decoder: " + candidate.summary());
 
                 if (best == null || candidate.score() > best.score()) {
                     best = candidate;
                 }
-                if (codec.getName().equals(preferredName)) {
+                if (name.equals(preferredName)) {
                     preferred = candidate;
                 }
             } catch (IllegalArgumentException error) {

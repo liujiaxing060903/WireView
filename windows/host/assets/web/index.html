@@ -9,15 +9,16 @@
 <body>
   <main class="app-shell">
     <header class="app-header">
-      <div class="brand"><span class="brand-mark"><img src="ui/wireview-app-icon.png" alt="WireView"></span><span>WireView 有线副屏 <i>—</i> USB 平板副屏 <small class="brand-version">版本 1.1.20</small></span></div>
+      <div class="brand"><span class="brand-mark"><img src="ui/wireview-app-icon.png" alt=""></span><span>WireView 有线副屏 <small class="brand-version">版本 2.0.0</small></span></div>
       <div class="header-actions">
+        <button class="dashboard-display-settings" data-command="display-settings" type="button">Windows 显示设置</button>
         <button id="settings-toggle" class="icon-button" type="button" title="设置" aria-label="设置" aria-expanded="false">⚙</button>
         <section id="settings-panel" class="settings-panel" aria-hidden="true">
           <div class="settings-panel-heading">
             <div>
               <span class="settings-eyebrow">设置</span>
               <strong>关于 WireView</strong>
-              <small>版本 1.1.20 · USB Android 副屏工具</small>
+              <small>版本 2.0.0 · USB Android 副屏工具</small>
             </div>
           </div>
           <p class="settings-description">视频和控制数据仅通过 USB / 本机 ADB 通道传输，不经过云端服务器。</p>
@@ -46,13 +47,43 @@
         </section>
       </div>
     </header>
-    <nav class="tabs" aria-label="控制中心模式">
-      <button class="tab is-active" data-mode="simple">简易模式</button>
-      <button class="tab" data-mode="full">完整模式</button>
-    </nav>
-    <section id="simple-page" class="page"></section>
-    <section id="full-page" class="page is-hidden"></section>
-    <section id="diagnostics-page" class="page is-hidden"></section>
+    <div class="dashboard-workspace">
+      <aside class="device-sidebar" aria-label="设备列表">
+        <div class="device-sidebar-heading">
+          <h2>设备</h2>
+          <button class="dashboard-quiet" type="button" data-command="refresh-devices">↻ 刷新</button>
+        </div>
+        <div class="device-sidebar-body">
+          <div id="device-list" class="dashboard-device-list"></div>
+          <button id="device-add" class="dashboard-add" type="button" data-command="toggle-device-picker"
+              aria-controls="device-picker" aria-expanded="false">＋ 添加设备</button>
+          <div id="device-picker" class="dashboard-picker" hidden></div>
+        </div>
+      </aside>
+      <section id="device-page" class="device-page" aria-label="当前设备">
+        <div id="device-overview"></div>
+        <details id="advanced-settings" class="dashboard-advanced" hidden>
+          <summary><strong>高级设置</strong><small>显示、视频和指针</small>
+            <span class="dashboard-advanced-toggle" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false"><path d="m7 10 5 5 5-5"/></svg>
+            </span>
+          </summary>
+          <div id="advanced-content"></div>
+        </details>
+      </section>
+    </div>
+    <dialog id="custom-resolution-dialog" aria-labelledby="custom-resolution-title">
+      <form id="custom-resolution-form">
+        <h2 id="custom-resolution-title">自定义扩展桌面</h2>
+        <div class="dashboard-fields">
+          <label>宽度<input id="custom-width" type="number" min="2" max="65534" step="2" required></label>
+          <label>高度<input id="custom-height" type="number" min="2" max="65534" step="2" required></label>
+          <label>刷新率（Hz）<input id="custom-hz" type="number" min="1" max="1000" step="1" required></label>
+        </div>
+        <p class="dashboard-tool-note">保存后点上方“扩展屏幕”开始。宽度和高度需为偶数。</p>
+        <div class="dashboard-tools"><button type="button" id="custom-resolution-cancel">取消</button><button type="submit">保存并选用</button></div>
+      </form>
+    </dialog>
     <footer id="status-bar" class="status-bar"></footer>
   </main>
   <script src="app.js"></script>

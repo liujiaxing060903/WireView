@@ -108,6 +108,9 @@ final class Protocol {
     static Packet readPacket(InputStream input) throws IOException {
         byte[] header = readExactly(input, HEADER_SIZE);
         HeaderFields fields = validateHeader(header);
+        if (input instanceof PacketReadTrace) {
+            ((PacketReadTrace) input).beginPayload(fields.flags);
+        }
         byte[] payload = readExactly(input, fields.payloadSize);
         byte[] packet = new byte[HEADER_SIZE + payload.length];
         System.arraycopy(header, 0, packet, 0, HEADER_SIZE);

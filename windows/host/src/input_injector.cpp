@@ -160,8 +160,15 @@ WindowsInputInjector::~WindowsInputInjector() {
     }
 }
 
+void WindowsInputInjector::update_target(DesktopCaptureArea target) {
+    const std::scoped_lock lock(target_mutex_);
+    target_ = target;
+}
+
 bool WindowsInputInjector::inject_batch(
     const wireview::protocol::InputBatch& batch) {
+    const std::scoped_lock lock(target_mutex_);
+    if (target_.width == 0U || target_.height == 0U) { return false; }
     bool success = true;
     bool has_touch_records = false;
     for (const InputRecord& record : batch.records) {

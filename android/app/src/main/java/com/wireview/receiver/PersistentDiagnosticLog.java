@@ -6,7 +6,10 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.TimeZone;
 
 /** Small app-private diagnostic trace that survives an AOA re-enumeration. */
 final class PersistentDiagnosticLog {
@@ -14,6 +17,12 @@ final class PersistentDiagnosticLog {
     static final String PREVIOUS_FILE_NAME = "usb-diagnostic.previous.log";
     static final long MAX_FILE_BYTES = 128L * 1024L;
     private static final int MAX_THROWABLE_CHARACTERS = 8 * 1024;
+    private static final SimpleDateFormat UTC_TIMESTAMP =
+            new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT);
+
+    static {
+        UTC_TIMESTAMP.setTimeZone(TimeZone.getTimeZone("UTC"));
+    }
 
     private static File currentFile;
     private static File previousFile;
@@ -42,7 +51,7 @@ final class PersistentDiagnosticLog {
             return;
         }
         StringBuilder entry = new StringBuilder()
-                .append(Instant.now())
+                .append(UTC_TIMESTAMP.format(new Date()))
                 .append(" | ")
                 .append(Thread.currentThread().getName())
                 .append(" | ")

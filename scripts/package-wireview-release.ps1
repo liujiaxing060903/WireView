@@ -1,14 +1,19 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '1.1.20',
-    [string]$BuildDirectory = 'build/windows-release-1.1.20'
+    [string]$Version = '2.0.0',
+    [string]$BuildDirectory = 'build/windows-version-2.0.0'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$runtimeDirectory = Join-Path $repoRoot "$BuildDirectory/windows/host"
+$buildRoot = if ([System.IO.Path]::IsPathRooted($BuildDirectory)) {
+    $BuildDirectory
+} else {
+    Join-Path $repoRoot $BuildDirectory
+}
+$runtimeDirectory = Join-Path $buildRoot 'windows/host'
 $releaseDirectory = Join-Path $repoRoot 'release'
 $packageName = "WireView-$Version-Windows-x64"
 $packageDirectory = Join-Path $releaseDirectory $packageName
@@ -17,6 +22,7 @@ $apkSource = Join-Path $repoRoot 'android/app/build/outputs/apk/debug/app-debug.
 $apkDestination = Join-Path $releaseDirectory "WireView-$Version-debug.apk"
 $apkMetadataPath = Join-Path $repoRoot 'android/app/build/outputs/apk/debug/output-metadata.json'
 $webViewLicenseDirectory = Join-Path $repoRoot 'external/webview2/sdk'
+$amfLicenseDirectory = Join-Path $repoRoot 'external/amf'
 
 foreach ($required in @(
     (Join-Path $runtimeDirectory 'wireview_control.exe'),
@@ -29,6 +35,8 @@ foreach ($required in @(
     (Join-Path $runtimeDirectory 'data/device-models/android-cn-mobile.tsv'),
     (Join-Path $webViewLicenseDirectory 'LICENSE.txt'),
     (Join-Path $webViewLicenseDirectory 'NOTICE.txt'),
+    (Join-Path $amfLicenseDirectory 'LICENSE.txt'),
+    (Join-Path $amfLicenseDirectory 'README.md'),
     $apkMetadataPath,
     $apkSource
 )) {
@@ -53,6 +61,7 @@ foreach ($destination in @($packageDirectory, $archivePath, $apkDestination)) {
 }
 
 New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'wireview_control.exe') -Destination $packageDirectory
 Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'wireview_control.exe') -Destination (Join-Path $packageDirectory 'WireView 控制中心.exe')
 Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'wireview_control_legacy.exe') -Destination $packageDirectory
 Copy-Item -LiteralPath (Join-Path $runtimeDirectory 'wireview_host.exe') -Destination $packageDirectory
@@ -70,6 +79,10 @@ $licenseTarget = Join-Path $packageDirectory 'licenses/WebView2'
 New-Item -ItemType Directory -Path $licenseTarget -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $webViewLicenseDirectory 'LICENSE.txt') -Destination $licenseTarget
 Copy-Item -LiteralPath (Join-Path $webViewLicenseDirectory 'NOTICE.txt') -Destination $licenseTarget
+$amfLicenseTarget = Join-Path $packageDirectory 'licenses/AMD-AMF'
+New-Item -ItemType Directory -Path $amfLicenseTarget -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $amfLicenseDirectory 'LICENSE.txt') -Destination $amfLicenseTarget
+Copy-Item -LiteralPath (Join-Path $amfLicenseDirectory 'README.md') -Destination $amfLicenseTarget
 
 @'
 扩展屏幕需要预先安装 Parsec Virtual Display Driver；复制主屏不需要。

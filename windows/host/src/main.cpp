@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <span>
@@ -52,7 +53,7 @@ std::uint64_t monotonic_micros() {
         std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }
 
-int run_in_memory_demo() {
+[[maybe_unused]] int run_in_memory_demo() {
     using namespace wireview::protocol;
 
     const std::string hello_text = "WireView host phase-0";
@@ -124,6 +125,34 @@ int run_loopback_test() {
 
 int main(int argument_count, char** arguments) {
     try {
+        std::uint16_t tcp_port = wireview::host::kDevelopmentPort;
+        bool tcp_port_set = false;
+        for (int index = 1; index < argument_count; ++index) {
+            if (std::string_view(arguments[index]) != "--tcp-port") { continue; }
+            if (tcp_port_set || index + 1 >= argument_count) {
+                throw std::invalid_argument("--tcp-port requires one port between 1 and 65535");
+            }
+            const std::string_view value(arguments[index + 1]);
+            unsigned long number{};
+            if (value.empty()) { throw std::invalid_argument("invalid TCP port"); }
+            for (const char character : value) {
+                if (character < '0' || character > '9') { throw std::invalid_argument("invalid TCP port"); }
+                number = number * 10UL + static_cast<unsigned long>(character - '0');
+                if (number > 65535UL) { throw std::invalid_argument("TCP port exceeds 65535"); }
+            }
+            if (number == 0UL) { throw std::invalid_argument("TCP port cannot be zero"); }
+            tcp_port = static_cast<std::uint16_t>(number);
+            tcp_port_set = true;
+            for (int next = index + 2; next < argument_count; ++next) { arguments[next - 2] = arguments[next]; }
+            argument_count -= 2;
+            --index;
+        }
+        if (tcp_port_set && (argument_count < 2 ||
+            (std::string_view(arguments[1]) != "--stream-desktop" &&
+             std::string_view(arguments[1]) != "--device-preview" &&
+             std::string_view(arguments[1]) != "--probe-device-profile"))) {
+            throw std::invalid_argument("--tcp-port is supported for desktop, preview and device profile sessions");
+        }
         (void)SetProcessDpiAwarenessContext(
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if (argument_count == 2 && std::string_view(arguments[1]) == "--listen") {
@@ -210,7 +239,7 @@ int main(int argument_count, char** arguments) {
                     "--device-preview options are --size WIDTHxHEIGHT, --frame-rate 60|120, and --status-file PATH");
             }
             return wireview::host::run_device_preview_server(
-                wireview::host::kDevelopmentPort,
+                tcp_port,
                 std::chrono::minutes(5),
                 std::chrono::seconds(seconds),
                 width,
@@ -221,7 +250,7 @@ int main(int argument_count, char** arguments) {
         if (argument_count == 4 && std::string_view(arguments[1]) == "--probe-device-profile" &&
             std::string_view(arguments[2]) == "--status-file") {
             return wireview::host::run_device_preview_server(
-                wireview::host::kDevelopmentPort, std::chrono::minutes(2), std::chrono::seconds(2),
+                tcp_port, std::chrono::minutes(2), std::chrono::seconds(2),
                 0U, 0U, 60U, arguments[3], false);
         }
         if (argument_count >= 3 && std::string_view(arguments[1]) == "--stream-desktop") {
@@ -235,8 +264,19 @@ int main(int argument_count, char** arguments) {
             bool create_parsec_vdd = false;
             bool use_winusb = false;
             bool transport_set = false;
+            unsigned cursor_size_percent = 100U;
             for (int index = 3; index < argument_count; ++index) {
                 const std::string_view option(arguments[index]);
+                if (option == "--cursor-size-percent" && index + 1 < argument_count) {
+                    std::size_t consumed{};
+                    const std::string value(arguments[++index]);
+                    const auto percent = std::stoul(value, &consumed);
+                    if (consumed != value.size() || percent < 50UL || percent > 300UL) {
+                        throw std::invalid_argument("cursor size must be between 50 and 300 percent");
+                    }
+                    cursor_size_percent = static_cast<unsigned>(percent);
+                    continue;
+                }
                 if (option == "--input-log-only" && !input_log_only) {
                     input_log_only = true;
                     continue;
@@ -299,7 +339,7 @@ int main(int argument_count, char** arguments) {
                 throw std::invalid_argument(
                     "--stream-desktop options are --input-log-only, --size WIDTHxHEIGHT, "
                     "--frame-rate 60|120, --display \\\\.\\DISPLAYn, --parsec-vdd, "
-                    "--status-file PATH, --reconnect-count N, and --transport adb|winusb");
+                    "--status-file PATH, --reconnect-count N, --cursor-size-percent 50..300, and --transport adb|winusb");
             }
             const int seconds = std::stoi(arguments[2]);
             if (seconds < 0) {
@@ -328,10 +368,11 @@ int main(int argument_count, char** arguments) {
                     frame_rate,
                     capture_display_device,
                     status_file,
-                    reconnect_count);
+                    reconnect_count,
+                    static_cast<float>(cursor_size_percent) / 100.0F);
             }
             return wireview::host::run_development_desktop_stream_server(
-                wireview::host::kDevelopmentPort,
+                tcp_port,
                 std::chrono::minutes(5),
                 std::chrono::seconds(seconds),
                 !input_log_only,
@@ -340,7 +381,8 @@ int main(int argument_count, char** arguments) {
                 frame_rate,
                 capture_display_device,
                 status_file,
-                reconnect_count);
+                reconnect_count,
+                static_cast<float>(cursor_size_percent) / 100.0F);
         }
         if (argument_count >= 3 && std::string_view(arguments[1]) == "--reconnect-desktop") {
             const int seconds = std::stoi(arguments[2]);
@@ -421,7 +463,25 @@ int main(int argument_count, char** arguments) {
                          "--stream <annex-b.h264>]\n";
             return 64;
         }
-        return run_in_memory_demo();
+        // Double-click opens the normal control center; command-line streaming is unchanged.
+        wchar_t executable[32768]{};
+        const DWORD length = GetModuleFileNameW(nullptr, executable, 32768);
+        if (length == 0 || length >= 32768) {
+            throw std::runtime_error("Cannot locate WireView application directory");
+        }
+        const auto directory = std::filesystem::path(executable).parent_path();
+        const auto control = directory / L"wireview_control.exe";
+        std::wstring command = L"\"" + control.wstring() + L"\"";
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(control.c_str(), command.data(), nullptr, nullptr, FALSE,
+                            0, nullptr, directory.c_str(), &startup, &process)) {
+            throw std::runtime_error("Cannot open WireView control center");
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return 0;
     } catch (const std::exception& error) {
         std::cerr << "WireView host error: " << error.what() << '\n';
         return 1;

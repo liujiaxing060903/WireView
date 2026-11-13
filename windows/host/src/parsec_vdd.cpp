@@ -1,4 +1,6 @@
 #include "parsec_vdd.hpp"
+#include "display_layout_lock.hpp"
+#include "overlapped_completion.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -118,12 +120,13 @@ constexpr DWORD kInvalidVddResult = 0xFFFFFFFFU;
         &bytes,
         &overlapped);
     bool completed = submitted != FALSE;
-    if (!completed && GetLastError() == ERROR_IO_PENDING) {
-        const DWORD wait = WaitForSingleObject(event, 5'000U);
-        completed = wait == WAIT_OBJECT_0 &&
-            GetOverlappedResult(device, &overlapped, &bytes, FALSE) != FALSE;
+    DWORD error = completed ? ERROR_SUCCESS : GetLastError();
+    if (!completed && error == ERROR_IO_PENDING) {
+        completed = finish_overlapped_io(device, overlapped, bytes, 5'000U);
+        error = completed ? ERROR_SUCCESS : GetLastError();
     }
     CloseHandle(event);
+    SetLastError(error);
     return completed;
 }
 
@@ -261,7 +264,7 @@ struct CloneTopology {
         left.sourceInfo.id == right.sourceInfo.id;
 }
 
-[[nodiscard]] std::wstring target_description(const DISPLAYCONFIG_PATH_INFO& path) {
+[[nodiscard]] DISPLAYCONFIG_TARGET_DEVICE_NAME display_target_name(const DISPLAYCONFIG_PATH_INFO& path) {
     DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
     target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
     target.header.size = sizeof(target);
@@ -270,24 +273,133 @@ struct CloneTopology {
     if (DisplayConfigGetDeviceInfo(&target.header) != ERROR_SUCCESS) {
         return {};
     }
+    return target;
+}
+
+[[nodiscard]] std::wstring target_description(const DISPLAYCONFIG_PATH_INFO& path) {
+    const auto target = display_target_name(path);
     return std::wstring(target.monitorFriendlyDeviceName) + L" " + target.monitorDevicePath;
 }
 
-[[nodiscard]] CloneTopology inspect_clone_topology() {
+[[nodiscard]] std::wstring display_source_name(const DISPLAYCONFIG_PATH_INFO& path) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = path.sourceInfo.adapterId;
+    source.header.id = path.sourceInfo.id;
+    if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS) {
+        return {};
+    }
+    return source.viewGdiDeviceName;
+}
+
+[[nodiscard]] LONG read_active_display_config(UINT32 flags,
+    std::vector<DISPLAYCONFIG_PATH_INFO>& paths, std::vector<DISPLAYCONFIG_MODE_INFO>& modes) {
     UINT32 path_count = 0U;
     UINT32 mode_count = 0U;
-    LONG result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count);
-    if (result != ERROR_SUCCESS) {
-        return {.diagnostic = "GetDisplayConfigBufferSizes failed: " + std::to_string(result)};
-    }
-    std::vector<DISPLAYCONFIG_PATH_INFO> paths(path_count);
-    std::vector<DISPLAYCONFIG_MODE_INFO> modes(mode_count);
-    result = QueryDisplayConfig(
-        QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
-    if (result != ERROR_SUCCESS) {
-        return {.diagnostic = "QueryDisplayConfig failed: " + std::to_string(result)};
+    const LONG size_result = GetDisplayConfigBufferSizes(flags, &path_count, &mode_count);
+    if (size_result != ERROR_SUCCESS) {
+        return size_result;
     }
     paths.resize(path_count);
+    modes.resize(mode_count);
+    const LONG result = QueryDisplayConfig(
+        flags, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+    if (result == ERROR_SUCCESS) {
+        paths.resize(path_count);
+        modes.resize(mode_count);
+    }
+    return result;
+}
+
+[[nodiscard]] bool is_internal_panel(const DISPLAYCONFIG_PATH_INFO& path) {
+    const auto technology = path.targetInfo.outputTechnology;
+    return technology == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL ||
+        technology == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED ||
+        technology == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS ||
+        technology == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED;
+}
+
+[[nodiscard]] DISPLAYCONFIG_SOURCE_MODE* source_mode(const DISPLAYCONFIG_PATH_INFO& path,
+    std::vector<DISPLAYCONFIG_MODE_INFO>& modes) {
+    const UINT32 index = (path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) != 0U
+        ? static_cast<UINT32>(path.sourceInfo.sourceModeInfoIdx) : path.sourceInfo.modeInfoIdx;
+    return index < modes.size() && modes[index].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE
+        ? &modes[index].sourceMode : nullptr;
+}
+
+[[nodiscard]] bool same_position(const DISPLAYCONFIG_SOURCE_MODE& left, const DISPLAYCONFIG_SOURCE_MODE& right) {
+    return left.position.x == right.position.x && left.position.y == right.position.y;
+}
+
+[[nodiscard]] LONG apply_virtual_display_config(std::vector<DISPLAYCONFIG_PATH_INFO>& paths,
+    std::vector<DISPLAYCONFIG_MODE_INFO>& modes, UINT32 apply_flags = 0U) {
+    const auto path_count = static_cast<UINT32>(paths.size());
+    const auto mode_count = static_cast<UINT32>(modes.size());
+    constexpr UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE;
+    const LONG validation = SetDisplayConfig(path_count, paths.data(), mode_count, modes.data(), flags | SDC_VALIDATE);
+    if (validation != ERROR_SUCCESS) { return validation; }
+    return SetDisplayConfig(path_count, paths.data(), mode_count, modes.data(), flags | SDC_APPLY | apply_flags);
+}
+
+struct ExistingVddDesktop {
+    std::wstring monitor_path;
+    DISPLAYCONFIG_SOURCE_MODE mode;
+    bool shared_with_panel{};
+};
+
+[[nodiscard]] std::optional<ExistingVddDesktop> existing_vdd_desktop() {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    if (read_active_display_config(QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE,
+            paths, modes) != ERROR_SUCCESS || paths.size() != 2U) {
+        return std::nullopt;
+    }
+    const auto& panel = is_internal_panel(paths.front()) ? paths.front() : paths.back();
+    const auto& other = &panel == &paths.front() ? paths.back() : paths.front();
+    const auto target = display_target_name(other);
+    const auto* primary = source_mode(panel, modes);
+    const auto* existing = source_mode(other, modes);
+    if (!is_internal_panel(panel) || !contains_parsec_marker(target.monitorDevicePath) ||
+        primary == nullptr || existing == nullptr) {
+        return std::nullopt;
+    }
+    return ExistingVddDesktop{target.monitorDevicePath, *existing, same_position(*primary, *existing)};
+}
+
+struct ActiveMonitor {
+    std::wstring path;
+    WindowsDisplaySource source;
+    bool parsec{};
+};
+
+[[nodiscard]] std::vector<ActiveMonitor> active_monitors(UINT32 flags) {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    if (read_active_display_config(QDC_ONLY_ACTIVE_PATHS | flags, paths, modes) != ERROR_SUCCESS) {
+        return {};
+    }
+    std::vector<ActiveMonitor> result;
+    for (const auto& path : paths) {
+        const auto target = display_target_name(path);
+        if (target.monitorDevicePath[0] == L'\0') { continue; }
+        const bool shared = std::any_of(paths.begin(), paths.end(), [&path](const auto& other) {
+            return &path != &other && same_source(path, other);
+        });
+        result.push_back({target.monitorDevicePath, {display_source_name(path), shared, paths.size() == 1U},
+            contains_parsec_marker(target.monitorFriendlyDeviceName) ||
+            contains_parsec_marker(target.monitorDevicePath)});
+    }
+    return result;
+}
+
+[[nodiscard]] CloneTopology inspect_clone_topology() {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    const LONG result = read_active_display_config(QDC_ONLY_ACTIVE_PATHS, paths, modes);
+    if (result != ERROR_SUCCESS) {
+        return {.diagnostic = "Active display configuration query failed: " + std::to_string(result)};
+    }
 
     bool has_clone = false;
     bool parsec_in_clone = false;
@@ -389,6 +501,7 @@ public:
     std::thread worker;
     mutable std::mutex mutex;
     std::condition_variable wake;
+    std::optional<ExistingVddDesktop> previous_desktop;
 };
 
 ParsecVddProbe probe_parsec_vdd() {
@@ -419,6 +532,182 @@ std::vector<std::string> enumerate_active_parsec_vdd_displays() {
     return result;
 }
 
+bool has_single_internal_display() {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    return read_active_display_config(QDC_ONLY_ACTIVE_PATHS, paths, modes) == ERROR_SUCCESS &&
+        paths.size() == 1U && is_internal_panel(paths.front());
+}
+
+std::wstring monitor_path_for_display(std::wstring_view device_name) {
+    std::wstring result;
+    for (const auto& monitor : active_monitors(QDC_VIRTUAL_MODE_AWARE)) {
+        if (monitor.source.device_name != device_name) { continue; }
+        if (!result.empty()) { return {}; }
+        result = monitor.path;
+    }
+    return result;
+}
+
+WindowsDisplaySource desktop_source_for_monitor(std::wstring_view monitor_path) {
+    // The non-virtual-aware query resolves the shared desktop's actual GDI
+    // source, including targets that have no separately attached DXGI output.
+    for (const auto& monitor : active_monitors(0U)) {
+        if (monitor.path == monitor_path) { return monitor.source; }
+    }
+    return {};
+}
+
+bool clone_internal_display_to_owned_vdd(const std::wstring& owned_device) {
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    if (read_active_display_config(QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE,
+            paths, modes) != ERROR_SUCCESS || paths.size() != 2U) {
+        return false;
+    }
+    const auto& panel = is_internal_panel(paths.front()) ? paths.front() : paths.back();
+    auto& owned = &panel == &paths.front() ? paths.back() : paths.front();
+    if (!is_internal_panel(panel) || is_internal_panel(owned) ||
+        (panel.flags & owned.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) == 0U) {
+        return false;
+    }
+    if (owned_device != display_source_name(owned)) {
+        return false;
+    }
+    const UINT32 panel_mode = panel.sourceInfo.sourceModeInfoIdx;
+    const UINT32 owned_mode = owned.sourceInfo.sourceModeInfoIdx;
+    if (panel_mode >= modes.size() || owned_mode >= modes.size() || panel_mode == owned_mode ||
+        modes[panel_mode].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE ||
+        modes[owned_mode].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+        return false;
+    }
+    const auto& primary = modes[panel_mode].sourceMode;
+    auto& secondary = modes[owned_mode].sourceMode;
+    if (primary.position.x != 0 || primary.position.y != 0 ||
+        primary.width != secondary.width || primary.height != secondary.height) {
+        return false;
+    }
+
+    // Virtual clone paths share a desktop position. Keep the panel's mode and
+    // the current target timings, and let Windows rebuild only the VDD's desktop image.
+    secondary = primary;
+    owned.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+    // Persist this exact pair so Windows restores the shared desktop when the
+    // panel comes back after a lid close. Removing our VDD ends the pairing.
+    return apply_virtual_display_config(paths, modes, SDC_SAVE_TO_DATABASE) == ERROR_SUCCESS;
+}
+
+std::optional<long> restore_lid_display_size(std::wstring_view monitor_path, LidDisplaySize& open_size) {
+    // Other device windows can be repairing a different VDD at the same time.
+    // Keep the snapshot and its application together so their modes are preserved.
+    const LidDisplayLayoutLock layout_lock;
+    if (!layout_lock.acquired()) { return std::nullopt; }
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    if (read_active_display_config(QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE,
+            paths, modes) != ERROR_SUCCESS) {
+        return std::nullopt;
+    }
+
+    const auto owned = std::find_if(paths.begin(), paths.end(), [&](const auto& path) {
+        return (path.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) != 0U &&
+            monitor_path == display_target_name(path).monitorDevicePath;
+    });
+    if (owned == paths.end()) { return std::nullopt; }
+
+    auto* current = source_mode(*owned, modes);
+    if (current == nullptr) { return std::nullopt; }
+    const auto shares_desktop = [&](const auto& path) {
+        const auto* source = source_mode(path, modes);
+        return same_source(*owned, path) || (source != nullptr && same_position(*source, *current));
+    };
+    std::vector<std::wstring> topology;
+    for (const auto& path : paths) { topology.emplace_back(display_target_name(path).monitorDevicePath); }
+    std::sort(topology.begin(), topology.end());
+    const bool changed = !open_size.monitor_paths.empty() && topology != open_size.monitor_paths;
+    const auto saved = std::exchange(open_size, LidDisplaySize{current->width, current->height,
+        std::move(topology), static_cast<std::uint32_t>(owned->targetInfo.rotation)});
+    if (!changed || saved.width == 0U ||
+        (saved.width == current->width && saved.height == current->height &&
+            saved.rotation == static_cast<std::uint32_t>(owned->targetInfo.rotation)) ||
+        std::any_of(paths.begin(), paths.end(), [&](const auto& path) {
+            return &path != &*owned && shares_desktop(path);
+        })) {
+        return std::nullopt;
+    }
+
+    const LONG old_right = current->position.x + static_cast<LONG>(current->width);
+    const LONG old_bottom = current->position.y + static_cast<LONG>(current->height);
+    current->width = saved.width;
+    current->height = saved.height;
+    owned->targetInfo.rotation = static_cast<DISPLAYCONFIG_ROTATION>(saved.rotation);
+    owned->targetInfo.targetModeInfoIdx = DISPLAYCONFIG_PATH_TARGET_MODE_IDX_INVALID;
+    owned->targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+    // Windows can place a newly added screen beside the temporary wrong size.
+    // Keep that new screen adjacent after restoring the existing screen.
+    for (auto& path : paths) {
+        if (&path == &*owned || std::find(saved.monitor_paths.begin(), saved.monitor_paths.end(),
+                display_target_name(path).monitorDevicePath) != saved.monitor_paths.end()) { continue; }
+        auto* added = source_mode(path, modes);
+        if (added == nullptr || added == current ||
+            std::any_of(paths.begin(), paths.end(), [&](const auto& other) {
+                const auto* mode = source_mode(other, modes);
+                return &other != &path && mode != nullptr && same_position(*mode, *added);
+            })) { continue; }
+        if (added->position.x == old_right) {
+            added->position.x = current->position.x + static_cast<LONG>(current->width);
+        }
+        if (added->position.y == old_bottom) {
+            added->position.y = current->position.y + static_cast<LONG>(current->height);
+        }
+        path.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+    }
+    const LONG result = apply_virtual_display_config(paths, modes);
+    if (result == ERROR_SUCCESS) {
+        open_size.width = saved.width;
+        open_size.height = saved.height;
+        open_size.rotation = saved.rotation;
+    }
+    return result;
+}
+
+std::optional<long> ParsecVddSession::restore_previous_vdd_desktop(std::wstring_view added_display) const {
+    if (impl_ == nullptr || !impl_->previous_desktop) { return std::nullopt; }
+    const LidDisplayLayoutLock layout_lock(1'000U);
+    if (!layout_lock.acquired()) { return ERROR_BUSY; }
+    const auto& previous = *impl_->previous_desktop;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+    if (read_active_display_config(QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE,
+            paths, modes) != ERROR_SUCCESS || paths.size() != 3U) {
+        return std::nullopt;
+    }
+    const auto panel = std::find_if(paths.begin(), paths.end(), is_internal_panel);
+    const auto existing = std::find_if(paths.begin(), paths.end(), [&](const auto& path) {
+        return previous.monitor_path == display_target_name(path).monitorDevicePath;
+    });
+    if (panel == paths.end() || existing == paths.end() ||
+        (existing->flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) == 0U) { return std::nullopt; }
+    const auto added = std::find_if(paths.begin(), paths.end(), [&](const auto& path) {
+        return &path != &*panel && &path != &*existing && added_display == display_source_name(path);
+    });
+    if (added == paths.end()) { return std::nullopt; }
+    const auto* panel_mode = source_mode(*panel, modes);
+    auto* current = source_mode(*existing, modes);
+    if (current == nullptr || panel_mode == nullptr || current == panel_mode ||
+        current == source_mode(*added, modes) ||
+        same_position(*current, *panel_mode) == previous.shared_with_panel) { return std::nullopt; }
+
+    const auto& restored = previous.shared_with_panel ? *panel_mode : previous.mode;
+    if (current->width != restored.width || current->height != restored.height) {
+        existing->targetInfo.targetModeInfoIdx = DISPLAYCONFIG_PATH_TARGET_MODE_IDX_INVALID;
+    }
+    *current = restored;
+    existing->targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+    return apply_virtual_display_config(paths, modes, SDC_SAVE_TO_DATABASE);
+}
+
 void remove_parsec_vdd_display(int display_index) {
     if (display_index < 0 || display_index > 15) {
         throw std::invalid_argument("Parsec VDD display index must be between 0 and 15");
@@ -445,7 +734,7 @@ ParsecVddSession::~ParsecVddSession() {
     stop();
 }
 
-void ParsecVddSession::start() {
+void ParsecVddSession::start(bool allow_additional) {
     if (running()) {
         throw std::runtime_error("Parsec VDD session is already running");
     }
@@ -463,7 +752,7 @@ void ParsecVddSession::start() {
         const bool existing_parsec = std::any_of(
             displays_before_start.begin(), displays_before_start.end(),
             [](const AttachedDisplay& display) { return display.parsec; });
-        if (existing_parsec) {
+        if (existing_parsec && !allow_additional) {
             throw std::runtime_error(
                 "an attached Parsec VDD display already exists; select and reuse it instead");
         }
@@ -472,12 +761,18 @@ void ParsecVddSession::start() {
         for (const AttachedDisplay& display : displays_before_start) {
             displays_before_start_.push_back(display.identity);
         }
+        monitor_paths_before_start_.clear();
+        for (const auto& monitor : active_monitors(QDC_VIRTUAL_MODE_AWARE)) {
+            monitor_paths_before_start_.push_back(monitor.path);
+        }
+        auto previous_desktop = allow_additional ? existing_vdd_desktop() : std::nullopt;
         const DWORD index = checked_vdd_ioctl(device, kVddIoctlAdd);
         if (index == kInvalidVddResult || index > 15U) {
             throw std::runtime_error("Parsec VDD returned an invalid virtual display index");
         }
         created_index = static_cast<int>(index);
         auto pending_impl = std::make_unique<Impl>();
+        pending_impl->previous_desktop = std::move(previous_desktop);
         device_handle_ = device;
         display_index_ = created_index;
         stop_requested_.store(false);
@@ -495,8 +790,12 @@ void ParsecVddSession::start() {
             const std::uint16_t big_endian_index = static_cast<std::uint16_t>(
                 ((index & 0x00FFU) << 8U) | ((index & 0xFF00U) >> 8U));
             DWORD ignored = 0U;
-            (void)vdd_ioctl(device, kVddIoctlRemove, &big_endian_index, sizeof(big_endian_index), &ignored);
-            (void)vdd_ioctl(device, kVddIoctlUpdate, nullptr, 0U, &ignored);
+            if (!vdd_ioctl(device, kVddIoctlRemove, &big_endian_index, sizeof(big_endian_index), &ignored)) {
+                last_error_ = win32_error("DeviceIoControl(Parsec VDD owned-display removal)");
+            }
+            if (!vdd_ioctl(device, kVddIoctlUpdate, nullptr, 0U, &ignored) && last_error_.empty()) {
+                last_error_ = win32_error("DeviceIoControl(Parsec VDD update after removal)");
+            }
         }
         CloseHandle(device);
         device_handle_ = nullptr;
@@ -526,8 +825,12 @@ void ParsecVddSession::stop() noexcept {
             const std::uint16_t big_endian_index = static_cast<std::uint16_t>(
                 ((index & 0x00FFU) << 8U) | ((index & 0xFF00U) >> 8U));
             DWORD ignored = 0U;
-            (void)vdd_ioctl(device, kVddIoctlRemove, &big_endian_index, sizeof(big_endian_index), &ignored);
-            (void)vdd_ioctl(device, kVddIoctlUpdate, nullptr, 0U, &ignored);
+            if (!vdd_ioctl(device, kVddIoctlRemove, &big_endian_index, sizeof(big_endian_index), &ignored)) {
+                last_error_ = win32_error("DeviceIoControl(Parsec VDD owned-display removal)");
+            }
+            if (!vdd_ioctl(device, kVddIoctlUpdate, nullptr, 0U, &ignored) && last_error_.empty()) {
+                last_error_ = win32_error("DeviceIoControl(Parsec VDD update after removal)");
+            }
         }
         CloseHandle(device);
     }
@@ -570,6 +873,7 @@ std::string ParsecVddSession::wait_for_display(std::chrono::milliseconds timeout
     std::vector<AttachedDisplay> displays_after_start;
     bool extend_requested = false;
     do {
+        if (!running()) { throw std::runtime_error(last_error()); }
         displays_after_start = attached_display_devices();
         std::vector<const AttachedDisplay*> new_displays;
         for (const AttachedDisplay& display : displays_after_start) {
@@ -580,16 +884,40 @@ std::string ParsecVddSession::wait_for_display(std::chrono::milliseconds timeout
         const auto known_parsec = std::find_if(
             new_displays.begin(), new_displays.end(),
             [](const AttachedDisplay* display) { return display->parsec; });
-        if (known_parsec != new_displays.end()) {
+        const auto monitors = active_monitors(QDC_VIRTUAL_MODE_AWARE);
+        std::vector<std::string> new_monitor_sources;
+        std::vector<std::string> new_parsec_sources;
+        if (!monitor_paths_before_start_.empty() && !monitors.empty()) {
+            for (const auto& monitor : monitors) {
+                if (std::find(monitor_paths_before_start_.begin(),
+                        monitor_paths_before_start_.end(), monitor.path) != monitor_paths_before_start_.end()) {
+                    continue;
+                }
+                const std::string name = utf8(monitor.source.device_name);
+                if (std::any_of(new_displays.begin(), new_displays.end(),
+                        [&name](const auto* display) { return display->name == name; })) {
+                    new_monitor_sources.push_back(name);
+                    if (monitor.parsec) { new_parsec_sources.push_back(name); }
+                }
+            }
+        }
+        if (new_parsec_sources.size() == 1U) {
+            return new_parsec_sources.front();
+        }
+        if (new_monitor_sources.size() == 1U) {
+            return new_monitor_sources.front();
+        }
+        if (monitor_paths_before_start_.empty() && known_parsec != new_displays.end()) {
             return (*known_parsec)->name;
         }
         // Some hybrid-GPU Windows 11 systems create a real new attached output
         // but omit Parsec's marker from EnumDisplayDevices. There is no
         // ambiguity when exactly one display appeared after our own ADD call.
-        if (new_displays.size() == 1U) {
+        if (monitor_paths_before_start_.empty() && new_displays.size() == 1U) {
             return new_displays.front()->name;
         }
-        if (!extend_requested) {
+        if (!extend_requested && (monitor_paths_before_start_.size() <= 1U ||
+                std::chrono::steady_clock::now() >= fallback_extend_at)) {
             const CloneTopology topology = inspect_clone_topology();
             if (topology.parsec_clone) {
                 extend_requested = true;

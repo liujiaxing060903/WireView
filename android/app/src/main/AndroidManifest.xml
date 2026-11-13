@@ -8,7 +8,7 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_wireview"
-        android:label="WireView 有线副屏"
+        android:label="WireView"
         android:roundIcon="@mipmap/ic_wireview"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
@@ -17,17 +17,14 @@
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:exported="true"
             android:launchMode="singleTop"
-            android:screenOrientation="fullSensor">
+            android:screenOrientation="locked">
+            <property
+                android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
+                android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
-            </intent-filter>
-            <meta-data
-                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
-                android:resource="@xml/accessory_filter" />
         </activity>
     </application>
 </manifest>

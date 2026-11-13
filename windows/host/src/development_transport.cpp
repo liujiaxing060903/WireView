@@ -12,6 +12,11 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 
+#include "cursor_latency.hpp"
+#include "frame_pacer.hpp"
+#include "session_performance_log.hpp"
+#include "send_rate_window.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -35,6 +40,14 @@
 
 namespace wireview::host {
 namespace {
+
+[[nodiscard]] bool cursor_diagnostics_enabled() {
+    if (GetEnvironmentVariableA("WIREVIEW_CURSOR_DIAGNOSTICS", nullptr, 0) > 0) { return true; }
+    std::array<wchar_t, 32768> executable{};
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    return length != 0U && std::filesystem::exists(
+        std::filesystem::path(executable.data()).parent_path() / L"cursor-diagnostics.enabled");
+}
 
 class WinsockSession {
 public:
@@ -163,10 +176,9 @@ public:
         actual_height_ = height;
         actual_frame_rate_ = frame_rate;
         delivered_frames_ = 0U;
-        delivered_bytes_ = 0U;
         output_frame_rate_ = 0.0;
         bitrate_mbps_ = 0.0;
-        stream_started_at_ = std::chrono::steady_clock::now();
+        send_rate_.reset(SendRateWindow::Clock::now());
         state_ = "streaming";
         message_ = "Desktop stream is active";
         publish_locked();
@@ -175,22 +187,12 @@ public:
     void delivered_frame(std::size_t bytes) {
         std::lock_guard lock(mutex_);
         ++delivered_frames_;
-        delivered_bytes_ += bytes;
-        const std::uint64_t publish_interval = actual_frame_rate_ == 0U
-            ? 60U
-            : actual_frame_rate_;
-        if (delivered_frames_ % publish_interval != 0U) {
-            return;
+        const auto rate = send_rate_.delivered(SendRateWindow::Clock::now(), bytes);
+        if (rate) {
+            output_frame_rate_ = rate->fps;
+            bitrate_mbps_ = rate->mbps;
+            publish_locked();
         }
-        const double elapsed_seconds = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - stream_started_at_).count();
-        if (elapsed_seconds <= 0.0) {
-            return;
-        }
-        output_frame_rate_ = static_cast<double>(delivered_frames_) / elapsed_seconds;
-        bitrate_mbps_ = static_cast<double>(delivered_bytes_) * 8.0 /
-            elapsed_seconds / 1'000'000.0;
-        publish_locked();
     }
 
     void first_frame(std::uint32_t startup_millis) {
@@ -369,7 +371,6 @@ private:
     std::uint64_t reconnect_count_{};
     std::uint32_t first_frame_millis_{};
     std::uint64_t delivered_frames_{};
-    std::uint64_t delivered_bytes_{};
     std::uint64_t decoder_received_frames_{};
     std::uint64_t decoder_queued_frames_{};
     std::uint64_t decoder_dropped_frames_{};
@@ -390,7 +391,7 @@ private:
     double bitrate_mbps_{};
     double android_refresh_hz_{};
     double android_max_refresh_hz_{};
-    std::chrono::steady_clock::time_point stream_started_at_{};
+    SendRateWindow send_rate_;
 };
 
 struct AndroidDeviceProfile {
@@ -534,18 +535,18 @@ SocketHandle create_tcp_socket() {
     return socket;
 }
 
-void allow_listener_rebind(SOCKET socket) {
-    // A USB disconnect or a Ctrl+C can leave the previous TCP connection in
-    // Windows' closing state briefly. The development host is loopback-only,
-    // so permit its recovery loop to reclaim this fixed local port immediately.
+void configure_listener_binding(SOCKET socket, std::uint16_t port) {
+    // Preserve rapid rebind for the legacy fixed-port development path. New
+    // per-session ports must never share a listener with an existing process.
+    const bool exclusive = port != kDevelopmentPort;
     const int enabled = 1;
     if (setsockopt(
             socket,
             SOL_SOCKET,
-            SO_REUSEADDR,
+            exclusive ? SO_EXCLUSIVEADDRUSE : SO_REUSEADDR,
             reinterpret_cast<const char*>(&enabled),
             sizeof(enabled)) == SOCKET_ERROR) {
-        throw_socket_error("setsockopt(SO_REUSEADDR)");
+        throw_socket_error(exclusive ? "setsockopt(SO_EXCLUSIVEADDRUSE)" : "setsockopt(SO_REUSEADDR)");
     }
 }
 
@@ -705,10 +706,12 @@ void receive_input_packets(
     WindowsInputInjector& injector,
     bool inject_input,
     InputReceiveStats& stats,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    CursorLatencyMeasurements& cursor_timings,
+    std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt) {
     wireview::protocol::PacketStreamParser parser;
     std::array<std::uint8_t, 4U * 1024U> buffer{};
-    while (running.load()) {
+    while (running.load() && (!deadline || std::chrono::steady_clock::now() < *deadline)) {
         if (!stream.wait_readable(std::chrono::milliseconds(200))) {
             continue;
         }
@@ -749,7 +752,25 @@ void receive_input_packets(
                 }
             } else if (parsed.packet->header.type == wireview::protocol::PacketType::telemetry) {
                 const auto payload = std::span(parsed.packet->payload);
-                if (payload.size() == 16U && payload[0] == 1U && payload[1] == 1U) {
+                if (payload.size() == 20U && payload[0] == 1U && payload[1] == 8U) {
+                    const auto pts = read_little_endian_u64(payload, 4U);
+                    const auto wanted = read_little_endian_u64(payload, 12U);
+                    if (stats.best_clock_sync) {
+                        const auto result = cursor_timings.frame_report(pts);
+                        if (result) {
+                            std::ostringstream line;
+                            line << std::fixed << std::setprecision(3)
+                                 << "Cursor frame marker: framePtsUs=" << pts
+                                 << " | motion=" << result->motion
+                                 << " | observedHostUs=" << result->observed_micros
+                                 << " | surfaceWantedNs=" << wanted
+                                 << " | androidMinusHostUs=" << stats.best_clock_sync->android_minus_host_micros
+                                 << " | pollGapMs=" << result->observation_gap_micros / 1000.0
+                                 << " | clockRttMs=" << stats.best_clock_sync->round_trip_millis;
+                            std::cout << line.str() << '\n';
+                        }
+                    }
+                } else if (payload.size() == 16U && payload[0] == 1U && payload[1] == 1U) {
                     ++stats.first_frame_reports;
                     const std::uint32_t startup_millis =
                         read_little_endian_u32(payload, 12U);
@@ -897,8 +918,60 @@ void send_desktop_stream(
     std::uint16_t output_height,
     std::uint16_t frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    float cursor_size_scale) {
+    std::optional<SessionPerformanceLog> comparison_log;
+    if (cursor_diagnostics_enabled()) {
+        std::array<wchar_t, 32768> directory{};
+        const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", directory.data(), static_cast<DWORD>(directory.size()));
+        if (length == 0U || length >= directory.size()) {
+            throw std::runtime_error("Cannot locate cursor diagnostic log directory");
+        }
+        comparison_log.emplace(std::filesystem::path(directory.data()) / L"WireView" / L"logs", GetCurrentProcessId());
+        std::cout << "Performance log: " << comparison_log->path().string() << '\n';
+    }
+    std::ofstream pipeline_trace;
+    if (comparison_log) {
+        const auto path = comparison_log->path().parent_path() /
+            ("pipeline-host-" + std::to_string(GetCurrentProcessId()) + ".csv");
+        pipeline_trace.open(path);
+        if (pipeline_trace) {
+            pipeline_trace << "pts_us,sequence,keyframe,bytes,fresh_capture,capture_begin_us,capture_end_us,"
+                "submit_begin_us,submit_end_us,output_us,empty_polls,poll_wait_us,pace_wait_us,"
+                "packet_begin_us,write_begin_us,write_end_us,desktop_update_id,desktop_present_qpc,desktop_acquire_us,desktop_accumulated_frames,"
+                "cursor_ready_us,compose_ready_us,cursor_diagnostics_ready_us,convert_ready_us,system_cursor_shape_update\n";
+            std::cout << "Host pipeline trace: " << path.string() << '\n';
+        } else {
+            std::cerr << "Cannot open host pipeline trace: " << path.string() << '\n';
+        }
+    }
+    CursorLatencyMeasurements cursor_timings;
+    const bool cursor_diagnostics = cursor_diagnostics_enabled();
+    std::jthread cursor_observer;
+    if (cursor_diagnostics) {
+        std::cout << "Cursor diagnostics: variant=v1.1.21-cursor-shape-reuse | source=Windows observed motion"
+                     " | samplePeriodMs=1 | actualPresentSource=SurfaceFlinger; not optical latency\n";
+        cursor_observer = std::jthread([&](std::stop_token stop) {
+            FramePacer timer;
+            while (!stop.stop_requested()) {
+                POINT point{};
+                if (GetCursorPos(&point)) {
+                    cursor_timings.observe(point.x, point.y, monotonic_micros());
+                }
+                timer.wait_until(std::chrono::steady_clock::now() + std::chrono::milliseconds(1));
+            }
+        });
+    }
     std::uint64_t sequence = 2U;
+    std::unique_ptr<void, decltype(&UnmapViewOfFile)> ack_probe(nullptr, &UnmapViewOfFile);
+    wchar_t ack_name[128]{};
+    if (GetEnvironmentVariableW(L"WIREVIEW_ACK_PROBE", ack_name, 128U) != 0U) {
+        const HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, ack_name);
+        if (!mapping) { throw std::runtime_error("ACK probe mapping open failed"); }
+        ack_probe.reset(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(LONG)));
+        CloseHandle(mapping);
+        if (!ack_probe) { throw std::runtime_error("ACK probe mapping view failed"); }
+    }
     std::atomic_bool keyframe_requested{false};
     constexpr std::uint64_t kClockSyncPingSequenceBase = 0x5756520000000000ULL;
     std::uint64_t clock_sync_sequence = kClockSyncPingSequenceBase;
@@ -917,32 +990,42 @@ void send_desktop_stream(
                 },
                 {}));
     };
+    const auto send_stream_config = [&](std::uint16_t width,
+                                        std::uint16_t height,
+                                        std::uint16_t video_frame_rate) {
+        const auto config = make_avc_stream_config(width, height, video_frame_rate, 1U);
+        write_all(
+            stream,
+            wireview::protocol::encode_packet(
+                wireview::protocol::PacketHeader{
+                    .type = wireview::protocol::PacketType::start_stream,
+                    .sequence = sequence++,
+                    .timestamp_micros = monotonic_micros(),
+                },
+                config));
+    };
     bool stream_started = false;
-    const DesktopStreamCallbacks callbacks{
+    bool initial_config_prepared = false;
+    DesktopStreamCallbacks callbacks{
         .on_started = [&](std::uint16_t width,
                           std::uint16_t height,
-                          std::uint16_t frame_rate) {
-            const auto config = make_avc_stream_config(width, height, frame_rate, 1U);
-            write_all(
-                stream,
-                wireview::protocol::encode_packet(
-                    wireview::protocol::PacketHeader{
-                        .type = wireview::protocol::PacketType::start_stream,
-                        .sequence = sequence++,
-                        .timestamp_micros = monotonic_micros(),
-                    },
-                    config));
+                          std::uint16_t video_frame_rate) {
+            if (!initial_config_prepared || width != output_width || height != output_height) {
+                send_stream_config(width, height, video_frame_rate);
+            }
+            initial_config_prepared = false;
             stream_started = true;
             if (status != nullptr) {
-                status->streaming(width, height, frame_rate);
+                status->streaming(width, height, video_frame_rate);
             }
             std::cout << "Streaming the real desktop at " << width << 'x' << height
-                      << '@' << frame_rate << " FPS for " << duration.count()
+                      << '@' << video_frame_rate << " FPS for " << duration.count()
                       << " seconds\n";
         },
         .on_frame = [&](std::span<const std::uint8_t> bytes,
                         bool keyframe,
-                        std::uint64_t timestamp_micros) {
+                        std::uint64_t timestamp_micros,
+                        const DesktopFrameTiming& timing) {
             if (!stream_started) {
                 throw std::runtime_error(
                     "desktop encoder produced a frame before stream setup");
@@ -956,18 +1039,39 @@ void send_desktop_stream(
             if (keyframe) {
                 flags = flags | wireview::protocol::PacketFlag::keyframe;
             }
-            write_all(
-                stream,
-                wireview::protocol::encode_packet(
-                    wireview::protocol::PacketHeader{
-                        .type = wireview::protocol::PacketType::video_chunk,
-                        .flags = flags,
-                        .sequence = sequence++,
-                        .timestamp_micros = timestamp_micros,
-                    },
-                    bytes));
+            if (!ack_probe || *static_cast<const volatile LONG*>(ack_probe.get()) != 0) {
+                flags = flags | static_cast<wireview::protocol::PacketFlag>(0x80U);
+            }
+            const auto video_sequence = sequence++;
+            const auto packet_begin = monotonic_micros();
+            const auto packet = wireview::protocol::encode_packet(
+                wireview::protocol::PacketHeader{
+                    .type = wireview::protocol::PacketType::video_chunk,
+                    .flags = flags,
+                    .sequence = video_sequence,
+                    .timestamp_micros = timestamp_micros,
+                },
+                bytes);
+            const auto write_begin = monotonic_micros();
+            write_all(stream, packet);
+            const auto write_end = monotonic_micros();
             if (status != nullptr) {
                 status->delivered_frame(bytes.size());
+            }
+            if (pipeline_trace) {
+                pipeline_trace << timestamp_micros << ',' << video_sequence << ',' << keyframe << ','
+                    << bytes.size() << ',' << timing.fresh_capture << ',' << timing.capture_begin_us << ','
+                    << timing.capture_end_us << ',' << timing.submit_begin_us << ','
+                    << timing.submit_end_us << ',' << timing.output_us << ',' << timing.empty_polls << ','
+                    << timing.poll_wait_us << ',' << timing.pace_wait_us << ',' << packet_begin << ','
+                    << write_begin << ',' << write_end << ',' << timing.desktop_update_id << ','
+                    << timing.desktop_present_qpc << ',' << timing.desktop_acquire_us << ','
+                    << timing.desktop_accumulated_frames << ',' << timing.cursor_ready_us << ','
+                    << timing.compose_ready_us << ',' << timing.cursor_diagnostics_ready_us << ','
+                    << timing.convert_ready_us << ',' << timing.system_cursor_shape_update << '\n';
+                if (video_sequence % 32U == 0U) {
+                    pipeline_trace.flush();
+                }
             }
         },
         .consume_keyframe_request = [&] {
@@ -980,41 +1084,64 @@ void send_desktop_stream(
                       ? std::string("primary display")
                       : std::string(capture_display_device))
               << '\n';
-    const DesktopCaptureArea input_target = resolve_desktop_capture_area(capture_display_device);
+    DesktopCaptureArea input_target = resolve_desktop_capture_area(capture_display_device);
     std::cout << "Input target: rect=" << input_target.left << ',' << input_target.top
               << '+' << input_target.width << 'x' << input_target.height << '\n';
     std::cout << "Input mode: "
               << (inject_input ? "Windows injection enabled" : "log-only") << '\n';
     WindowsInputInjector injector(input_target);
+    callbacks.on_capture_area_changed = [&](DesktopCaptureArea target) {
+        input_target = target;
+        injector.update_target(target);
+    };
+    callbacks.collect_prepare_timing = cursor_diagnostics;
+    if (cursor_diagnostics) {
+        callbacks.on_cursor_sample = [&](std::uint64_t pts, int x, int y) {
+            cursor_timings.correlate(pts, input_target.left + x, input_target.top + y);
+        };
+    }
+
     std::atomic_bool input_running{true};
     std::exception_ptr input_error;
     InputReceiveStats input_stats;
     std::thread input_thread([&] {
         try {
             receive_input_packets(
-                stream, input_running, keyframe_requested, injector, inject_input, input_stats, status);
+                stream, input_running, keyframe_requested, injector, inject_input, input_stats, status, cursor_timings);
         } catch (...) {
             input_error = std::current_exception();
             input_running.store(false);
         }
     });
 
-    for (std::uint64_t index = 0U; index < 8U; ++index) {
-        send_clock_sync_ping();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    next_clock_sync = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-
     int encoder_result = 1;
     try {
+        // The requested format is already known for normal control-center sessions.
+        // Configure the receiver while clock sync and Windows GPU setup are running.
+        const bool configured_aspect_matches = !follows_windows_display(capture_display_device) ||
+            static_cast<std::uint64_t>(input_target.width) * output_height ==
+                static_cast<std::uint64_t>(input_target.height) * output_width;
+        if (configured_aspect_matches && output_width != 0U && output_height != 0U &&
+            output_width % 2U == 0U && output_height % 2U == 0U) {
+            send_stream_config(output_width, output_height, frame_rate);
+            initial_config_prepared = true;
+        }
+
+        for (std::uint64_t index = 0U; index < 8U; ++index) {
+            send_clock_sync_ping();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        next_clock_sync = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+
         encoder_result = run_desktop_encode_session(
             duration,
             callbacks,
             output_width,
             output_height,
             frame_rate,
-            capture_display_device);
+            capture_display_device,
+            cursor_size_scale);
     } catch (...) {
         input_running.store(false);
         input_thread.join();
@@ -1146,7 +1273,8 @@ int run_connected_stream_impl(
     std::uint16_t output_height,
     std::uint16_t desktop_frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    float cursor_size_scale = 1.0F) {
     const std::string hello_text = "WireView Windows phase-0";
     const std::vector<std::uint8_t> hello_payload(hello_text.begin(), hello_text.end());
     const wireview::protocol::PacketHeader hello_header{
@@ -1189,7 +1317,8 @@ int run_connected_stream_impl(
             output_height,
             desktop_frame_rate,
             capture_display_device,
-            status);
+            status,
+            cursor_size_scale);
     }
     return 0;
 }
@@ -1207,10 +1336,11 @@ int run_server_impl(
     std::uint16_t output_height,
     std::uint16_t desktop_frame_rate,
     std::string_view capture_display_device,
-    DevelopmentStatusPublisher* status) {
+    DevelopmentStatusPublisher* status,
+    float cursor_size_scale = 1.0F) {
     WinsockSession winsock;
     auto listener = create_tcp_socket();
-    allow_listener_rebind(listener.get());
+    configure_listener_binding(listener.get(), port);
 
     const auto address = loopback_address(port);
     if (bind(
@@ -1262,7 +1392,8 @@ int run_server_impl(
         output_height,
         desktop_frame_rate,
         capture_display_device,
-        status);
+        status,
+        cursor_size_scale);
 }
 
 }  // namespace
@@ -1331,7 +1462,7 @@ int run_device_preview_server(
     }
     WinsockSession winsock;
     auto listener = create_tcp_socket();
-    allow_listener_rebind(listener.get());
+    configure_listener_binding(listener.get(), port);
     const auto address = loopback_address(port);
     if (bind(listener.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) ==
         SOCKET_ERROR) {
@@ -1361,7 +1492,7 @@ int run_device_preview_server(
     }
     set_low_latency_socket_options(client.get());
     SocketByteStream stream(client.get());
-    const std::string hello_text = "WireView device preview";
+    const std::string hello_text = draw_preview ? "WireView device preview" : "WireView device profile";
     const std::vector<std::uint8_t> hello_payload(hello_text.begin(), hello_text.end());
     write_all(stream, wireview::protocol::encode_packet(
         wireview::protocol::PacketHeader{
@@ -1393,7 +1524,13 @@ int run_device_preview_server(
                                : std::to_string(width) + "x" + std::to_string(height))
               << " @ " << frame_rate << " FPS\n";
     if (hold_duration > std::chrono::seconds::zero()) {
-        std::this_thread::sleep_for(hold_duration);
+        std::atomic_bool running{true};
+        std::atomic_bool keyframe_requested{false};
+        WindowsInputInjector injector;
+        InputReceiveStats stats;
+        CursorLatencyMeasurements cursor_timings;
+        receive_input_packets(stream, running, keyframe_requested, injector, false, stats, &status,
+            cursor_timings, std::chrono::steady_clock::now() + hold_duration);
     }
     return 0;
 }
@@ -1408,7 +1545,8 @@ int run_development_desktop_stream_server(
     std::uint16_t frame_rate,
     std::string_view capture_display_device,
     std::string_view status_file,
-    std::uint64_t reconnect_count) {
+    std::uint64_t reconnect_count,
+    float cursor_size_scale) {
     if (stream_duration <= std::chrono::seconds::zero()) {
         throw std::invalid_argument("desktop stream duration must be positive");
     }
@@ -1437,7 +1575,8 @@ int run_development_desktop_stream_server(
         output_height,
         frame_rate,
         capture_display_device,
-        &status);
+        &status,
+        cursor_size_scale);
 }
 
 int run_winusb_desktop_stream_session(
@@ -1449,7 +1588,8 @@ int run_winusb_desktop_stream_session(
     std::uint16_t frame_rate,
     std::string_view capture_display_device,
     std::string_view status_file,
-    std::uint64_t reconnect_count) {
+    std::uint64_t reconnect_count,
+    float cursor_size_scale) {
     if (accessory_wait_timeout < std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("WinUSB accessory wait timeout must not be negative");
     }
@@ -1494,7 +1634,8 @@ int run_winusb_desktop_stream_session(
         output_height,
         frame_rate,
         capture_display_device,
-        &status);
+        &status,
+        cursor_size_scale);
 }
 
 int run_development_reconnecting_desktop_stream_server(

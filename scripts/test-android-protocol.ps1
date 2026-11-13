@@ -5,36 +5,30 @@ $ErrorActionPreference = 'Stop'
 
 $workspace = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $workspace 'build\java-protocol-test'
-$protocolSource = Join-Path $workspace 'android\app\src\main\java\com\wireview\receiver\Protocol.java'
-$testSource = Join-Path $workspace 'android\protocol-test\com\wireview\receiver\ProtocolSelfTest.java'
-$transportSources = @(
-    (Join-Path $workspace 'android\app\src\main\java\com\wireview\receiver\TransportConnection.java'),
-    (Join-Path $workspace 'android\app\src\main\java\com\wireview\receiver\TransportConnector.java'),
-    (Join-Path $workspace 'android\app\src\main\java\com\wireview\receiver\TcpTransportConnector.java')
+$sourceRoot = Join-Path $workspace 'android\app\src\main\java\com\wireview\receiver'
+$sources = @(
+    'Protocol', 'TransportConnection', 'TransportConnector', 'TcpTransportConnector',
+    'PersistentDiagnosticLog', 'PacketReadTrace', 'DecoderOutputPump', 'DecoderRecoveryState',
+    'FramePresentationClock', 'SurfaceFrameMarker', 'ConnectionStatus'
+) | ForEach-Object { Join-Path $sourceRoot ($_.ToString() + '.java') }
+$testRoot = Join-Path $workspace 'android\protocol-test'
+$tests = @(
+    'ProtocolSelfTest', 'TransportSelfTest', 'PersistentDiagnosticLogSelfTest',
+    'DecoderOutputPumpSelfTest', 'DecoderRecoverySelfTest', 'FramePresentationClockSelfTest',
+    'SurfaceFrameMarkerSelfTest', 'ConnectionStatusSelfTest'
 )
-$transportTestSource = Join-Path $workspace 'android\protocol-test\com\wireview\receiver\TransportSelfTest.java'
-$diagnosticSource = Join-Path $workspace 'android\app\src\main\java\com\wireview\receiver\PersistentDiagnosticLog.java'
-$diagnosticTestSource = Join-Path $workspace 'android\protocol-test\com\wireview\receiver\PersistentDiagnosticLogSelfTest.java'
+$testSources = $tests | ForEach-Object { Join-Path $testRoot ('com\wireview\receiver\' + $_ + '.java') }
+$platformStubs = @(Get-ChildItem -LiteralPath (Join-Path $testRoot 'stubs') -Filter '*.java' -Recurse |
+    ForEach-Object { $_.FullName })
 
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 
-javac -encoding UTF-8 -d $output $protocolSource $testSource $transportSources `
-    $transportTestSource $diagnosticSource $diagnosticTestSource
+javac -encoding UTF-8 -d $output $platformStubs $sources $testSources
 if ($LASTEXITCODE -ne 0) {
     throw 'javac failed'
 }
 
-java -cp $output com.wireview.receiver.ProtocolSelfTest
-if ($LASTEXITCODE -ne 0) {
-    throw 'Java protocol self-test failed'
-}
-
-java -cp $output com.wireview.receiver.TransportSelfTest
-if ($LASTEXITCODE -ne 0) {
-    throw 'Java transport self-test failed'
-}
-
-java -cp $output com.wireview.receiver.PersistentDiagnosticLogSelfTest
-if ($LASTEXITCODE -ne 0) {
-    throw 'Java persistent diagnostic log self-test failed'
+foreach ($test in $tests) {
+    java -cp $output ('com.wireview.receiver.' + $test)
+    if ($LASTEXITCODE -ne 0) { throw "Java self-test failed: $test" }
 }
